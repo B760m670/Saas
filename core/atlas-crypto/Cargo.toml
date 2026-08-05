@@ -1,0 +1,35 @@
+[package]
+name = "atlas-crypto"
+description = "Криптографический фундамент ATLAS: гибридные подписи и обмен ключами, генерация учётных данных"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Классические примитивы.
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["alloc", "rand_core", "zeroize"] }
+x25519-dalek = { version = "3.0.0", default-features = false, features = [
+    "precomputed-tables",
+    "static_secrets",
+    "zeroize",
+] }
+
+# Постквантовые примитивы (FIPS 203 / 204).
+ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "rand_core"] }
+ml-kem = { version = "0.3.2", default-features = false, features = ["alloc"] }
+
+blake3 = { version = "1", default-features = false }
+base64.workspace = true
+getrandom = "0.4"
+rand_core = "0.10"
+signature = { version = "3.0.0", default-features = false }
+subtle = { version = "2", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["derive"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+atlas-types = { path = "../atlas-types" }
