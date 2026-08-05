@@ -33,6 +33,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-tls"
+version = "0.1.0"
+dependencies = [
+ "atlas-crypto",
+ "md-5",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "atlas-types"
 version = "0.1.0"
 dependencies = [
@@ -284,6 +294,16 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
 
 [[package]]
 name = "memchr"
