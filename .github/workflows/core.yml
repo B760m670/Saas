@@ -76,6 +76,45 @@ jobs:
           workspaces: core
           key: ${{ matrix.target }}
 
+      # Часть зависимостей (blake3 с NEON-ядром, curve25519-dalek) содержит
+      # код на C. Для Android нужен компилятор из NDK — cc-rs сам его не
+      # находит. Тот же тулчейн потом используется для сборки .so клиента.
+      - name: Настроить компилятор Android NDK
+        if: contains(matrix.target, 'android')
+        working-directory: .
+        run: |
+          set -euo pipefail
+          ndk="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [ -z "$ndk" ]; then
+            echo "NDK не найден на раннере" >&2
+            exit 1
+          fi
+          bin="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          # Префикс clang не совпадает с триплетом Rust для 32-битного ARM.
+          case "${{ matrix.target }}" in
+            armv7-linux-androideabi) prefix=armv7a-linux-androideabi ;;
+            *) prefix="${{ matrix.target }}" ;;
+          esac
+
+          # Берём наименьший доступный уровень API — он и будет минимально
+          # поддерживаемой версией Android.
+          clang=$(ls "$bin" | grep -E "^${prefix}[0-9]+-clang$" | sort -V | head -1)
+          if [ -z "$clang" ]; then
+            echo "не найден clang с префиксом $prefix в $bin" >&2
+            ls "$bin" | head -50 >&2
+            exit 1
+          fi
+          echo "используем $clang"
+
+          # cc-rs читает CC_<триплет с подчёркиваниями>, cargo — CARGO_TARGET_<ТРИПЛЕТ>_LINKER.
+          env_target=$(echo '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')
+          {
+            echo "CC_$(echo '${{ matrix.target }}' | tr '-' '_')=$bin/$clang"
+            echo "AR_$(echo '${{ matrix.target }}' | tr '-' '_')=$bin/llvm-ar"
+            echo "CARGO_TARGET_${env_target}_LINKER=$bin/$clang"
+          } >> "$GITHUB_ENV"
+
       - name: Сборка
         run: cargo build --release --target ${{ matrix.target }}
 
