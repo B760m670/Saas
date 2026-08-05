@@ -37,4 +37,4 @@ pub mod profile;
 pub use error::{Error, Result};
 pub use fingerprint::{Ja3, Ja4, Transport};
 pub use hello::{ClientHello, Extension};
-pub use profile::{Chrome, HelloParams};
+pub use profile::{Chrome, Generation, HelloParams};

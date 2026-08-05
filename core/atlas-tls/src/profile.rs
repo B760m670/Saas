@@ -85,35 +85,63 @@ impl HelloParams {
     }
 }
 
-/// Профиль Chrome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Chrome {
-    /// Объявлять ли постквантовую группу `X25519MLKEM768`.
+/// Поколение Chrome, которое имитирует профиль.
+///
+/// Набор расширений у Chrome меняется каждые несколько релизов, и каждое
+/// изменение сдвигает отпечаток. Поэтому профиль привязан к поколению,
+/// а не «к Chrome вообще».
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Generation {
+    /// Chrome 141: ALPS на кодовой точке `0x44cd`, GREASE-ECH,
+    /// `trust_anchors`, постквантовая группа `X25519MLKEM768`.
     ///
-    /// Соответствует Chrome 124 и новее. Влияет на JA3 (список групп), но
-    /// не на JA4 — тот хэширует типы расширений, а не их содержимое.
-    pub post_quantum: bool,
+    /// Сверен с живым захватом — `testdata/chromium-141-linux.json`.
+    #[default]
+    V141,
+    /// Chrome до 124: без постквантовой группы и без новых расширений,
+    /// ALPS на кодовой точке `0x4469`.
+    ///
+    /// Оставлено потому, что отпечаток этого поколения опубликован и
+    /// служит независимым ориентиром.
+    Legacy,
+}
+
+impl Generation {
+    /// Объявляет ли поколение постквантовую группу.
+    #[must_use]
+    pub const fn post_quantum(self) -> bool {
+        matches!(self, Self::V141)
+    }
+}
+
+/// Профиль Chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Chrome {
+    /// Имитируемое поколение.
+    pub generation: Generation,
     /// Перемешивать ли расширения, как это делает настоящий Chrome.
     ///
+    /// Захват Chromium 141 подтверждает перемешивание: значения GREASE
+    /// стоят первым и последним, а середина идёт в произвольном порядке.
     /// Выключается только в тестах, где нужен воспроизводимый порядок.
     pub shuffle: bool,
 }
 
-impl Default for Chrome {
-    fn default() -> Self {
+impl Chrome {
+    /// Профиль Chrome 141.
+    #[must_use]
+    pub const fn v141() -> Self {
         Self {
-            post_quantum: true,
+            generation: Generation::V141,
             shuffle: true,
         }
     }
-}
 
-impl Chrome {
-    /// Профиль без постквантовой группы — соответствует Chrome до 124.
+    /// Профиль поколения до 124.
     #[must_use]
     pub const fn classic() -> Self {
         Self {
-            post_quantum: false,
+            generation: Generation::Legacy,
             shuffle: true,
         }
     }
@@ -125,7 +153,7 @@ impl Chrome {
     /// [`crate::Error::TooLong`], если какое-либо поле не помещается в свою
     /// длину — на практике недостижимо для разумных входных данных.
     pub fn client_hello(&self, params: &HelloParams) -> Result<ClientHello> {
-        let groups = if self.post_quantum {
+        let groups = if self.generation.post_quantum() {
             vec![
                 grease::pick(),
                 X25519_MLKEM768,
@@ -156,8 +184,19 @@ impl Chrome {
             ext::supported_versions(&[grease::pick(), 0x0304, 0x0303]),
             // 2 — brotli, единственный алгоритм, который шлёт Chrome.
             ext::compress_certificate(&[0x0002]),
-            ext::application_settings(&["h2"]),
         ];
+
+        match self.generation {
+            Generation::V141 => {
+                middle.push(ext::application_settings_v2(&["h2"]));
+                middle.push(ext::trust_anchors());
+                // Браузер шлёт ECH всегда: при отсутствии конфигурации у
+                // сервера — со случайным содержимым. Не слать его теперь
+                // значит отличаться от Chrome.
+                middle.push(ext::ech_grease());
+            }
+            Generation::Legacy => middle.push(ext::application_settings(&["h2"])),
+        }
 
         if self.shuffle {
             shuffle(&mut middle);
@@ -235,7 +274,7 @@ mod tests {
 
     #[test]
     fn grease_frames_the_extension_list() {
-        let hello = Chrome::default().client_hello(&params()).unwrap();
+        let hello = Chrome::v141().client_hello(&params()).unwrap();
         let first = hello.extensions.first().unwrap().ext_type;
         assert!(grease::is_grease(first), "первое расширение — GREASE");
 
@@ -247,14 +286,14 @@ mod tests {
 
     #[test]
     fn cipher_list_starts_with_grease() {
-        let hello = Chrome::default().client_hello(&params()).unwrap();
+        let hello = Chrome::v141().client_hello(&params()).unwrap();
         assert!(grease::is_grease(*hello.cipher_suites.first().unwrap()));
         assert_eq!(hello.cipher_suites.len(), CHROME_CIPHERS.len() + 1);
     }
 
     #[test]
     fn shuffling_changes_order_but_not_ja4() {
-        let profile = Chrome::default();
+        let profile = Chrome::v141();
         let mut orders = std::collections::HashSet::new();
         let mut fingerprints = std::collections::HashSet::new();
 
@@ -276,7 +315,7 @@ mod tests {
 
     #[test]
     fn shuffling_makes_ja3_unstable_just_like_chrome() {
-        let profile = Chrome::default();
+        let profile = Chrome::v141();
         let hashes: std::collections::HashSet<String> = (0..32)
             .map(|_| ja3(&profile.client_hello(&params()).unwrap()).hash)
             .collect();
@@ -293,31 +332,36 @@ mod tests {
     }
 
     #[test]
-    fn post_quantum_flag_only_moves_ja3() {
-        let pq = Chrome {
-            post_quantum: true,
+    fn generations_differ_in_extensions_but_not_ciphers() {
+        let modern = Chrome {
+            generation: Generation::V141,
             shuffle: false,
         }
         .client_hello(&params())
         .unwrap();
-        let classic = Chrome {
-            post_quantum: false,
+        let legacy = Chrome {
+            generation: Generation::Legacy,
             shuffle: false,
         }
         .client_hello(&params())
         .unwrap();
 
-        assert_ne!(ja3(&pq).hash, ja3(&classic).hash);
+        // Поколения различаются и набором групп, и набором расширений.
+        assert_ne!(ja3(&modern).hash, ja3(&legacy).hash);
+        assert_ne!(
+            ja4(&modern, Transport::Tcp).c,
+            ja4(&legacy, Transport::Tcp).c
+        );
+        // А вот список шифров у них общий — он не менялся годами.
         assert_eq!(
-            ja4(&pq, Transport::Tcp).c,
-            ja4(&classic, Transport::Tcp).c,
-            "JA4_c хэширует типы расширений, а не их содержимое"
+            ja4(&modern, Transport::Tcp).b,
+            ja4(&legacy, Transport::Tcp).b
         );
     }
 
     #[test]
     fn hello_survives_round_trip() {
-        let hello = Chrome::default().client_hello(&params()).unwrap();
+        let hello = Chrome::v141().client_hello(&params()).unwrap();
         let parsed = ClientHello::parse(&hello.to_handshake().unwrap()).unwrap();
         assert_eq!(hello, parsed);
     }

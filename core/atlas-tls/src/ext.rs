@@ -5,6 +5,8 @@
 //! Такие входы не встречаются в реальных профилях, а возврат ошибки из
 //! каждого конструктора сделал бы описание профиля нечитаемым.
 
+use atlas_crypto::rng::OsRng;
+
 use crate::bytes::{Reader, Writer};
 use crate::hello::Extension;
 
@@ -36,13 +38,24 @@ pub const SUPPORTED_VERSIONS: u16 = 0x002b;
 pub const PSK_KEY_EXCHANGE_MODES: u16 = 0x002d;
 /// `key_share`.
 pub const KEY_SHARE: u16 = 0x0033;
-/// `application_settings` (ALPS) — расширение Chrome.
+/// `application_settings` (ALPS), первая кодовая точка Chrome.
+///
+/// В Chrome 141 заменена на [`APPLICATION_SETTINGS_V2`]; оставлена для
+/// профилей старых версий.
 pub const APPLICATION_SETTINGS: u16 = 0x4469;
+/// `application_settings` (ALPS), кодовая точка Chrome 141.
+pub const APPLICATION_SETTINGS_V2: u16 = 0x44cd;
+/// `trust_anchors` — Trust Anchor Identifiers, прототип Chrome.
+///
+/// В `ClientHello` отправляется с пустым списком: клиент лишь объявляет,
+/// что понимает механизм.
+pub const TRUST_ANCHORS: u16 = 0xca34;
 /// `encrypted_client_hello`.
 ///
-/// В российских сетях само наличие ECH является аномалией: трафик с ним
-/// к Cloudflare режется. По умолчанию не отправляем — см.
-/// `docs/00-threat-model.md`, раздел 2.1.
+/// Захват Chromium 141 показал, что браузер отправляет это расширение
+/// **всегда**, даже когда у сервера нет ECH-конфигурации: в этом случае
+/// содержимое случайное (режим GREASE). Поэтому отсутствие расширения
+/// само стало отличием от браузера — см. `docs/08-fingerprint-calibration.md`.
 pub const ENCRYPTED_CLIENT_HELLO: u16 = 0xfe0d;
 /// `renegotiation_info`.
 pub const RENEGOTIATION_INFO: u16 = 0xff01;
@@ -93,6 +106,48 @@ pub fn alpn(protocols: &[&str]) -> Extension {
 #[must_use]
 pub fn application_settings(protocols: &[&str]) -> Extension {
     Extension::raw(APPLICATION_SETTINGS, name_list(protocols))
+}
+
+/// ALPS с кодовой точкой Chrome 141.
+#[must_use]
+pub fn application_settings_v2(protocols: &[&str]) -> Extension {
+    Extension::raw(APPLICATION_SETTINGS_V2, name_list(protocols))
+}
+
+/// `trust_anchors` с пустым списком — так его шлёт Chrome.
+#[must_use]
+pub fn trust_anchors() -> Extension {
+    Extension::raw(TRUST_ANCHORS, vec![0x00, 0x00])
+}
+
+/// ECH в режиме GREASE: расширение присутствует, содержимое случайно.
+///
+/// Раскладка снята с живого захвата Chromium 141:
+///
+/// ```text
+/// тип(1)=0 | kdf(2) | aead(2) | config_id(1) | enc<2> | payload<2>
+/// ```
+///
+/// Длины `enc` и `payload` берутся те же, что у браузера, — 32 и 144
+/// байта: они наблюдаемы, и отличие в них было бы заметно.
+#[must_use]
+pub fn ech_grease() -> Extension {
+    const ENC_LEN: usize = 32;
+    const PAYLOAD_LEN: usize = 144;
+
+    let mut w = Writer::new();
+    w.u8(0x00); // ECHClientHelloType::outer
+    w.u16(0x0001); // HKDF-SHA256
+    w.u16(0x0001); // AES-128-GCM
+    w.u8(OsRng::bytes::<1>()[0]); // config_id
+    let _ = w.nested_u16(|body| body.bytes(&OsRng::bytes::<ENC_LEN>()));
+    let _ = w.nested_u16(|body| {
+        // Полезная нагрузка при GREASE — просто случайные байты.
+        let mut chunk = [0_u8; PAYLOAD_LEN];
+        OsRng::fill(&mut chunk);
+        body.bytes(&chunk);
+    });
+    Extension::raw(ENCRYPTED_CLIENT_HELLO, w.finish())
 }
 
 /// `supported_versions` для `ClientHello` (однобайтовый префикс списка).

@@ -18,6 +18,7 @@ zeroize = { version = "1", default-features = false }
 
 [dev-dependencies]
 atlas-tls = { path = "../atlas-tls" }
+serde_json.workspace = true
 
 [lints]
 workspace = true
