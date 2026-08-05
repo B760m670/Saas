@@ -20,11 +20,13 @@
 
 ## Фаза 1 — «Оно работает» (цель: рабочий iOS-клиент)
 
-**Ядро**
-- [ ] `atlas-types`, `atlas-crypto` (Ed25519 + ML-DSA-65, X25519 + ML-KEM-768)
+**Ядро** (всё своё, без встраивания Xray/sing-box)
+- [x] `atlas-types` — дескрипторы, парсер/генератор ключей всех схем
+- [ ] `atlas-crypto` (Ed25519 + ML-DSA-65, X25519 + ML-KEM-768, BLAKE3, HPKE)
+- [ ] `atlas-tls` — свой ClientHello с точным отпечатком Chrome + тест JA4 в CI
+- [ ] `atlas-transport/vless` — VLESS + REALITY + XTLS-Vision
+- [ ] `atlas-transport/xhttp` — XHTTP / WebSocket / gRPC
 - [ ] `atlas-ffi` — C ABI, генерация заголовков, Swift/Kotlin-байндинги
-- [ ] `atlas-transport` — trait `Dialer` + мост к Xray-core (VLESS/REALITY/XHTTP/WS)
-- [ ] Парсер и генератор ключей: `vless://`, `vmess://`, `trojan://`, `ss://`, `hy2://`, `tuic://` + подписки (base64, Clash YAML, sing-box JSON)
 - [ ] `atlas-probe` — базовая разведка сети, NetworkFingerprint
 - [ ] `atlas-strategy` — Thompson sampling, персистентное хранилище статистики
 
