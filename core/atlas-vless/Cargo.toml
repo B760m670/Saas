@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+atlas-crypto = { path = "../atlas-crypto" }
 atlas-types = { path = "../atlas-types" }
 thiserror.workspace = true
 

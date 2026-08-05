@@ -29,7 +29,7 @@
 - [x] `atlas-vless` — кодек протокола: заголовки запроса и ответа, addons, обрамление UDP
 - [x] `atlas-reality` — метка REALITY поверх `atlas-tls`; обе стороны, сквозной тест
       (совместимость с живым сервером Xray ещё не проверена)
-- [ ] XTLS-Vision — паддинг против детекта TLS-in-TLS
+- [x] XTLS-Vision — паддинг против детекта TLS-in-TLS (`atlas-vless::vision`)
 - [ ] `atlas-transport/xhttp` — XHTTP / WebSocket / gRPC
 - [ ] `atlas-ffi` — C ABI, генерация заголовков, Swift/Kotlin-байндинги
 - [ ] `atlas-probe` — базовая разведка сети, NetworkFingerprint

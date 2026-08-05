@@ -106,6 +106,7 @@ dependencies = [
 name = "atlas-vless"
 version = "0.1.0"
 dependencies = [
+ "atlas-crypto",
  "atlas-types",
  "thiserror",
 ]
