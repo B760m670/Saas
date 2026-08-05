@@ -45,6 +45,19 @@ pub enum Credentials {
 }
 
 impl Credentials {
+    /// Идентификатор в виде 16 байт, если учётные данные его содержат.
+    ///
+    /// VLESS и `VMess` передают UUID по проводу в бинарном виде, поэтому
+    /// разбор шестнадцатеричной записи нужен транспортному слою.
+    #[must_use]
+    pub fn uuid_bytes(&self) -> Option<[u8; 16]> {
+        let text = match self {
+            Self::Uuid { uuid } | Self::UuidPassword { uuid, .. } => uuid,
+            Self::Password { .. } | Self::Shadowsocks { .. } => return None,
+        };
+        uuid_to_bytes(text)
+    }
+
     /// Признак пустых учётных данных — такой ключ нерабочий.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -316,5 +329,82 @@ impl Warning {
                  заголовков. Предпочтительнее ветка 2022-blake3-* с ShadowTLS."
             }
         }
+    }
+}
+
+/// Разобрать каноническую запись UUID в 16 байт.
+///
+/// Дефисы игнорируются, регистр не важен. Возвращает `None`, если строка
+/// не состоит ровно из 32 шестнадцатеричных цифр.
+#[must_use]
+pub fn uuid_to_bytes(text: &str) -> Option<[u8; 16]> {
+    let digits: Vec<u8> = text
+        .bytes()
+        .filter(|b| *b != b'-')
+        .map(|b| match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        })
+        .collect::<Option<Vec<u8>>>()?;
+
+    if digits.len() != 32 {
+        return None;
+    }
+
+    let mut out = [0_u8; 16];
+    for (slot, pair) in out.iter_mut().zip(digits.chunks_exact(2)) {
+        match pair {
+            [hi, lo] => *slot = (hi << 4) | lo,
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod uuid_tests {
+    use super::*;
+
+    #[test]
+    fn parses_canonical_form() {
+        let bytes = uuid_to_bytes("00112233-4455-6677-8899-aabbccddeeff").unwrap();
+        assert_eq!(
+            bytes,
+            [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff
+            ]
+        );
+    }
+
+    #[test]
+    fn ignores_case_and_separators() {
+        assert_eq!(
+            uuid_to_bytes("00112233445566778899AABBCCDDEEFF"),
+            uuid_to_bytes("00112233-4455-6677-8899-aabbccddeeff")
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_length_and_bad_digits() {
+        assert!(uuid_to_bytes("").is_none());
+        assert!(uuid_to_bytes("00112233-4455-6677-8899-aabbccddee").is_none());
+        assert!(uuid_to_bytes("zz112233-4455-6677-8899-aabbccddeeff").is_none());
+    }
+
+    #[test]
+    fn credentials_expose_bytes_only_where_meaningful() {
+        let uuid = Credentials::Uuid {
+            uuid: "00112233-4455-6677-8899-aabbccddeeff".into(),
+        };
+        assert!(uuid.uuid_bytes().is_some());
+
+        let password = Credentials::Password {
+            password: "secret".into(),
+        };
+        assert!(password.uuid_bytes().is_none());
     }
 }

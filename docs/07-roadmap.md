@@ -26,7 +26,9 @@
       генерация учётных данных для своих точек
 - [x] `atlas-tls` — свой ClientHello с отпечатком Chrome, вычисление JA3/JA4,
       сверка с опубликованным эталоном в CI
-- [ ] `atlas-transport/vless` — VLESS + REALITY + XTLS-Vision
+- [x] `atlas-vless` — кодек протокола: заголовки запроса и ответа, addons, обрамление UDP
+- [ ] `atlas-reality` — метка REALITY поверх `atlas-tls` (раскладка разобрана, см. 01-protocols.md §3.5)
+- [ ] XTLS-Vision — паддинг против детекта TLS-in-TLS
 - [ ] `atlas-transport/xhttp` — XHTTP / WebSocket / gRPC
 - [ ] `atlas-ffi` — C ABI, генерация заголовков, Swift/Kotlin-байндинги
 - [ ] `atlas-probe` — базовая разведка сети, NetworkFingerprint

@@ -54,6 +54,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-vless"
+version = "0.1.0"
+dependencies = [
+ "atlas-types",
+ "thiserror",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

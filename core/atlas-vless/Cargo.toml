@@ -1,0 +1,15 @@
+[package]
+name = "atlas-vless"
+description = "Протокол VLESS: кодирование и разбор заголовков запроса и ответа"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atlas-types = { path = "../atlas-types" }
+thiserror.workspace = true
+
+[lints]
+workspace = true

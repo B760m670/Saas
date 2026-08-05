@@ -57,7 +57,8 @@ pub mod uri;
 
 pub use error::{Error, Result};
 pub use key::{
-    Credentials, ObfsConfig, ProxyKey, RealityConfig, SecurityConfig, TransportConfig, Warning,
+    uuid_to_bytes, Credentials, ObfsConfig, ProxyKey, RealityConfig, SecurityConfig,
+    TransportConfig, Warning,
 };
 pub use protocol::{Fingerprint, Flow, Protocol, Resistance, SecurityKind, TransportKind};
 pub use subscription::Subscription;
