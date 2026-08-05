@@ -27,7 +27,8 @@
 - [x] `atlas-tls` — свой ClientHello с отпечатком Chrome, вычисление JA3/JA4,
       сверка с опубликованным эталоном в CI
 - [x] `atlas-vless` — кодек протокола: заголовки запроса и ответа, addons, обрамление UDP
-- [ ] `atlas-reality` — метка REALITY поверх `atlas-tls` (раскладка разобрана, см. 01-protocols.md §3.5)
+- [x] `atlas-reality` — метка REALITY поверх `atlas-tls`; обе стороны, сквозной тест
+      (совместимость с живым сервером Xray ещё не проверена)
 - [ ] XTLS-Vision — паддинг против детекта TLS-in-TLS
 - [ ] `atlas-transport/xhttp` — XHTTP / WebSocket / gRPC
 - [ ] `atlas-ffi` — C ABI, генерация заголовков, Swift/Kotlin-байндинги

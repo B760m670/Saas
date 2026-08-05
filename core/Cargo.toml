@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["atlas-types", "atlas-crypto", "atlas-tls", "atlas-vless"]
+members = ["atlas-types", "atlas-crypto", "atlas-tls", "atlas-vless", "atlas-reality"]
 
 [workspace.package]
 version = "0.1.0"
