@@ -30,7 +30,8 @@
 - [x] `atlas-reality` — метка REALITY поверх `atlas-tls`; обе стороны, сквозной тест
       (совместимость с живым сервером Xray ещё не проверена)
 - [x] XTLS-Vision — паддинг против детекта TLS-in-TLS (`atlas-vless::vision`)
-- [ ] `atlas-transport/xhttp` — XHTTP / WebSocket / gRPC
+- [x] `atlas-transport/ws` — WebSocket: рукопожатие с браузерным набором заголовков, кадры
+- [ ] `atlas-transport/xhttp` — XHTTP / gRPC
 - [ ] `atlas-ffi` — C ABI, генерация заголовков, Swift/Kotlin-байндинги
 - [ ] `atlas-probe` — базовая разведка сети, NetworkFingerprint
 - [ ] `atlas-strategy` — Thompson sampling, персистентное хранилище статистики

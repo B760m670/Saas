@@ -1,0 +1,17 @@
+[package]
+name = "atlas-transport"
+description = "Транспорты ATLAS: WebSocket и HTTP-обрамление для прохождения через CDN"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atlas-crypto = { path = "../atlas-crypto" }
+base64.workspace = true
+sha1 = { version = "0.11", default-features = false }
+thiserror.workspace = true
+
+[lints]
+workspace = true
