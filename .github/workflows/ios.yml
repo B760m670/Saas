@@ -63,10 +63,17 @@ jobs:
           ATLAS_LINK_LOCAL: "1"
         run: swift test
 
+  # Только по явной просьбе, а не на каждый push.
+  #
+  # Минуты агентов Apple считаются с коэффициентом ×10, и гонять их на
+  # каждое изменение — верный способ остаться без минут ровно тогда,
+  # когда сборка понадобится. Проверка на Linux выше идёт всегда: она
+  # дешёвая и настоящая.
   app:
     name: приложение Atlas-lite (macOS)
     runs-on: macos-15
     needs: wrapper
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v5
 
