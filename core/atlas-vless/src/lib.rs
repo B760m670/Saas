@@ -37,9 +37,11 @@
 pub mod addons;
 mod error;
 mod request;
+pub mod session;
 pub mod udp;
 pub mod vision;
 
 pub use addons::Addons;
 pub use error::{Error, Result};
 pub use request::{Address, Command, Endpoint, Request, Response, VERSION};
+pub use session::{Flow, Session};

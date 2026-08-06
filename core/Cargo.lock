@@ -83,6 +83,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-dial"
+version = "0.1.0"
+dependencies = [
+ "atlas-crypto",
+ "atlas-reality",
+ "atlas-tls",
+ "atlas-types",
+ "atlas-vless",
+ "base64",
+ "thiserror",
+]
+
+[[package]]
 name = "atlas-reality"
 version = "0.1.0"
 dependencies = [
