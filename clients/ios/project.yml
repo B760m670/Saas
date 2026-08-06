@@ -1,0 +1,50 @@
+# Описание проекта Xcode для XcodeGen.
+#
+# Декларативное описание вместо `.pbxproj` — сознательный выбор: этот
+# файл можно прочитать, сравнить в истории и поправить. Разбор
+# конфликтов слияния в `pbxproj` — занятие, которого стоит избегать.
+#
+# Собирается: xcodegen generate && xcodebuild …
+
+name: Atlas
+options:
+  bundleIdPrefix: org.atlas
+  deploymentTarget:
+    # Минимум, поддерживаемый самим LiveContainer. Ниже опускаться
+    # некуда, см. docs/05-clients.md.
+    iOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  AtlasCore:
+    path: AtlasCore
+
+targets:
+  Atlas:
+    type: application
+    platform: iOS
+    sources:
+      - path: AtlasApp/Sources
+    info:
+      path: AtlasApp/Resources/Info.plist
+    dependencies:
+      - package: AtlasCore
+        product: AtlasCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.atlas.client
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Сборка `lite` не подписывается в CI: подпись — дело того, кто
+        # ставит. LiveContainer и SideStore подписывают сами.
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        # Ядро приезжает статическим архивом под все нужные триплеты.
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../../core/target/universal-ios/$(CONFIGURATION)"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-latlas_ffi"

@@ -1,0 +1,128 @@
+# Обёртка на Swift и сборка iOS-клиента.
+#
+# Ядро проверяет `core.yml` — дублировать его здесь незачем. Работы
+# разделены по другому признаку: то, что можно проверить без macOS,
+# проверяется без macOS. На агенте Apple остаётся ровно то, что без
+# него невозможно, — сборка самого приложения.
+
+name: ios
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "clients/ios/**"
+      - "core/atlas-ffi/**"
+      - "core/atlas-dial/**"
+      - ".github/workflows/ios.yml"
+  pull_request:
+    paths:
+      - "clients/ios/**"
+      - "core/atlas-ffi/**"
+      - "core/atlas-dial/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wrapper:
+    name: обёртка AtlasCore (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Установить toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: Собрать ядро
+        working-directory: core
+        run: cargo build -p atlas-ffi
+
+      - name: Проверить границу C настоящей программой на C
+        working-directory: core
+        run: cargo test -p atlas-ffi
+
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
+      - name: Тесты обёртки
+        working-directory: clients/ios/AtlasCore
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/core/target/debug
+          # Без этого пакет не подключает ядро сам. Так и надо, когда
+          # он собирается в составе проекта Xcode: там архив даёт
+          # проект. Здесь проекта нет, подключать некому.
+          ATLAS_LINK_LOCAL: "1"
+        run: swift test
+
+  app:
+    name: приложение Atlas-lite (macOS)
+    runs-on: macos-15
+    needs: wrapper
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Триплет устройства
+        run: rustup target add aarch64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: Собрать ядро под iOS
+        working-directory: core
+        run: cargo build --release -p atlas-ffi --target aarch64-apple-ios
+
+      - name: Разложить архив там, где его ищет проект
+        run: |
+          mkdir -p core/target/universal-ios/Release
+          cp core/target/aarch64-apple-ios/release/libatlas_ffi.a \
+             core/target/universal-ios/Release/
+
+      - name: Заголовок не отстал от исходника
+        run: |
+          brew install cbindgen
+          cd core/atlas-ffi
+          cbindgen --config cbindgen.toml --crate atlas-ffi --output /tmp/fresh.h
+          diff <(grep -v '^[[:space:]]*$' include/atlas.h) \
+               <(grep -v '^[[:space:]]*$' /tmp/fresh.h)
+
+      - name: Породить проект
+        working-directory: clients/ios
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      # Подпись не ставится намеренно: её ставит тот, кто устанавливает.
+      # LiveContainer и SideStore подписывают сами, а класть в репозиторий
+      # чужой сертификат — худшее из решений.
+      - name: Собрать
+        working-directory: clients/ios
+        run: |
+          set -o pipefail
+          xcodebuild -project Atlas.xcodeproj -scheme Atlas \
+                     -configuration Release -sdk iphoneos \
+                     -derivedDataPath build \
+                     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+                     build | tail -40
+
+      - name: Упаковать IPA
+        working-directory: clients/ios
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Atlas.app Payload/
+          zip -qry Atlas-lite.ipa Payload
+          ls -la Atlas-lite.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Atlas-lite
+          path: clients/ios/Atlas-lite.ipa
