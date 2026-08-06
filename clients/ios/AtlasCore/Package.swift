@@ -49,6 +49,10 @@ let linkage: [LinkerSetting] =
 
 let package = Package(
     name: "AtlasCore",
+    // Нижняя граница — та же, что у приложения: iOS 14 — минимум,
+    // поддерживаемый LiveContainer. Объявлено явно, чтобы расхождение
+    // с целью сборки ловилось компилятором, а не на устройстве.
+    platforms: [.iOS(.v14), .macOS(.v11)],
     products: [
         .library(name: "AtlasCore", targets: ["AtlasCore"])
     ],
