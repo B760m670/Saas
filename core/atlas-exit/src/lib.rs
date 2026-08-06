@@ -423,9 +423,30 @@ fn to_socket_string(endpoint: &Endpoint) -> String {
     }
 }
 
+/// Принять обычное соединение TLS на уже открытом сокете.
+///
+/// Точке выхода сама по себе не нужна — у неё соединения идут через
+/// REALITY. Нужна тому, кто ставит рядом обычный сервер TLS: например,
+/// узлу назначения в сквозных проверках.
+///
+/// # Errors
+///
+/// Отказ сокета либо нарушение протокола клиентом.
+pub fn accept_tls(socket: TcpStream, config: ServerConfig) -> io::Result<ServerStream> {
+    socket.set_nodelay(true)?;
+    let mut stream = ServerStream {
+        socket,
+        connection: ServerConnection::new(config),
+        pending: Vec::new(),
+        consumed: 0,
+    };
+    stream.finish_handshake()?;
+    Ok(stream)
+}
+
 /// Поток TLS со стороны сервера.
 #[derive(Debug)]
-struct ServerStream {
+pub struct ServerStream {
     socket: TcpStream,
     connection: ServerConnection,
     pending: Vec<u8>,

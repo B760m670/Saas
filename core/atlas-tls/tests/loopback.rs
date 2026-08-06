@@ -1151,3 +1151,68 @@ fn application_data_glued_to_the_handshake_is_not_lost() {
         "данные, склеенные с рукопожатием, обязаны дойти"
     );
 }
+
+/// Список ALPN из настроек обязан доходить до провода.
+///
+/// Полевая ошибка: `ClientConfig::with_alpn` молча ничего не делал —
+/// приветствие собиралось из умолчания профиля. Вызывающий просил
+/// `http/1.1`, сервер выбирал `h2` из списка, которого никто не хотел,
+/// и дальше собеседники говорили на разных языках: рукопожатие
+/// проходило, запрос уходил, ответа не было никогда.
+#[test]
+fn configured_alpn_reaches_the_wire() {
+    let config = ClientConfig::new("example.org").with_alpn(vec!["http/1.1".to_owned()]);
+    let mut client = Connection::new(config).expect("клиент");
+    let hello = ClientHello::parse(&client.take_output()[5..]).unwrap();
+
+    assert_eq!(
+        hello.alpn(),
+        vec!["http/1.1".to_owned()],
+        "в приветствии обязан быть ровно тот список, о котором просили"
+    );
+}
+
+/// Пустой список ALPN — ошибка настройки, а не приветствие без расширения.
+#[test]
+fn empty_alpn_is_refused_up_front() {
+    let config = ClientConfig::new("example.org").with_alpn(Vec::new());
+    assert!(Connection::new(config).is_err());
+}
+
+/// Сервер не вправе выбрать протокол, которого мы не предлагали.
+///
+/// Тестовый сервер всегда отвечает `h2`; клиент предлагает только
+/// `http/1.1`. RFC 7301 §3.2 такой ответ запрещает, и молча принимать
+/// его нельзя: это ровно тот случай, когда соединение поднимается, а
+/// говорить по нему не о чем.
+#[test]
+fn alpn_outside_our_offer_is_rejected() {
+    let config = ClientConfig::new("example.org").with_alpn(vec!["http/1.1".to_owned()]);
+    let mut client = Connection::new(config).expect("клиент");
+    let mut server = TestServer::new(ServerOptions::new());
+
+    let mut failure = None;
+    for _ in 0..8 {
+        let from_client = client.take_output();
+        if !from_client.is_empty() {
+            server.feed(&from_client);
+        }
+        let from_server = server.take_output();
+        if from_server.is_empty() && from_client.is_empty() {
+            break;
+        }
+        if !from_server.is_empty() {
+            client.read_tls(&from_server).expect("приём");
+            if let Err(error) = client.process() {
+                failure = Some(error);
+                break;
+            }
+        }
+    }
+
+    let error = failure.expect("чужой ALPN обязан оборвать рукопожатие");
+    assert!(
+        matches!(error, Error::Protocol(text) if text.contains("ALPN")),
+        "ожидалась жалоба на ALPN, получено: {error:?}"
+    );
+}

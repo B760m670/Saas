@@ -324,9 +324,14 @@ impl Connection {
         let shares = KeyShares::generate(&config.groups);
         let session_id = config.session_id.session_id(&shares)?;
 
+        if config.alpn.is_empty() {
+            return Err(Error::Protocol("не задано ни одного протокола ALPN"));
+        }
+
         let params = HelloParams::new(config.server_name.clone())
             .with_key_shares(shares.wire())
-            .with_session_id(session_id);
+            .with_session_id(session_id)
+            .with_alpn(config.alpn.clone());
         let hello = config.profile.client_hello(&params)?;
 
         let mut connection = Self {
@@ -798,13 +803,26 @@ impl Connection {
             .iter()
             .find(|e| e.ext_type == ext::ALPN)
             .and_then(|e| first_alpn_name(&e.body));
+        // RFC 7301 §3.2: выбранный протокол обязан быть одним из
+        // предложенных. Без этой сверки вызывающий получает соединение,
+        // на котором говорят не на том языке, о котором он просил, —
+        // и узнаёт об этом только по молчанию собеседника.
+        if let Some(selected) = self.alpn.as_deref() {
+            if !self.config.alpn.iter().any(|offered| offered == selected) {
+                return Err(Error::Protocol(
+                    "сервер выбрал ALPN, которого мы не предлагали",
+                ));
+            }
+        }
         // Согласие сервера на ALPS обязывает нас ответить собственным
         // `EncryptedExtensions`. Кодовая точка берётся из ответа: старая
-        // и новая различаются, и промахнуться нельзя.
+        // и новая различаются, и промахнуться нельзя. Так же, как с
+        // ALPN, отвечать можно только на то, что предлагали сами.
         self.alps = extensions
             .iter()
             .map(|e| e.ext_type)
-            .find(|t| *t == ext::APPLICATION_SETTINGS_V2 || *t == ext::APPLICATION_SETTINGS);
+            .filter(|t| *t == ext::APPLICATION_SETTINGS_V2 || *t == ext::APPLICATION_SETTINGS)
+            .find(|t| self.hello.extension(*t).is_some());
 
         self.state = State::WaitCertificate;
         Ok(())

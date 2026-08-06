@@ -83,6 +83,17 @@ impl HelloParams {
         self.session_id = session_id;
         self
     }
+
+    /// Задать список ALPN.
+    ///
+    /// Отступление от списка Chrome видно наблюдателю, поэтому менять
+    /// его стоит только осознанно — например, когда поверх соединения
+    /// говорит наш собственный протокол, а не браузер.
+    #[must_use]
+    pub fn with_alpn(mut self, alpn: Vec<String>) -> Self {
+        self.alpn = alpn;
+        self
+    }
 }
 
 /// Поколение Chrome, которое имитирует профиль.
