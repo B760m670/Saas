@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "atlas-types",
+    "atlas-crypto",
+    "atlas-tls",
+    "atlas-vless",
+    "atlas-reality",
+    "atlas-transport",
+    "atlas-dial",
+    "atlas-ffi",
+    "atlas-exit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/B760m670/Saas"
+
+[workspace.dependencies]
+base64 = "0.22"
+# Постквантовые и классические примитивы объявлены на уровне рабочего
+# пространства: расхождение версий между крейтами дало бы две разные
+# реализации одного алгоритма, и обнаружилось бы это только на проводе.
+ml-kem = { version = "0.3.2", default-features = false, features = ["alloc"] }
+x25519-dalek = { version = "3.0.0", default-features = false, features = [
+    "precomputed-tables",
+    "static_secrets",
+    "zeroize",
+] }
+subtle = { version = "2", default-features = false }
+percent-encoding = "2.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

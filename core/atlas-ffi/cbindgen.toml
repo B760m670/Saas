@@ -1,0 +1,19 @@
+language = "C"
+header = """/* Сгенерировано cbindgen — правки вносятся в atlas-ffi/src/lib.rs.
+ *
+ * Обновить:  cbindgen --config cbindgen.toml --crate atlas-ffi \\
+ *                     --output include/atlas.h
+ * Проверить: cargo test -p atlas-ffi --test abi
+ */"""
+include_guard = "ATLAS_H"
+pragma_once = false
+documentation = true
+documentation_style = "doxy"
+cpp_compat = true
+usize_is_size_t = true
+
+[export]
+include = ["AtlasOptions", "AtlasProxy"]
+
+[parse]
+parse_deps = false

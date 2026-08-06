@@ -1,0 +1,25 @@
+[package]
+name = "atlas-reality"
+description = "Метка REALITY: аутентификация клиента внутри поля session_id сообщения ClientHello"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atlas-crypto = { path = "../atlas-crypto" }
+atlas-tls = { path = "../atlas-tls" }
+hmac = { version = "0.13", default-features = false }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+hkdf = { version = "0.13", default-features = false }
+sha2 = { version = "0.11", default-features = false }
+x25519-dalek = { version = "3.0.0", default-features = false, features = ["precomputed-tables", "static_secrets", "zeroize"] }
+thiserror.workspace = true
+zeroize = { version = "1", default-features = false }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,27 @@
+[package]
+name = "atlas-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "C ABI ядра ATLAS для клиентов под iOS, Android и десктоп"
+
+[lib]
+# `staticlib` для iOS (динамические библиотеки там ограничены),
+# `cdylib` для Android и десктопа, `rlib` — чтобы крейт можно было
+# проверять обычными тестами Rust.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+atlas-dial = { path = "../atlas-dial" }
+atlas-types = { path = "../atlas-types" }
+serde_json.workspace = true
+
+[dev-dependencies]
+atlas-exit = { path = "../atlas-exit" }
+atlas-reality = { path = "../atlas-reality" }
+base64.workspace = true
+
+[lints]
+workspace = true

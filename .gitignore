@@ -1,0 +1,56 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node
+node_modules/
+dist/
+.wrangler/
+
+# Apple
+DerivedData/
+*.xcuserstate
+xcuserdata/
+build/
+*.ipa
+*.dSYM.zip
+Pods/
+
+# Android
+.gradle/
+local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Desktop
+*.msi
+*.dmg
+*.AppImage
+*.deb
+*.rpm
+
+# Secrets — никогда не коммитим
+.env
+.env.*
+secrets/
+*.p12
+*.mobileprovision
+*.pem
+!docs/**/*.pem
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Сборка пакета Swift
+clients/ios/**/.build/
+# Порождается XcodeGen — в репозитории не нужен
+clients/ios/Atlas.xcodeproj/
+clients/ios/Payload/
+clients/ios/*.ipa
