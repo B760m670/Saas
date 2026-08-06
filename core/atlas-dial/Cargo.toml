@@ -16,5 +16,9 @@ atlas-vless = { path = "../atlas-vless" }
 base64.workspace = true
 thiserror.workspace = true
 
+[[bin]]
+name = "atlas-proxy"
+path = "src/bin/atlas-proxy.rs"
+
 [lints]
 workspace = true

@@ -52,6 +52,9 @@ struct ServerOptions {
     cookie: bool,
     /// Шифронабор: `0x1301` или `0x1302`.
     cipher_suite: u16,
+    /// Прислать прикладные данные сразу за своим `Finished`, не дожидаясь
+    /// `Finished` клиента. TLS 1.3 это разрешает — данные 0.5-RTT.
+    early_data: Option<&'static [u8]>,
 }
 
 impl ServerOptions {
@@ -342,6 +345,7 @@ impl TestServer {
         self.emit(HandshakeType::Finished, &data);
 
         // Ключи приложения — от транскрипта по Finished сервера.
+        let early = self.options.early_data;
         let after = self.transcript.hash();
         let schedule = self.schedule.as_mut().unwrap();
         schedule.enter_master();
@@ -351,10 +355,19 @@ impl TestServer {
         self.client_application_secret.clone_from(&client_app);
 
         let (hash, aead) = (self.hash, self.aead);
-        self.pending_keys = Some((
-            Protection::new(aead, traffic_keys(hash, &client_app, aead.key_len())).unwrap(),
-            Protection::new(aead, traffic_keys(hash, &server_app, aead.key_len())).unwrap(),
-        ));
+        let write = Protection::new(aead, traffic_keys(hash, &server_app, aead.key_len())).unwrap();
+        let read = Protection::new(aead, traffic_keys(hash, &client_app, aead.key_len())).unwrap();
+
+        match early {
+            // Данные 0.5-RTT уходят той же порцией, что и хвост пачки:
+            // клиент увидит их в одном чтении с `Finished` сервера.
+            Some(payload) => {
+                self.write = Some(write);
+                self.send_application_data(payload);
+                self.pending_keys = Some((read, self.write.take().unwrap()));
+            }
+            None => self.pending_keys = Some((read, write)),
+        }
     }
 
     fn emit(&mut self, msg_type: HandshakeType, body: &[u8]) {
@@ -1064,4 +1077,77 @@ fn a_flood_without_a_complete_record_is_bounded() {
         outcome = client.read_tls(&[22; 4096]);
     }
     assert!(outcome.is_err(), "буфер обязан иметь предел");
+}
+
+/// Канал, отдающий пачку сервера **одним куском**, как это делает любое
+/// промежуточное звено: туннель, прокси, да и просто TCP при удачном
+/// стечении. Прямому соединению склейка почти не грозит, и потому
+/// ошибки такого рода живут долго и всплывают только в поле.
+struct BatchingPipe {
+    server: TestServer,
+    to_client: Vec<u8>,
+    consumed: usize,
+}
+
+impl std::io::Read for BatchingPipe {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let rest = self.to_client.get(self.consumed..).unwrap_or_default();
+        if rest.is_empty() {
+            return Ok(0);
+        }
+        let take = rest.len().min(out.len());
+        out[..take].copy_from_slice(&rest[..take]);
+        self.consumed += take;
+        Ok(take)
+    }
+}
+
+impl std::io::Write for BatchingPipe {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.server.feed(data);
+        let batch = self.server.take_output();
+        self.to_client.extend_from_slice(&batch);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn application_data_glued_to_the_handshake_is_not_lost() {
+    use std::io::Read as _;
+
+    // Регрессия. Рукопожатие расшифровывало прикладные данные, пришедшие
+    // в одном чтении с последней пачкой сервера, и молча выбрасывало их:
+    // чтение начиналось с пустого буфера и уходило блокироваться на
+    // сокете, а отправитель считал, что всё доставил.
+    const EARLY: &[u8] = b"dannye srazu za rukopozhatiem";
+
+    let pipe = BatchingPipe {
+        server: TestServer::new(ServerOptions {
+            early_data: Some(EARLY),
+            ..ServerOptions::new()
+        }),
+        to_client: Vec::new(),
+        consumed: 0,
+    };
+
+    let mut stream =
+        atlas_tls::TlsStream::connect(pipe, ClientConfig::new("example.org")).expect("рукопожатие");
+
+    let mut got = Vec::new();
+    let mut buf = [0_u8; 256];
+    while let Ok(read) = stream.read(&mut buf) {
+        if read == 0 {
+            break;
+        }
+        got.extend_from_slice(&buf[..read]);
+    }
+
+    assert_eq!(
+        got, EARLY,
+        "данные, склеенные с рукопожатием, обязаны дойти"
+    );
 }

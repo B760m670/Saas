@@ -62,8 +62,15 @@ fn spawn_exit(cover: &str) -> (String, String) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap().to_string();
 
+    // Назначение в тестах — петля, поэтому ограничения ослаблены явно.
+    // На настоящей точке выхода это делать нельзя, и по умолчанию закрыто.
     let point = Arc::new(ExitPoint::new(
-        ExitConfig::new(reality, cover.to_owned()).with_common_name(SNI),
+        ExitConfig::new(reality, cover.to_owned())
+            .with_common_name(SNI)
+            .with_policy(atlas_exit::Policy {
+                allow_private: true,
+                ..atlas_exit::Policy::default()
+            }),
     ));
     std::thread::spawn(move || {
         let _ = point.serve(&listener);
@@ -241,7 +248,12 @@ fn a_replayed_hello_goes_to_the_cover_site() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let exit = listener.local_addr().unwrap().to_string();
     let point = Arc::new(ExitPoint::new(
-        ExitConfig::new(reality, cover).with_common_name(SNI),
+        ExitConfig::new(reality, cover)
+            .with_common_name(SNI)
+            .with_policy(atlas_exit::Policy {
+                allow_private: true,
+                ..atlas_exit::Policy::default()
+            }),
     ));
     std::thread::spawn(move || {
         let _ = point.serve(&listener);
@@ -338,4 +350,85 @@ fn a_large_payload_goes_through_the_tunnel_intact() {
     }
     assert_eq!(filled, payload.len(), "объём обязан дойти целиком");
     assert_eq!(answer, payload, "и без искажений");
+}
+
+#[test]
+fn by_default_the_exit_point_refuses_to_reach_inside() {
+    // Клиент вправе назвать любой адрес. Точка, которой человек
+    // поделился, обязана отказать: `127.0.0.1` ведёт к службам самого
+    // узла, а частные диапазоны — во внутреннюю сеть хостера.
+    let destination = spawn_responder("ВНУТРЕННЯЯ СЛУЖБА");
+    let cover = spawn_responder("ПРИКРЫТИЕ");
+
+    let reality = Server::generate().with_short_id(&[0xde, 0xad]).unwrap();
+    let public_key = base64_url(&reality.public_key());
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let exit = listener.local_addr().unwrap().to_string();
+
+    // Настройки по умолчанию — то есть внутрь нельзя.
+    let point = Arc::new(ExitPoint::new(
+        ExitConfig::new(reality, cover).with_common_name(SNI),
+    ));
+    std::thread::spawn(move || {
+        let _ = point.serve(&listener);
+    });
+
+    let key = key_for(&exit, &public_key, "");
+    let (host, port) = split_address(&destination);
+    let mut tunnel =
+        dial_with(&key, &Target::domain(host, port), &options()).expect("туннель поднимается");
+
+    // Туннель поднялся — клиент-то свой. А вот до внутренней службы
+    // данные дойти не должны.
+    tunnel.write_all(b"privet").unwrap();
+    tunnel.flush().unwrap();
+    let mut answer = Vec::new();
+    let _ = tunnel.read_to_end(&mut answer);
+    assert!(
+        answer.is_empty(),
+        "внутренняя служба не должна была ответить: {}",
+        String::from_utf8_lossy(&answer)
+    );
+}
+
+#[test]
+fn the_policy_recognises_what_is_inside() {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    for inside in [
+        "127.0.0.1",
+        "10.1.2.3",
+        "192.168.0.1",
+        "172.16.5.5",
+        // Метаданные виртуальной машины у большинства облаков.
+        "169.254.169.254",
+        // Общий диапазон операторов.
+        "100.64.0.1",
+        "0.0.0.0",
+    ] {
+        let ip: Ipv4Addr = inside.parse().unwrap();
+        assert!(
+            !atlas_exit::is_public(IpAddr::V4(ip)),
+            "{inside} обязан считаться внутренним"
+        );
+    }
+
+    for outside in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "172.32.0.1"] {
+        let ip: Ipv4Addr = outside.parse().unwrap();
+        assert!(
+            atlas_exit::is_public(IpAddr::V4(ip)),
+            "{outside} обязан считаться внешним"
+        );
+    }
+
+    for inside in ["::1", "fc00::1", "fd12::1", "fe80::1", "::"] {
+        let ip: Ipv6Addr = inside.parse().unwrap();
+        assert!(
+            !atlas_exit::is_public(IpAddr::V6(ip)),
+            "{inside} обязан считаться внутренним"
+        );
+    }
+    assert!(atlas_exit::is_public(IpAddr::V6(
+        "2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap()
+    )));
 }

@@ -15,6 +15,10 @@ atlas-types = { path = "../atlas-types" }
 atlas-vless = { path = "../atlas-vless" }
 base64.workspace = true
 
+[[bin]]
+name = "atlas-exit"
+path = "src/bin/atlas-exit.rs"
+
 [lints]
 workspace = true
 

@@ -35,7 +35,7 @@
 #![warn(missing_docs, clippy::pedantic)]
 
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs as _};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,6 +52,9 @@ const CHUNK: usize = 16 * 1024;
 /// брошенным.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Сколько ждать соединения с адресом назначения.
+const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Настройки точки выхода.
 #[derive(Debug)]
 pub struct ExitConfig {
@@ -65,11 +68,72 @@ pub struct ExitConfig {
     pub common_name: String,
     /// Протоколы прикладного уровня в порядке предпочтения.
     pub alpn: Vec<String>,
-    /// Разрешено ли соединяться по адресам, а не только по именам.
+    /// Куда точке выхода позволено соединяться.
+    pub policy: Policy,
+}
+
+/// Ограничения на адрес назначения.
+///
+/// # Зачем это обязательно
+///
+/// Клиент вправе назвать любой адрес. Для точки, которую человек
+/// развернул себе одному, это безобидно. Для точки, которой он
+/// поделился, — открытая дверь: `127.0.0.1` ведёт к службам самого
+/// узла, `169.254.169.254` у большинства облачных провайдеров отдаёт
+/// учётные данные виртуальной машины, а частные диапазоны — во
+/// внутреннюю сеть хостера.
+///
+/// Поэтому по умолчанию закрыто, и проверка идёт **по разрешённому
+/// адресу**, а не по имени: `localhost` и любое доменное имя,
+/// указывающее внутрь, обязаны отсекаться одинаково.
+#[derive(Debug, Clone, Default)]
+pub struct Policy {
+    /// Разрешить петлю, частные диапазоны и служебные адреса.
     ///
-    /// Имя разрешает точка выхода, и это правильно: запрос DNS не
-    /// покидает туннель. Но клиент вправе прислать и адрес.
-    pub allow_addresses: bool,
+    /// По умолчанию выключено — то есть закрыто. Включать только на
+    /// точке, которой никто не пользуется, кроме самого хозяина, и в
+    /// тестах.
+    pub allow_private: bool,
+    /// Разрешённые порты назначения. Пусто — любые.
+    pub allowed_ports: Vec<u16>,
+}
+
+impl Policy {
+    /// Разрешено ли соединяться по этому адресу.
+    #[must_use]
+    pub fn permits(&self, address: SocketAddr) -> bool {
+        if !self.allowed_ports.is_empty() && !self.allowed_ports.contains(&address.port()) {
+            return false;
+        }
+        self.allow_private || is_public(address.ip())
+    }
+}
+
+/// Ведёт ли адрес наружу, а не внутрь узла или его сети.
+#[must_use]
+pub fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_unspecified()
+                || v4.is_multicast()
+                // Общий диапазон операторов, 100.64.0.0/10.
+                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])))
+        }
+        IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // Уникальные локальные, fc00::/7.
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // Локальные для канала, fe80::/10.
+                || (v6.segments()[0] & 0xffc0) == 0xfe80)
+        }
+    }
 }
 
 impl ExitConfig {
@@ -85,8 +149,15 @@ impl ExitConfig {
             cover,
             common_name,
             alpn: vec!["h2".to_owned(), "http/1.1".to_owned()],
-            allow_addresses: true,
+            policy: Policy::default(),
         }
+    }
+
+    /// Задать ограничения на адрес назначения.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Задать имя в сертификате.
@@ -97,13 +168,28 @@ impl ExitConfig {
     }
 }
 
+/// Что делать с сообщением о событии.
+///
+/// Точка выхода стоит без присмотра, и молчащая служба неотлаживаема.
+/// Но и болтливая опасна: в журнале не должно оказаться ничего, что
+/// связывает пользователя с адресом назначения. Поэтому наружу идут
+/// только события, а решение, писать ли их, принимает вызывающий.
+pub type Log = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// Точка выхода, готовая принимать соединения.
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct ExitPoint {
     certificates: Arc<Certificates>,
     cover: String,
     alpn: Vec<String>,
-    allow_addresses: bool,
+    policy: Policy,
+    log: Option<Log>,
+}
+
+impl core::fmt::Debug for ExitPoint {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "ExitPoint {{ cover: {:?} }}", self.cover)
+    }
 }
 
 impl ExitPoint {
@@ -115,7 +201,21 @@ impl ExitPoint {
             certificates,
             cover: config.cover,
             alpn: config.alpn,
-            allow_addresses: config.allow_addresses,
+            policy: config.policy,
+            log: None,
+        }
+    }
+
+    /// Куда писать сообщения о событиях.
+    #[must_use]
+    pub fn with_log(mut self, log: Log) -> Self {
+        self.log = Some(log);
+        self
+    }
+
+    fn say(&self, message: &str) {
+        if let Some(log) = self.log.as_ref() {
+            log(message);
         }
     }
 
@@ -136,7 +236,9 @@ impl ExitPoint {
             let _ = std::thread::Builder::new()
                 .name("atlas-exit".to_owned())
                 .spawn(move || {
-                    let _ = point.handle(socket);
+                    if let Err(error) = point.handle(socket) {
+                        point.say(&format!("соединение: {error}"));
+                    }
                 });
         }
         Ok(())
@@ -163,8 +265,10 @@ impl ExitPoint {
         let mut connection = ServerConnection::new(config);
 
         if connection.read_tls(&hello_record).is_err() || connection.process().is_err() {
+            self.say("посторонний — уводим на сайт прикрытия");
             return self.forward_to_cover(socket, &hello_record);
         }
+        self.say("свой клиент — рукопожатие");
 
         // Метка открылась. Дальше — обычное рукопожатие и VLESS.
         socket.set_read_timeout(None)?;
@@ -177,30 +281,59 @@ impl ExitPoint {
         stream.finish_handshake()?;
 
         let accepted = ServerSession::accept(stream)?;
-        self.check_destination(&accepted.destination)?;
-
-        let target = to_socket_string(&accepted.destination);
-        let upstream = TcpStream::connect(&target)?;
-        upstream.set_nodelay(true)?;
-
-        relay(accepted.session, upstream)
+        self.say(&format!(
+            "назначение {} ({:?})",
+            to_socket_string(&accepted.destination),
+            accepted.session.flow()
+        ));
+        let upstream = self.connect_upstream(&accepted.destination)?;
+        let outcome = relay(accepted.session, upstream, self.log.clone());
+        if let Err(error) = &outcome {
+            self.say(&format!("перекачка окончена: {error}"));
+        }
+        outcome
     }
 
-    /// Проверить, что назначение допустимо.
-    fn check_destination(&self, endpoint: &Endpoint) -> io::Result<()> {
-        if !self.allow_addresses && !matches!(endpoint.address, Address::Domain(_)) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "соединение по адресу запрещено настройками",
-            ));
-        }
+    /// Соединиться с адресом назначения, соблюдая ограничения.
+    ///
+    /// Проверка идёт по **разрешённому** адресу, а не по имени: иначе
+    /// `localhost` и любой домен, указывающий внутрь, прошли бы мимо
+    /// неё. Резолвер здесь — граница доверия, и полагаться на то, что
+    /// клиент прислал внешне безобидное имя, нельзя.
+    fn connect_upstream(&self, endpoint: &Endpoint) -> io::Result<TcpStream> {
         if endpoint.port == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "нулевой порт назначения",
             ));
         }
-        Ok(())
+
+        let target = to_socket_string(endpoint);
+        let resolved: Vec<SocketAddr> = target.to_socket_addrs()?.collect();
+        if resolved.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "имя назначения не разрешается",
+            ));
+        }
+
+        let mut last = io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "все адреса назначения запрещены настройками",
+        );
+        for address in resolved {
+            if !self.policy.permits(address) {
+                continue;
+            }
+            match TcpStream::connect_timeout(&address, UPSTREAM_TIMEOUT) {
+                Ok(socket) => {
+                    socket.set_nodelay(true)?;
+                    return Ok(socket);
+                }
+                Err(error) => last = error,
+            }
+        }
+        Err(last)
     }
 
     /// Увести соединение на сайт прикрытия.
@@ -386,7 +519,12 @@ impl Write for ServerStream {
 /// направлениях тоже не делит состояния. Поэтому потоки работают без
 /// замка — а замок здесь был бы источником взаимной блокировки, потому
 /// что чтение из сокета блокирующее.
-fn relay(session: ServerSession<ServerStream>, upstream: TcpStream) -> io::Result<()> {
+#[allow(clippy::too_many_lines)]
+fn relay(
+    session: ServerSession<ServerStream>,
+    upstream: TcpStream,
+    log: Option<Log>,
+) -> io::Result<()> {
     let parts = session.into_parts();
     let ServerStream {
         socket,
@@ -412,8 +550,16 @@ fn relay(session: ServerSession<ServerStream>, upstream: TcpStream) -> io::Resul
     let mut upstream_read = upstream.try_clone()?;
     let mut upstream_write = upstream;
 
+    let say = move |message: String| {
+        if let Some(log) = log.as_ref() {
+            log(&message);
+        }
+    };
+    let say_in = say.clone();
+
     // Клиент → назначение.
     let inbound = std::thread::spawn(move || -> io::Result<()> {
+        let mut sent = 0_usize;
         if !leftover.is_empty() {
             upstream_write.write_all(&leftover)?;
         }
@@ -437,11 +583,13 @@ fn relay(session: ServerSession<ServerStream>, upstream: TcpStream) -> io::Resul
             };
             if !content.is_empty() {
                 upstream_write.write_all(&content)?;
+                sent += content.len();
             }
             if reader.peer_closed() {
                 break;
             }
         }
+        say_in(format!("клиент → назначение: {sent} байт"));
         let _ = upstream_write.shutdown(std::net::Shutdown::Write);
         Ok(())
     });
@@ -449,6 +597,7 @@ fn relay(session: ServerSession<ServerStream>, upstream: TcpStream) -> io::Resul
     // Назначение → клиент.
     let outbound = (|| -> io::Result<()> {
         let mut prefix = response;
+        let mut back = 0_usize;
         let mut buf = vec![0_u8; CHUNK];
         loop {
             let read = upstream_read.read(&mut buf)?;
@@ -480,7 +629,9 @@ fn relay(session: ServerSession<ServerStream>, upstream: TcpStream) -> io::Resul
             plain.extend_from_slice(&framed);
             let records = writer.encrypt(&plain).map_err(to_io)?;
             client_write.write_all(&records)?;
+            back += read;
         }
+        say(format!("назначение → клиент: {back} байт"));
         if let Ok(bye) = writer.close_notify() {
             let _ = client_write.write_all(&bye);
         }
