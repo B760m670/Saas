@@ -8,6 +8,7 @@ members = [
     "atlas-reality",
     "atlas-transport",
     "atlas-dial",
+    "atlas-exit",
 ]
 
 [workspace.package]

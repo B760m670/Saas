@@ -96,6 +96,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-exit"
+version = "0.1.0"
+dependencies = [
+ "atlas-crypto",
+ "atlas-dial",
+ "atlas-reality",
+ "atlas-tls",
+ "atlas-types",
+ "atlas-vless",
+ "base64",
+]
+
+[[package]]
 name = "atlas-reality"
 version = "0.1.0"
 dependencies = [

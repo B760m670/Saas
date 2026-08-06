@@ -44,4 +44,4 @@ pub mod vision;
 pub use addons::Addons;
 pub use error::{Error, Result};
 pub use request::{Address, Command, Endpoint, Request, Response, VERSION};
-pub use session::{Flow, Session};
+pub use session::{Accepted, Flow, ServerSession, Session};

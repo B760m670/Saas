@@ -467,3 +467,259 @@ mod tests {
         );
     }
 }
+
+/// Принятое соединение: сессия и то, куда клиент просит соединиться.
+#[derive(Debug)]
+pub struct Accepted<S> {
+    /// Сессия для обмена данными.
+    pub session: ServerSession<S>,
+    /// Идентификатор пользователя из заголовка.
+    pub uuid: [u8; 16],
+    /// Куда соединяться.
+    pub destination: Endpoint,
+}
+
+/// Разъятая сессия точки выхода.
+#[derive(Debug)]
+pub struct ServerParts<S> {
+    /// Нижележащий поток.
+    pub stream: S,
+    /// Накладывающая сторона обрамления — для ответов клиенту.
+    pub padder: Option<Padder>,
+    /// Снимающая сторона — для того, что приходит от клиента.
+    pub unpadder: Option<Unpadder>,
+    /// Уже расшифрованное, но не отданное содержимое.
+    pub buffered: Vec<u8>,
+    /// Заголовок ответа, если он ещё не ушёл.
+    pub response: Option<Vec<u8>>,
+}
+
+/// Сессия VLESS со стороны точки выхода.
+///
+/// Зеркало [`Session`]: тот же заголовок, то же обрамление, только
+/// читается то, что там писалось, и наоборот.
+#[derive(Debug)]
+pub struct ServerSession<S> {
+    stream: S,
+    flow: Flow,
+
+    /// Заголовок ответа, ещё не ушедший клиенту.
+    prefix: Option<Vec<u8>>,
+
+    padder: Option<Padder>,
+    unpadder: Option<Unpadder>,
+    sniffer: Sniffer,
+
+    pending: Vec<u8>,
+    consumed: usize,
+    raw: Vec<u8>,
+}
+
+impl<S: Read + Write> ServerSession<S> {
+    /// Принять соединение: прочитать заголовок запроса.
+    ///
+    /// Всё, что пришло следом за заголовком, сохраняется — это уже
+    /// полезная нагрузка, в VLESS она идёт сразу за заголовком без
+    /// разделителя.
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::InvalidData`], если заголовок не разбирается или
+    /// неправдоподобно длинен; [`io::ErrorKind::UnexpectedEof`] при
+    /// обрыве до конца заголовка.
+    pub fn accept(mut stream: S) -> io::Result<Accepted<S>> {
+        /// Предел на заголовок: версия, идентификатор, addons, адрес.
+        /// Доменное имя ограничено 255 байтами, всё остальное короче.
+        const MAX_HEADER: usize = 1024;
+
+        let mut raw = Vec::new();
+        let mut buf = vec![0_u8; CHUNK];
+
+        let (request, consumed) = loop {
+            match Request::decode(&raw) {
+                Ok((request, rest)) => {
+                    let consumed = raw.len() - rest.len();
+                    break (request, consumed);
+                }
+                Err(error) if raw.len() >= MAX_HEADER => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        error.to_string(),
+                    ))
+                }
+                Err(_) => {}
+            }
+
+            let read = stream.read(&mut buf)?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "поток закрыт до конца заголовка запроса",
+                ));
+            }
+            raw.extend_from_slice(buf.get(..read).unwrap_or_default());
+        };
+
+        let destination = request.destination.clone().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "команде требуется адрес назначения",
+            )
+        })?;
+
+        let flow = match request.addons.flow.as_deref() {
+            Some("xtls-rprx-vision") => Flow::Vision,
+            _ => Flow::Plain,
+        };
+        let (padder, unpadder) = match flow {
+            Flow::Plain => (None, None),
+            Flow::Vision => (
+                Some(Padder::new(request.uuid)),
+                Some(Unpadder::new(request.uuid)),
+            ),
+        };
+
+        let mut session =
+            Self {
+                stream,
+                flow,
+                prefix: Some(Response::empty().encode().map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidInput, error.to_string())
+                })?),
+                padder,
+                unpadder,
+                sniffer: Sniffer::default(),
+                pending: Vec::new(),
+                consumed: 0,
+                raw: raw.get(consumed..).unwrap_or_default().to_vec(),
+            };
+        session.absorb()?;
+
+        Ok(Accepted {
+            session,
+            uuid: request.uuid,
+            destination,
+        })
+    }
+
+    /// Режим потока, объявленный клиентом.
+    #[must_use]
+    pub const fn flow(&self) -> Flow {
+        self.flow
+    }
+
+    /// Разобрать сессию обратно на части.
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+
+    /// Разъять сессию для перекачки в двух потоках.
+    ///
+    /// Обрамление в разных направлениях независимо: снимающая и
+    /// накладывающая стороны не делят состояния. Возвращаются
+    /// нижележащий поток, обе половины обрамления, уже расшифрованный
+    /// остаток и ещё не отправленный заголовок ответа.
+    #[must_use]
+    pub fn into_parts(self) -> ServerParts<S> {
+        ServerParts {
+            stream: self.stream,
+            padder: self.padder,
+            unpadder: self.unpadder,
+            buffered: self
+                .pending
+                .get(self.consumed..)
+                .unwrap_or_default()
+                .to_vec(),
+            response: self.prefix,
+        }
+    }
+
+    fn absorb(&mut self) -> io::Result<()> {
+        let raw = core::mem::take(&mut self.raw);
+        if raw.is_empty() {
+            return Ok(());
+        }
+        match self.unpadder.as_mut() {
+            None => self.pending.extend_from_slice(&raw),
+            Some(unpadder) => {
+                unpadder.push(&raw);
+                let content = unpadder.drain().map_err(|error| {
+                    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                self.pending.extend_from_slice(&content);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<S: Read + Write> Read for ServerSession<S> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let mut buf = vec![0_u8; CHUNK];
+        loop {
+            if let Some(rest) = self.pending.get(self.consumed..) {
+                if !rest.is_empty() {
+                    let take = rest.len().min(out.len());
+                    if let (Some(dst), Some(src)) = (out.get_mut(..take), rest.get(..take)) {
+                        dst.copy_from_slice(src);
+                    }
+                    self.consumed += take;
+                    return Ok(take);
+                }
+            }
+            self.pending.clear();
+            self.consumed = 0;
+
+            let read = self.stream.read(&mut buf)?;
+            if read == 0 {
+                return Ok(0);
+            }
+            self.raw
+                .extend_from_slice(buf.get(..read).unwrap_or_default());
+            self.absorb()?;
+        }
+    }
+}
+
+impl<S: Read + Write> Write for ServerSession<S> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if data.is_empty() {
+            return Ok(0);
+        }
+        self.sniffer.observe(data);
+
+        let mut out = self.prefix.take().unwrap_or_default();
+        match self.padder.as_mut() {
+            None => out.extend_from_slice(data),
+            Some(padder) if padder.is_finished() => out.extend_from_slice(data),
+            Some(padder) => {
+                let long = self.sniffer.inside_handshake();
+                let over = self.sniffer.handshake_is_over();
+
+                let mut chunks = data.chunks(MAX_CONTENT).peekable();
+                while let Some(chunk) = chunks.next() {
+                    let command = if over && chunks.peek().is_none() {
+                        vision::Command::Direct
+                    } else {
+                        vision::Command::Continue
+                    };
+                    let block = padder.wrap(chunk, command, long).map_err(|error| {
+                        io::Error::new(io::ErrorKind::InvalidInput, error.to_string())
+                    })?;
+                    out.extend_from_slice(&block);
+                }
+            }
+        }
+
+        self.stream.write_all(&out)?;
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Some(prefix) = self.prefix.take() {
+            self.stream.write_all(&prefix)?;
+        }
+        self.stream.flush()
+    }
+}
