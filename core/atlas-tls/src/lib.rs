@@ -31,6 +31,7 @@ mod error;
 pub mod ext;
 pub mod fingerprint;
 pub mod grease;
+pub mod handshake;
 mod hello;
 pub mod keyschedule;
 pub mod profile;
