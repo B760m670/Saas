@@ -36,6 +36,9 @@ pub const SESSION_TICKET: u16 = 0x0023;
 pub const SUPPORTED_VERSIONS: u16 = 0x002b;
 /// `psk_key_exchange_modes`.
 pub const PSK_KEY_EXCHANGE_MODES: u16 = 0x002d;
+/// `cookie` — сервер прикладывает его к `HelloRetryRequest`, клиент
+/// обязан вернуть значение без изменений во втором приветствии.
+pub const COOKIE: u16 = 0x002c;
 /// `key_share`.
 pub const KEY_SHARE: u16 = 0x0033;
 /// `application_settings` (ALPS), первая кодовая точка Chrome.

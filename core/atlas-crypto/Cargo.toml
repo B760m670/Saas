@@ -10,22 +10,18 @@ repository.workspace = true
 [dependencies]
 # Классические примитивы.
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["alloc", "rand_core", "zeroize"] }
-x25519-dalek = { version = "3.0.0", default-features = false, features = [
-    "precomputed-tables",
-    "static_secrets",
-    "zeroize",
-] }
+x25519-dalek.workspace = true
 
 # Постквантовые примитивы (FIPS 203 / 204).
 ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "rand_core"] }
-ml-kem = { version = "0.3.2", default-features = false, features = ["alloc"] }
+ml-kem.workspace = true
 
 blake3 = { version = "1", default-features = false }
 base64.workspace = true
 getrandom = "0.4"
 rand_core = "0.10"
 signature = { version = "3.0.0", default-features = false }
-subtle = { version = "2", default-features = false }
+subtle.workspace = true
 zeroize = { version = "1", default-features = false, features = ["derive"] }
 
 [lints]

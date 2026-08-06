@@ -125,6 +125,19 @@ pub struct Chrome {
     /// стоят первым и последним, а середина идёт в произвольном порядке.
     /// Выключается только в тестах, где нужен воспроизводимый порядок.
     pub shuffle: bool,
+    /// Слать ли `encrypted_client_hello` со случайным содержимым.
+    ///
+    /// Chrome шлёт его всегда, поэтому по умолчанию шлём и мы, и любое
+    /// другое значение — отступление от отпечатка браузера.
+    ///
+    /// Отключается ровно для одного случая: промежуточный узел на пути
+    /// рвёт соединение при виде этого расширения. Такое встречается —
+    /// в среде, где ведётся разработка, шлюз сбрасывает **любое**
+    /// приветствие с `0xfe0d`, независимо от адресата (см.
+    /// `docs/09-lab.md`). Выбор между «отличаться от Chrome» и «вообще
+    /// не соединиться» делает вызывающий, а в будущем — бандит выбора
+    /// стратегии по результатам попыток.
+    pub ech: bool,
 }
 
 impl Chrome {
@@ -134,6 +147,7 @@ impl Chrome {
         Self {
             generation: Generation::V141,
             shuffle: true,
+            ech: true,
         }
     }
 
@@ -143,7 +157,17 @@ impl Chrome {
         Self {
             generation: Generation::Legacy,
             shuffle: true,
+            ech: true,
         }
+    }
+
+    /// Тот же профиль, но без `encrypted_client_hello`.
+    ///
+    /// Отпечаток при этом меняется — см. поле [`Chrome::ech`].
+    #[must_use]
+    pub const fn without_ech(mut self) -> Self {
+        self.ech = false;
+        self
     }
 
     /// Собрать `ClientHello`.
@@ -153,17 +177,22 @@ impl Chrome {
     /// [`crate::Error::TooLong`], если какое-либо поле не помещается в свою
     /// длину — на практике недостижимо для разумных входных данных.
     pub fn client_hello(&self, params: &HelloParams) -> Result<ClientHello> {
+        // Одно значение GREASE на два списка. Chrome ставит его первым и в
+        // `supported_groups`, и в `key_share`; если бы значения разошлись
+        // или запись в `key_share` отсутствовала, наблюдателю хватило бы
+        // сверки двух расширений между собой, чтобы отличить нас от
+        // браузера. Проверено по живому захвату: группа `0x9a9a` стоит в
+        // обоих списках, доля — один нулевой байт.
+        let groups_grease = grease::pick();
         let groups = if self.generation.post_quantum() {
-            vec![
-                grease::pick(),
-                X25519_MLKEM768,
-                X25519,
-                SECP256R1,
-                SECP384R1,
-            ]
+            vec![groups_grease, X25519_MLKEM768, X25519, SECP256R1, SECP384R1]
         } else {
-            vec![grease::pick(), X25519, SECP256R1, SECP384R1]
+            vec![groups_grease, X25519, SECP256R1, SECP384R1]
         };
+
+        let mut key_shares = Vec::with_capacity(params.key_shares.len() + 1);
+        key_shares.push((groups_grease, vec![0x00]));
+        key_shares.extend(params.key_shares.iter().cloned());
 
         let alpn: Vec<&str> = params.alpn.iter().map(String::as_str).collect();
 
@@ -179,7 +208,7 @@ impl Chrome {
             ext::status_request(),
             ext::signature_algorithms(&CHROME_SIGNATURE_ALGORITHMS),
             Extension::empty(ext::SIGNED_CERTIFICATE_TIMESTAMP),
-            ext::key_share(&params.key_shares),
+            ext::key_share(&key_shares),
             ext::psk_key_exchange_modes(&[1]),
             ext::supported_versions(&[grease::pick(), 0x0304, 0x0303]),
             // 2 — brotli, единственный алгоритм, который шлёт Chrome.
@@ -193,7 +222,9 @@ impl Chrome {
                 // Браузер шлёт ECH всегда: при отсутствии конфигурации у
                 // сервера — со случайным содержимым. Не слать его теперь
                 // значит отличаться от Chrome.
-                middle.push(ext::ech_grease());
+                if self.ech {
+                    middle.push(ext::ech_grease());
+                }
             }
             Generation::Legacy => middle.push(ext::application_settings(&["h2"])),
         }
@@ -226,6 +257,48 @@ impl Chrome {
 
         Ok(hello)
     }
+}
+
+/// Пересобрать приветствие для второго круга после `HelloRetryRequest`.
+///
+/// RFC 8446, раздел 4.1.2 разрешает изменить ровно три вещи: долю
+/// `key_share`, добавить `cookie` и убрать `early_data`. Всё остальное —
+/// случайное поле, `session_id`, порядок расширений — обязано остаться
+/// прежним, иначе сервер обязан оборвать соединение. Отсюда правка на
+/// месте вместо повторной сборки: пересборка перемешала бы расширения
+/// заново и выдала бы нас даже там, где сервер не проверяет.
+///
+/// # Errors
+///
+/// [`crate::Error::TooLong`] при переполнении поля длины.
+pub(crate) fn rebuild_for_retry(
+    hello: &mut ClientHello,
+    key_share: &Extension,
+    cookie: Option<&Extension>,
+) -> Result<()> {
+    hello.extensions.retain(|e| e.ext_type != ext::PADDING);
+
+    for extension in &mut hello.extensions {
+        if extension.ext_type == ext::KEY_SHARE {
+            extension.body.clone_from(&key_share.body);
+        }
+    }
+
+    if let Some(cookie) = cookie {
+        if !hello.extensions.iter().any(|e| e.ext_type == ext::COOKIE) {
+            // Не первым и не последним: края заняты значениями GREASE,
+            // и сдвинуть их значило бы изменить отпечаток.
+            let span = hello.extensions.len().saturating_sub(1).max(1);
+            let draw = u64::from_le_bytes(OsRng::bytes::<8>()) % span as u64;
+            let at = usize::try_from(draw).unwrap_or(1).max(1);
+            hello.extensions.insert(at, cookie.clone());
+        }
+    }
+
+    if let Some(len) = padding_len(hello)? {
+        hello.extensions.push(ext::padding(len));
+    }
+    Ok(())
 }
 
 /// Сколько байт добить, чтобы сообщение достигло целевой длины.
@@ -326,6 +399,69 @@ mod tests {
     }
 
     #[test]
+    fn grease_group_appears_in_both_lists_with_the_same_value() {
+        let hello = Chrome::v141().client_hello(&params()).unwrap();
+
+        let groups = hello
+            .extensions
+            .iter()
+            .find(|e| e.ext_type == ext::SUPPORTED_GROUPS)
+            .unwrap();
+        let first_group = crate::bytes::Reader::new(&groups.body)
+            .list_u16()
+            .unwrap()
+            .first()
+            .copied()
+            .unwrap();
+
+        let key_share = hello
+            .extensions
+            .iter()
+            .find(|e| e.ext_type == ext::KEY_SHARE)
+            .unwrap();
+        let mut outer = crate::bytes::Reader::new(&key_share.body);
+        let mut list = crate::bytes::Reader::new(outer.vec_u16().unwrap());
+        let first_share_group = list.u16().unwrap();
+        let first_share = list.vec_u16().unwrap();
+
+        assert!(grease::is_grease(first_group));
+        assert_eq!(
+            first_share_group, first_group,
+            "GREASE в key_share обязан совпадать с GREASE в supported_groups"
+        );
+        assert_eq!(first_share, [0x00], "доля GREASE — один нулевой байт");
+
+        // Настоящая доля идёт следом и не потеряна.
+        assert_eq!(list.u16().unwrap(), X25519);
+        assert_eq!(list.vec_u16().unwrap().len(), 32);
+    }
+
+    #[test]
+    fn disabling_ech_removes_exactly_one_extension_and_shifts_the_fingerprint() {
+        let with = Chrome::v141().client_hello(&params()).unwrap();
+        let without = Chrome::v141()
+            .without_ech()
+            .client_hello(&params())
+            .unwrap();
+
+        assert!(with
+            .extensions
+            .iter()
+            .any(|e| e.ext_type == ext::ENCRYPTED_CLIENT_HELLO));
+        assert!(!without
+            .extensions
+            .iter()
+            .any(|e| e.ext_type == ext::ENCRYPTED_CLIENT_HELLO));
+
+        // Отпечаток обязан измениться: иначе отключение было бы бесплатным,
+        // а оно не бесплатно, и это должно быть видно.
+        assert_ne!(
+            ja4(&with, Transport::Tcp).to_string_full(),
+            ja4(&without, Transport::Tcp).to_string_full()
+        );
+    }
+
+    #[test]
     fn message_is_padded_to_target_length() {
         let hello = Chrome::classic().client_hello(&params()).unwrap();
         assert_eq!(hello.to_handshake().unwrap().len(), PADDING_TARGET);
@@ -334,14 +470,14 @@ mod tests {
     #[test]
     fn generations_differ_in_extensions_but_not_ciphers() {
         let modern = Chrome {
-            generation: Generation::V141,
             shuffle: false,
+            ..Chrome::v141()
         }
         .client_hello(&params())
         .unwrap();
         let legacy = Chrome {
-            generation: Generation::Legacy,
             shuffle: false,
+            ..Chrome::classic()
         }
         .client_hello(&params())
         .unwrap();

@@ -43,6 +43,8 @@ pub enum HandshakeType {
     CertificateRequest,
     /// Цепочка сертификатов.
     Certificate,
+    /// Сжатая цепочка сертификатов (RFC 8879).
+    CompressedCertificate,
     /// Подпись над транскриптом.
     CertificateVerify,
     /// Завершение рукопожатия.
@@ -63,6 +65,7 @@ impl HandshakeType {
             Self::NewSessionTicket => 4,
             Self::EncryptedExtensions => 8,
             Self::Certificate => 11,
+            Self::CompressedCertificate => 25,
             Self::CertificateRequest => 13,
             Self::CertificateVerify => 15,
             Self::Finished => 20,
@@ -80,6 +83,7 @@ impl HandshakeType {
             4 => Self::NewSessionTicket,
             8 => Self::EncryptedExtensions,
             11 => Self::Certificate,
+            25 => Self::CompressedCertificate,
             13 => Self::CertificateRequest,
             15 => Self::CertificateVerify,
             20 => Self::Finished,
@@ -185,6 +189,37 @@ impl Transcript {
     /// Дописать сообщение целиком, вместе с заголовком.
     pub fn extend(&mut self, message_bytes: &[u8]) {
         self.data.extend_from_slice(message_bytes);
+    }
+
+    /// Привязать транскрипт к хэш-функции.
+    ///
+    /// Отдельный метод нужен потому, что хэш определяется шифронабором,
+    /// а шифронабор становится известен только из `ServerHello` — то есть
+    /// уже после того, как в транскрипт лёг `ClientHello`. Байты хранятся
+    /// целиком, поэтому смена хэша ничего не портит.
+    pub const fn set_hash(&mut self, hash: Hash) {
+        self.hash = hash;
+    }
+
+    /// Заменить накопленное синтетическим сообщением `message_hash`.
+    ///
+    /// Требование RFC 8446, раздел 4.4.1: после `HelloRetryRequest`
+    /// транскрипт начинается не с первого `ClientHello`, а с его хэша,
+    /// обёрнутого в сообщение типа 254. Без этой замены `Finished` не
+    /// сойдётся, причём только на тех серверах, которые запрашивают
+    /// повторное приветствие, — то есть отладка была бы мучительной.
+    pub fn replace_with_message_hash(&mut self) {
+        const MESSAGE_HASH: u8 = 254;
+
+        let digest = self.hash();
+        let mut synthetic = Vec::with_capacity(4 + digest.len());
+        synthetic.push(MESSAGE_HASH);
+        synthetic.push(0);
+        synthetic.push(0);
+        // Длина хэша заведомо помещается в байт: 32 или 48.
+        synthetic.push(u8::try_from(digest.len()).unwrap_or(0));
+        synthetic.extend_from_slice(&digest);
+        self.data = synthetic;
     }
 
     /// Хэш накопленного транскрипта.
@@ -350,6 +385,44 @@ impl Certificate {
     #[must_use]
     pub fn end_entity(&self) -> Option<&[u8]> {
         self.entries.first().map(|e| e.data.as_slice())
+    }
+}
+
+/// Сжатое сообщение `Certificate` (RFC 8879).
+///
+/// Расширение `compress_certificate` объявляет Chrome, и половина
+/// интернета — весь Cloudflare — им пользуется. Отказаться от него
+/// нельзя: расширение входит в отпечаток, и его отсутствие само по себе
+/// признак. Значит, разжимать надо уметь.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompressedCertificate {
+    /// Алгоритм: 1 — zlib, 2 — brotli, 3 — zstd.
+    pub algorithm: u16,
+    /// Длина исходного сообщения до сжатия.
+    pub uncompressed_length: u32,
+    /// Сжатое тело.
+    pub compressed: Vec<u8>,
+}
+
+impl CompressedCertificate {
+    /// Разобрать тело сообщения.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Truncated`] при обрыве.
+    pub fn parse(body: &[u8]) -> Result<Self> {
+        let mut r = Reader::new(body);
+        let algorithm = r.u16()?;
+        let uncompressed_length = r.u24()?;
+        let compressed = {
+            let len = r.u24()? as usize;
+            r.take(len)?.to_vec()
+        };
+        Ok(Self {
+            algorithm,
+            uncompressed_length,
+            compressed,
+        })
     }
 }
 
