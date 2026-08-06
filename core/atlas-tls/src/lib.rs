@@ -34,6 +34,7 @@ pub mod grease;
 mod hello;
 pub mod keyschedule;
 pub mod profile;
+pub mod record;
 
 pub use error::{Error, Result};
 pub use fingerprint::{Ja3, Ja4, Transport};
