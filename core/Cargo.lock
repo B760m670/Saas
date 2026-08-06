@@ -109,6 +109,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-ffi"
+version = "0.1.0"
+dependencies = [
+ "atlas-dial",
+ "atlas-exit",
+ "atlas-reality",
+ "atlas-types",
+ "base64",
+ "serde_json",
+]
+
+[[package]]
 name = "atlas-reality"
 version = "0.1.0"
 dependencies = [

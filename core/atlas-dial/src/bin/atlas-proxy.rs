@@ -5,29 +5,15 @@
 //! curl -x http://127.0.0.1:1080 https://example.org/
 //! ```
 //!
-//! Слушает HTTP-прокси с методом `CONNECT`. Выбор не случайный: именно
-//! этот способ понимает iOS через `.mobileconfig` с PAC — то есть
-//! единственный, каким сборка `lite` под LiveContainer сможет забрать
-//! системный трафик, не имея права на `NEPacketTunnelProvider`
-//! (см. `docs/05-clients.md`). Заодно его понимают `curl`, браузеры и
-//! почти всё остальное.
-//!
-//! Каждое соединение поднимает **свой** туннель. Так дороже по
-//! рукопожатиям, но зато у наблюдателя нет одного долгоживущего потока,
-//! в который сходится вся активность пользователя.
+//! Вся работа живёт в [`atlas_dial::proxy`]: тот же прокси нужен
+//! клиентам через `atlas-ffi`, и двух копий одной перекачки в проекте
+//! быть не должно. Здесь — только разбор доводов и вывод на экран.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::print_stdout,
-    clippy::print_stderr
-)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::io::{self, BufRead as _, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::time::Duration;
 
-use atlas_dial::{dial_with, DialOptions, Target};
+use atlas_dial::{DialOptions, Proxy};
 use atlas_types::ProxyKey;
 
 fn main() {
@@ -40,7 +26,7 @@ fn main() {
     };
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("atlas-proxy --key 'vless://…' [--listen 127.0.0.1:1080] [--no-ech]");
+        println!("atlas-proxy --key 'vless://…' [--listen 127.0.0.1:1080] [--no-ech] [--stats]");
         return;
     }
 
@@ -49,7 +35,7 @@ fn main() {
         std::process::exit(1);
     };
     let key = match ProxyKey::parse(&uri) {
-        Ok(key) => Arc::new(key),
+        Ok(key) => key,
         Err(error) => {
             eprintln!("ключ не разбирается: {error}");
             std::process::exit(1);
@@ -57,148 +43,45 @@ fn main() {
     };
 
     let listen = value("--listen").unwrap_or_else(|| "127.0.0.1:1080".to_owned());
-    let options = Arc::new(DialOptions {
+    let options = DialOptions {
         ech: !args.iter().any(|a| a == "--no-ech"),
         ..DialOptions::default()
-    });
+    };
 
-    let listener = TcpListener::bind(&listen).unwrap_or_else(|error| {
-        eprintln!("не удалось занять {listen}: {error}");
-        std::process::exit(1);
-    });
-    let bound = listener.local_addr().map_or(listen, |a| a.to_string());
+    let host = key.host.clone();
+    let port = key.port;
+    let sni = key.security.sni.clone();
 
-    println!("прокси           {bound}");
-    println!("точка выхода     {}:{}", key.host, key.port);
-    println!(
-        "сайт прикрытия   {}",
-        key.security.sni.as_deref().unwrap_or("—")
-    );
-    println!();
-    println!("Проверить:  curl -x http://{bound} https://example.org/");
-
-    for incoming in listener.incoming() {
-        let Ok(socket) = incoming else { continue };
-        let key = Arc::clone(&key);
-        let options = Arc::clone(&options);
-        let _ = std::thread::Builder::new()
-            .name("atlas-proxy".to_owned())
-            .spawn(move || {
-                if let Err(error) = serve(socket, &key, &options) {
-                    eprintln!("соединение: {error}");
-                }
-            });
-    }
-}
-
-/// Обслужить одно соединение прокси.
-fn serve(mut socket: TcpStream, key: &ProxyKey, options: &DialOptions) -> io::Result<()> {
-    socket.set_nodelay(true)?;
-    let (host, port) = read_connect(&mut socket)?;
-
-    let tunnel = match dial_with(key, &Target::domain(host.clone(), port), options) {
-        Ok(tunnel) => tunnel,
+    let proxy = match Proxy::start(key, &listen, options) {
+        Ok(proxy) => proxy,
         Err(error) => {
-            // Причину видит только локальный клиент; наружу она не идёт.
-            let _ = socket.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
-            return Err(io::Error::other(error.to_string()));
+            eprintln!("не удалось занять {listen}: {error}");
+            std::process::exit(1);
         }
     };
 
-    socket.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
-    socket.flush()?;
-    splice(socket, tunnel)
-}
+    println!("прокси           {}", proxy.address());
+    println!("точка выхода     {host}:{port}");
+    println!("сайт прикрытия   {}", sni.as_deref().unwrap_or("—"));
+    println!();
+    println!(
+        "Проверить:  curl -x http://{} https://example.org/",
+        proxy.address()
+    );
 
-/// Прочитать запрос `CONNECT host:port` и заголовки до пустой строки.
-fn read_connect(socket: &mut TcpStream) -> io::Result<(String, u16)> {
-    let mut reader = BufReader::new(socket.try_clone()?);
-    let mut request = String::new();
-    reader.read_line(&mut request)?;
-
-    let mut parts = request.split_whitespace();
-    let method = parts.next().unwrap_or_default();
-    let target = parts.next().unwrap_or_default().to_owned();
-
-    if !method.eq_ignore_ascii_case("CONNECT") {
-        let _ = socket.write_all(
-            "HTTP/1.1 405 Method Not Allowed\r\n\r\nПоддерживается только CONNECT.\n".as_bytes(),
-        );
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("метод {method} не поддерживается"),
-        ));
-    }
-
-    // Остаток заголовков дочитывается и отбрасывается: в туннель они не
-    // идут, там уже начинается TLS клиента.
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
-            break;
-        }
-    }
-
-    let (host, port) = target
-        .rsplit_once(':')
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "нет порта в цели CONNECT"))?;
-    let port: u16 = port
-        .parse()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "порт не число"))?;
-    Ok((host.to_owned(), port))
-}
-
-/// Гонять байты между локальным клиентом и туннелем.
-///
-/// Оба направления независимы и живут каждое в своём потоке. Ни
-/// очереди, ни общего состояния: очередь здесь однажды уже стоила
-/// работоспособности — насос разбирал её только между блокирующими
-/// чтениями туннеля, и клиент, заговоривший первым после паузы, ждал
-/// ответа до предела чтения, а потом получал обрыв. Через `curl` это
-/// выживало случайно, потому что пачка сервера приходит несколькими
-/// сегментами. Разбор — в `docs/09-lab.md`, раздел 11.
-fn splice(socket: TcpStream, tunnel: atlas_dial::Tunnel) -> io::Result<()> {
-    let (mut tunnel_read, mut tunnel_write) =
-        atlas_dial::split(tunnel).map_err(|error| io::Error::other(error.to_string()))?;
-    let mut local_read = socket.try_clone()?;
-    let mut local_write = socket;
-
-    let down = std::thread::spawn(move || {
-        // Из туннеля — локальному клиенту.
-        let mut buf = vec![0_u8; 16 * 1024];
+    if args.iter().any(|a| a == "--stats") {
         loop {
-            match tunnel_read.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => {
-                    if local_write
-                        .write_all(buf.get(..read).unwrap_or_default())
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }
-        }
-        let _ = local_write.shutdown(std::net::Shutdown::Write);
-    });
-
-    // От локального клиента — в туннель.
-    let mut buf = vec![0_u8; 16 * 1024];
-    loop {
-        match local_read.read(&mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => {
-                if tunnel_write
-                    .write_all(buf.get(..read).unwrap_or_default())
-                    .is_err()
-                    || tunnel_write.flush().is_err()
-                {
-                    break;
-                }
-            }
+            std::thread::sleep(Duration::from_secs(5));
+            let stats = proxy.stats();
+            println!(
+                "соединений {} (сейчас {}), отказов {}, вверх {} Б, вниз {} Б",
+                stats.accepted, stats.active, stats.failed, stats.to_target, stats.from_target
+            );
         }
     }
-    let _ = local_read.shutdown(std::net::Shutdown::Read);
-    let _ = down.join();
-    Ok(())
+
+    // Прокси живёт в своих потоках; главному остаётся только не выходить.
+    loop {
+        std::thread::sleep(Duration::from_secs(3600));
+    }
 }

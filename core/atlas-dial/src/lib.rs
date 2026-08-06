@@ -49,8 +49,10 @@
 #![warn(missing_docs, clippy::pedantic)]
 
 mod error;
+pub mod proxy;
 
 pub use error::{Error, Result};
+pub use proxy::{Proxy, Stats};
 
 use std::net::TcpStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
