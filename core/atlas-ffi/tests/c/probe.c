@@ -123,13 +123,51 @@ int main(int argc, char **argv) {
     options.connect_timeout_ms = 5000;
     options.read_timeout_ms = 10000;
 
-    AtlasProxy *proxy = atlas_proxy_start(key, "127.0.0.1:0", &options);
+    /* Испорченные правила обязаны быть отвергнуты с объяснением. */
+    if (atlas_proxy_start(key, "127.0.0.1:0", &options, "{\"direct\": 5}") != NULL) {
+        fprintf(stderr, "испорченные правила приняты\n");
+        return 1;
+    }
+    atlas_string_free(atlas_last_error());
+
+    AtlasProxy *proxy = atlas_proxy_start(key, "127.0.0.1:0", &options,
+                                          "{\"direct\":[\"gosuslugi.ru\"]}");
     if (proxy == NULL) return fail("запуск прокси");
 
     char *address = atlas_proxy_address(proxy);
     if (address == NULL) return fail("адрес прокси");
     printf("adres=%s\n", address);
     atlas_string_free(address);
+
+    char *pac = atlas_proxy_pac(proxy);
+    if (pac == NULL) return fail("скрипт правил");
+    if (strstr(pac, "gosuslugi.ru") == NULL) {
+        fprintf(stderr, "правила не дошли до скрипта\n");
+        return 1;
+    }
+    printf("pac_dlina=%zu\n", strlen(pac));
+    atlas_string_free(pac);
+
+    char *where2 = atlas_proxy_address(proxy);
+    if (where2 == NULL) return fail("адрес для профиля");
+    char *profile = atlas_mobileconfig("Дом", where2, 1, NULL);
+    if (profile == NULL) return fail("профиль");
+    if (strstr(profile, "com.apple.wifi.managed") == NULL ||
+        strstr(profile, "/proxy.pac") == NULL) {
+        fprintf(stderr, "профиль неполный\n");
+        return 1;
+    }
+    printf("profil_dlina=%zu\n", strlen(profile));
+    atlas_string_free(profile);
+
+    /* Защищённая сеть без пароля обязана быть отвергнута. */
+    char *broken = atlas_mobileconfig("", where2, 1, NULL);
+    if (broken != NULL) {
+        fprintf(stderr, "пустое имя сети принято\n");
+        return 1;
+    }
+    atlas_string_free(atlas_last_error());
+    atlas_string_free(where2);
 
     char *stats = atlas_proxy_stats(proxy);
     if (stats == NULL) return fail("счётчики");

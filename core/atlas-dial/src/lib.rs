@@ -49,6 +49,8 @@
 #![warn(missing_docs, clippy::pedantic)]
 
 mod error;
+pub mod mobileconfig;
+pub mod pac;
 pub mod proxy;
 
 pub use error::{Error, Result};

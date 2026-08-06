@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use atlas_types::ProxyKey;
 
+use crate::pac;
 use crate::{dial_with, DialOptions, Target};
 
 /// Сколько ждать между проверками, не пора ли останавливаться.
@@ -68,6 +69,7 @@ pub struct Proxy {
     address: SocketAddr,
     counters: Arc<Counters>,
     running: Arc<AtomicBool>,
+    script: Arc<String>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -82,9 +84,35 @@ impl Proxy {
     ///
     /// Ошибки занятия адреса.
     pub fn start(key: ProxyKey, listen: &str, options: DialOptions) -> io::Result<Self> {
+        Self::start_with_rules(key, listen, options, None)
+    }
+
+    /// То же, но с заданными правилами маршрутизации.
+    ///
+    /// Правила отдаются по [`pac::URL_PATH`] тем же слушающим сокетом:
+    /// профиль конфигурации iOS указывает на этот адрес, и правила
+    /// меняются без переустановки профиля.
+    ///
+    /// `None` означает умолчание — всё через туннель, кроме локального.
+    /// Собрать его заранее нельзя: в правилах стоит занятый адрес, а он
+    /// известен только после привязки сокета.
+    ///
+    /// # Errors
+    ///
+    /// Ошибки занятия адреса и негодные правила.
+    pub fn start_with_rules(
+        key: ProxyKey,
+        listen: &str,
+        options: DialOptions,
+        rules: Option<pac::Rules>,
+    ) -> io::Result<Self> {
         let listener = TcpListener::bind(listen)?;
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
+
+        let rules = rules.unwrap_or_else(|| pac::Rules::new(address.to_string()));
+        let script =
+            Arc::new(pac::script(&rules).map_err(|error| io::Error::other(error.to_string()))?);
 
         let counters = Arc::new(Counters::default());
         let running = Arc::new(AtomicBool::new(true));
@@ -94,17 +122,27 @@ impl Proxy {
             let running = Arc::clone(&running);
             let key = Arc::new(key);
             let options = Arc::new(options);
+            let script = Arc::clone(&script);
             std::thread::Builder::new()
                 .name("atlas-proxy".to_owned())
-                .spawn(move || accept_loop(&listener, &key, &options, &counters, &running))?
+                .spawn(move || {
+                    accept_loop(&listener, &key, &options, &counters, &running, &script);
+                })?
         };
 
         Ok(Self {
             address,
             counters,
             running,
+            script,
             thread: Some(thread),
         })
+    }
+
+    /// Скрипт PAC, который отдаётся по [`pac::URL_PATH`].
+    #[must_use]
+    pub fn pac_script(&self) -> &str {
+        &self.script
     }
 
     /// Занятый адрес.
@@ -155,6 +193,7 @@ fn accept_loop(
     options: &Arc<DialOptions>,
     counters: &Arc<Counters>,
     running: &Arc<AtomicBool>,
+    script: &Arc<String>,
 ) {
     while running.load(Ordering::Relaxed) {
         match listener.accept() {
@@ -164,10 +203,11 @@ fn accept_loop(
                 let key = Arc::clone(key);
                 let options = Arc::clone(options);
                 let owned = Arc::clone(counters);
+                let script = Arc::clone(script);
                 let spawned = std::thread::Builder::new()
                     .name("atlas-proxy-conn".to_owned())
                     .spawn(move || {
-                        if serve(socket, &key, &options, &owned).is_err() {
+                        if serve(socket, &key, &options, &owned, &script).is_err() {
                             owned.failed.fetch_add(1, Ordering::Relaxed);
                         }
                         owned.active.fetch_sub(1, Ordering::Relaxed);
@@ -185,15 +225,44 @@ fn accept_loop(
     }
 }
 
+/// Что просит локальный клиент.
+#[derive(Debug)]
+enum Request {
+    /// Туннель до `хост:порт`.
+    Connect(String, u16),
+    /// Скрипт правил маршрутизации.
+    Pac,
+}
+
 /// Обслужить одно соединение прокси.
 fn serve(
     mut socket: TcpStream,
     key: &ProxyKey,
     options: &DialOptions,
     counters: &Counters,
+    script: &str,
 ) -> io::Result<()> {
     socket.set_nodelay(true)?;
-    let (host, port) = read_connect(&mut socket)?;
+
+    let (host, port) = match read_request(&mut socket)? {
+        Request::Pac => {
+            // Профиль конфигурации iOS указывает сюда же: правила
+            // меняются вместе с настройками, не требуя переустановки
+            // профиля.
+            let head = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: application/x-ns-proxy-autoconfig\r\n\
+                 Content-Length: {}\r\n\
+                 Cache-Control: no-store\r\n\
+                 Connection: close\r\n\r\n",
+                script.len()
+            );
+            socket.write_all(head.as_bytes())?;
+            socket.write_all(script.as_bytes())?;
+            return socket.flush();
+        }
+        Request::Connect(host, port) => (host, port),
+    };
 
     let tunnel = match dial_with(key, &Target::domain(host, port), options) {
         Ok(tunnel) => tunnel,
@@ -209,8 +278,8 @@ fn serve(
     splice(socket, tunnel, counters)
 }
 
-/// Прочитать запрос `CONNECT host:port` и заголовки до пустой строки.
-fn read_connect(socket: &mut TcpStream) -> io::Result<(String, u16)> {
+/// Прочитать первую строку запроса и заголовки до пустой строки.
+fn read_request(socket: &mut TcpStream) -> io::Result<Request> {
     let mut reader = BufReader::new(socket.try_clone()?);
     let mut request = String::new();
     reader.read_line(&mut request)?;
@@ -218,6 +287,28 @@ fn read_connect(socket: &mut TcpStream) -> io::Result<(String, u16)> {
     let mut parts = request.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let target = parts.next().unwrap_or_default().to_owned();
+
+    // Остаток заголовков дочитывается и отбрасывается: в туннель они не
+    // идут, там уже начинается TLS клиента.
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
+            break;
+        }
+    }
+
+    if method.eq_ignore_ascii_case("GET") {
+        // Путь может прийти и целым адресом: так делают некоторые
+        // клиенты, считая нас обычным прокси.
+        if target == pac::URL_PATH || target.ends_with(pac::URL_PATH) {
+            return Ok(Request::Pac);
+        }
+        let _ = socket.write_all("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n".as_bytes());
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("нет такого пути: {target}"),
+        ));
+    }
 
     if !method.eq_ignore_ascii_case("CONNECT") {
         let _ = socket.write_all(
@@ -229,22 +320,13 @@ fn read_connect(socket: &mut TcpStream) -> io::Result<(String, u16)> {
         ));
     }
 
-    // Остаток заголовков дочитывается и отбрасывается: в туннель они не
-    // идут, там уже начинается TLS клиента.
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 || line.trim().is_empty() {
-            break;
-        }
-    }
-
     let (host, port) = target
         .rsplit_once(':')
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "нет порта в цели CONNECT"))?;
     let port: u16 = port
         .parse()
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "порт не число"))?;
-    Ok((host.to_owned(), port))
+    Ok(Request::Connect(host.to_owned(), port))
 }
 
 /// Гонять байты между локальным клиентом и туннелем.

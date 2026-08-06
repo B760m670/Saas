@@ -31,7 +31,7 @@
 //! # Пример на C
 //!
 //! ```c
-//! AtlasProxy *proxy = atlas_proxy_start("vless://…", "127.0.0.1:0", NULL);
+//! AtlasProxy *proxy = atlas_proxy_start("vless://…", "127.0.0.1:0", NULL, NULL);
 //! if (!proxy) {
 //!     char *why = atlas_last_error();
 //!     fprintf(stderr, "не поднялся: %s\n", why);
@@ -40,6 +40,10 @@
 //! }
 //! char *where = atlas_proxy_address(proxy);
 //! printf("слушает %s\n", where);
+//!
+//! /* Профиль, который пользователь поставит в один тап. */
+//! char *profile = atlas_mobileconfig("Дом", where, 1, NULL);
+//! atlas_string_free(profile);
 //! atlas_string_free(where);
 //! atlas_proxy_stop(proxy);
 //! ```
@@ -53,7 +57,8 @@ use std::cell::RefCell;
 use std::ffi::{c_char, c_uint, CStr, CString};
 use std::time::Duration;
 
-use atlas_dial::{DialOptions, Proxy};
+use atlas_dial::mobileconfig::{Encryption, Profile};
+use atlas_dial::{pac, DialOptions, Proxy};
 use atlas_types::ProxyKey;
 
 /// Версия ядра, оканчивающаяся нулём.
@@ -215,17 +220,30 @@ pub unsafe extern "C" fn atlas_key_describe(uri: *const c_char) -> *mut c_char {
 /// [`atlas_proxy_address`]. `options` может быть нулём — тогда берутся
 /// умолчания.
 ///
+/// `rules` — правила маршрутизации в JSON, либо ноль для умолчания
+/// («всё через туннель, кроме локального»):
+///
+/// ```json
+/// {"direct": ["gosuslugi.ru"], "blocked": ["ads.example.com"]}
+/// ```
+///
+/// Списками, а не строкой со списком, — потому что имена приходят от
+/// пользователя и попадают в исполняемый скрипт; разбор JSON снимает
+/// вопрос о разделителях, а проверка имён происходит уже в ядре.
+///
 /// Возвращает ноль при отказе; причина — в [`atlas_last_error`].
 ///
 /// # Safety
 ///
 /// `uri` и `listen` — годные строки C; `options` — либо ноль, либо
-/// годный указатель на [`AtlasOptions`].
+/// годный указатель на [`AtlasOptions`]; `rules` — либо ноль, либо
+/// годная строка C.
 #[no_mangle]
 pub unsafe extern "C" fn atlas_proxy_start(
     uri: *const c_char,
     listen: *const c_char,
     options: *const AtlasOptions,
+    rules: *const c_char,
 ) -> *mut AtlasProxy {
     // Условие: договор функции.
     let Some(uri) = (unsafe { take(uri, "ключ доступа") }) else {
@@ -255,10 +273,137 @@ pub unsafe extern "C" fn atlas_proxy_start(
         }
     }
 
-    match Proxy::start(key, &listen, dial) {
+    let rules = if rules.is_null() {
+        None
+    } else {
+        // Условие: договор функции.
+        let Some(text) = (unsafe { take(rules, "правила маршрутизации") })
+        else {
+            return core::ptr::null_mut();
+        };
+        match parse_rules(&text) {
+            Ok(parsed) => Some(parsed),
+            Err(reason) => {
+                fail(&reason);
+                return core::ptr::null_mut();
+            }
+        }
+    };
+
+    match Proxy::start_with_rules(key, &listen, dial, rules) {
         Ok(proxy) => Box::into_raw(Box::new(AtlasProxy(proxy))),
         Err(error) => {
             fail(&format!("прокси не поднялся на {listen}: {error}"));
+            core::ptr::null_mut()
+        }
+    }
+}
+
+/// Разобрать правила маршрутизации из JSON.
+///
+/// Адрес прокси в правилах не задаётся: он всегда равен занятому
+/// адресу самого прокси, и позволить задать его отдельно значило бы
+/// разрешить профилю указывать в пустоту.
+fn parse_rules(text: &str) -> core::result::Result<pac::Rules, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(text).map_err(|error| format!("правила не разбираются: {error}"))?;
+
+    let list = |name: &str| -> core::result::Result<Vec<String>, String> {
+        match parsed.get(name) {
+            None | Some(serde_json::Value::Null) => Ok(Vec::new()),
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| format!("в списке «{name}» не строка"))
+                })
+                .collect(),
+            Some(_) => Err(format!("«{name}» обязан быть списком строк")),
+        }
+    };
+
+    // Адрес подставится при запуске; здесь он лишь заполнитель, который
+    // всё равно будет заменён занятым адресом.
+    Ok(pac::Rules::new("127.0.0.1:0")
+        .with_direct(list("direct")?)
+        .with_blocked(list("blocked")?))
+}
+
+/// Скрипт правил, который прокси отдаёт по `/proxy.pac`.
+///
+/// Нужен клиенту, чтобы показать пользователю, что именно пойдёт мимо
+/// туннеля: правила, которых не видно, — это правила, которым нельзя
+/// доверять.
+///
+/// # Safety
+///
+/// `proxy` получен от [`atlas_proxy_start`] и ещё не остановлен.
+#[no_mangle]
+pub unsafe extern "C" fn atlas_proxy_pac(proxy: *const AtlasProxy) -> *mut c_char {
+    if proxy.is_null() {
+        fail("прокси: передан нулевой указатель");
+        return core::ptr::null_mut();
+    }
+    // Условие: указатель выдан `atlas_proxy_start` и ещё жив.
+    give(unsafe { &*proxy }.0.pac_script())
+}
+
+/// Собрать профиль конфигурации iOS для сети Wi-Fi.
+///
+/// `ssid` — имя сети; `proxy_address` — занятый прокси адрес, обычно
+/// из [`atlas_proxy_address`]. Ненулевой `automatic` означает профиль
+/// с PAC-скриптом (правила берутся у прокси по сети), нулевой — один
+/// адрес прокси на всё.
+///
+/// `wifi_password` — пароль сети либо ноль для открытой. Для сети с
+/// защитой пароль **обязателен**: профиль описывает сеть целиком, и без
+/// пароля устройство может перестать к ней подключаться.
+///
+/// # Safety
+///
+/// `ssid` и `proxy_address` — годные строки C; `wifi_password` — либо
+/// ноль, либо годная строка C.
+#[no_mangle]
+pub unsafe extern "C" fn atlas_mobileconfig(
+    ssid: *const c_char,
+    proxy_address: *const c_char,
+    automatic: c_uint,
+    wifi_password: *const c_char,
+) -> *mut c_char {
+    // Условие: договор функции.
+    let Some(ssid) = (unsafe { take(ssid, "имя сети Wi-Fi") }) else {
+        return core::ptr::null_mut();
+    };
+    let Some(address) = (unsafe { take(proxy_address, "адрес прокси") }) else {
+        return core::ptr::null_mut();
+    };
+
+    let built = if automatic == 0 {
+        Profile::manual(ssid, &address)
+    } else {
+        Profile::automatic(ssid, &address)
+    };
+    let mut profile = match built {
+        Ok(profile) => profile,
+        Err(error) => {
+            fail(&format!("профиль не собрался: {error}"));
+            return core::ptr::null_mut();
+        }
+    };
+
+    if !wifi_password.is_null() {
+        // Условие: договор функции.
+        let Some(password) = (unsafe { take(wifi_password, "пароль сети") }) else {
+            return core::ptr::null_mut();
+        };
+        profile = profile.with_password(Encryption::Wpa, password);
+    }
+
+    match profile.build() {
+        Ok(xml) => give(&xml),
+        Err(error) => {
+            fail(&format!("профиль не собрался: {error}"));
             core::ptr::null_mut()
         }
     }

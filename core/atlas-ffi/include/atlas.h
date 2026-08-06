@@ -102,16 +102,64 @@ char *atlas_key_describe(const char *uri);
  * [`atlas_proxy_address`]. `options` может быть нулём — тогда берутся
  * умолчания.
  *
+ * `rules` — правила маршрутизации в JSON, либо ноль для умолчания
+ * («всё через туннель, кроме локального»):
+ *
+ * ```json
+ * {"direct": ["gosuslugi.ru"], "blocked": ["ads.example.com"]}
+ * ```
+ *
+ * Списками, а не строкой со списком, — потому что имена приходят от
+ * пользователя и попадают в исполняемый скрипт; разбор JSON снимает
+ * вопрос о разделителях, а проверка имён происходит уже в ядре.
+ *
  * Возвращает ноль при отказе; причина — в [`atlas_last_error`].
  *
  * # Safety
  *
  * `uri` и `listen` — годные строки C; `options` — либо ноль, либо
- * годный указатель на [`AtlasOptions`].
+ * годный указатель на [`AtlasOptions`]; `rules` — либо ноль, либо
+ * годная строка C.
  */
 struct AtlasProxy *atlas_proxy_start(const char *uri,
                                      const char *listen,
-                                     const struct AtlasOptions *options);
+                                     const struct AtlasOptions *options,
+                                     const char *rules);
+
+/**
+ * Скрипт правил, который прокси отдаёт по `/proxy.pac`.
+ *
+ * Нужен клиенту, чтобы показать пользователю, что именно пойдёт мимо
+ * туннеля: правила, которых не видно, — это правила, которым нельзя
+ * доверять.
+ *
+ * # Safety
+ *
+ * `proxy` получен от [`atlas_proxy_start`] и ещё не остановлен.
+ */
+char *atlas_proxy_pac(const struct AtlasProxy *proxy);
+
+/**
+ * Собрать профиль конфигурации iOS для сети Wi-Fi.
+ *
+ * `ssid` — имя сети; `proxy_address` — занятый прокси адрес, обычно
+ * из [`atlas_proxy_address`]. Ненулевой `automatic` означает профиль
+ * с PAC-скриптом (правила берутся у прокси по сети), нулевой — один
+ * адрес прокси на всё.
+ *
+ * `wifi_password` — пароль сети либо ноль для открытой. Для сети с
+ * защитой пароль **обязателен**: профиль описывает сеть целиком, и без
+ * пароля устройство может перестать к ней подключаться.
+ *
+ * # Safety
+ *
+ * `ssid` и `proxy_address` — годные строки C; `wifi_password` — либо
+ * ноль, либо годная строка C.
+ */
+char *atlas_mobileconfig(const char *ssid,
+                         const char *proxy_address,
+                         unsigned int automatic,
+                         const char *wifi_password);
 
 /**
  * Занятый прокси адрес.

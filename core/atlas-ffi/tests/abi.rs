@@ -182,6 +182,8 @@ fn the_header_is_where_clients_look_for_it() {
     let text = std::fs::read_to_string(&header).unwrap();
     for name in [
         "atlas_version",
+        "atlas_proxy_pac",
+        "atlas_mobileconfig",
         "atlas_last_error",
         "atlas_string_free",
         "atlas_key_describe",
