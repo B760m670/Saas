@@ -953,15 +953,66 @@ fn the_second_hello_is_preceded_by_change_cipher_spec() {
 }
 
 #[test]
-fn a_plaintext_alert_after_the_keys_is_still_understood() {
-    // Сервер вправе прислать открытое предупреждение и после того, как
-    // ключи поставлены. Попытка расшифровать такую запись превратила бы
-    // внятный отказ в «проверка подлинности не прошла».
+fn a_plaintext_alert_after_the_keys_is_refused() {
+    // До установки ключей открытое предупреждение — единственный способ
+    // сервера объяснить отказ, и его надо понимать. После установки
+    // ключей всё зашифрованное помечено снаружи как `application_data`,
+    // поэтому открытая запись здесь означает вставку в поток. Принимать
+    // её значило бы дать любому, кто способен вклиниться в TCP, гасить
+    // соединение одним пакетом с убедительной причиной.
     let (mut client, _) = handshake(ServerOptions::new(), ClientConfig::new("example.org"));
     client
         .read_tls(&[21, 0x03, 0x03, 0x00, 0x02, 0x02, 80])
         .unwrap();
-    assert_eq!(client.process(), Err(Error::Alert(80)));
+    assert_eq!(
+        client.process(),
+        Err(Error::Protocol("открытая запись после установки ключей"))
+    );
+}
+
+#[test]
+fn an_error_is_terminal_and_keeps_its_diagnosis() {
+    // Любая ошибка разбора в TLS терминальна. Живой автомат после неё
+    // означал бы право противника на вторую попытку в том же соединении.
+    let (mut client, _) = handshake(ServerOptions::new(), ClientConfig::new("example.org"));
+    client
+        .read_tls(&[21, 0x03, 0x03, 0x00, 0x02, 0x02, 80])
+        .unwrap();
+    let first = client.process().unwrap_err();
+
+    assert!(!client.is_handshaking());
+    assert_eq!(client.failure(), Some(first));
+    assert_eq!(
+        client.process(),
+        Err(first),
+        "повторный вызов обязан вернуть ту же ошибку, а не новую"
+    );
+    assert_eq!(client.send(b"posle".as_slice()), Err(first));
+    assert_eq!(client.read_tls("ещё байты".as_bytes()), Err(first));
+}
+
+#[test]
+fn a_dead_connection_does_not_keep_parsing() {
+    // Конкретный сценарий: сервер прислал непонятный шифронабор. Раньше
+    // автомат оставался жив и на следующей записи выдавал уже другой
+    // диагноз, продолжая разбирать недоверенный ввод.
+    let mut client = Connection::new(ClientConfig::new("example.org")).unwrap();
+    let hello = ClientHello::parse(&client.take_output()[5..]).unwrap();
+
+    let extensions = vec![
+        raw_extension(ext::SUPPORTED_VERSIONS, &0x0304_u16.to_be_bytes()),
+        raw_extension(ext::KEY_SHARE, &[0x00, 0x1d, 0x00, 0x20]),
+    ];
+    let body = server_hello_body([0x5a; 32], &hello.session_id, 0xffff, &extensions);
+    let record = plaintext_record(&build_message(HandshakeType::ServerHello, &body).unwrap());
+
+    client.read_tls(&record).unwrap();
+    let first = client.process().unwrap_err();
+    assert!(matches!(first, Error::Unsupported(_)), "{first:?}");
+
+    // Тот же ввод ещё раз: ответ обязан не измениться.
+    assert_eq!(client.read_tls(&record), Err(first));
+    assert_eq!(client.process(), Err(first));
 }
 
 #[test]

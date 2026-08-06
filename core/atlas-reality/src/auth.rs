@@ -175,6 +175,26 @@ fn validate(handshake: &[u8]) -> Result<()> {
     }
 }
 
+/// Прочитать поле `session_id` — саму запечатанную метку.
+///
+/// Это то, что видно на проводе открытым текстом, и одновременно —
+/// естественный уникальный признак попытки подключения: метка получена
+/// шифрованием на ключе, выведенном из эфемерной доли клиента, поэтому
+/// два честных соединения совпасть не могут. На этом держится окно
+/// повторов ([`crate::ReplayWindow`]).
+///
+/// # Errors
+///
+/// [`Error::TooShort`] или [`Error::NotClientHello`], если сообщение не
+/// той формы.
+pub fn session_id_of(handshake: &[u8]) -> Result<[u8; SESSION_ID_LEN]> {
+    validate(handshake)?;
+    handshake
+        .get(SESSION_ID_OFFSET..SESSION_ID_OFFSET + SESSION_ID_LEN)
+        .and_then(|slice| slice.try_into().ok())
+        .ok_or(Error::TooShort)
+}
+
 /// Прочитать поле `random` из handshake-сообщения.
 ///
 /// # Errors

@@ -240,6 +240,13 @@ pub struct Connection {
     read: Option<Protection>,
     write: Option<Protection>,
 
+    /// Причина, по которой соединение стало непригодным.
+    ///
+    /// Хранится, а не выводится заново: повторный вызов обязан вернуть
+    /// **ту же** ошибку, иначе диагноз меняется от вызова к вызову и
+    /// сбивает с толку — первая ошибка настоящая, последующие лишь
+    /// следствия того, что автомат остался в промежуточном состоянии.
+    failure: Option<Error>,
     certificate: Option<Certificate>,
     alpn: Option<String>,
     alps: Option<u16>,
@@ -295,6 +302,7 @@ impl Connection {
             read: None,
             write: None,
 
+            failure: None,
             certificate: None,
             alpn: None,
             alps: None,
@@ -318,8 +326,12 @@ impl Connection {
     /// # Errors
     ///
     /// [`Error::Protocol`], если накопилось неправдоподобно много байт
-    /// без единой целой записи.
+    /// без единой целой записи; сохранённая ошибка, если соединение уже
+    /// похоронено.
     pub fn read_tls(&mut self, data: &[u8]) -> Result<()> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
         if self.incoming.len().saturating_add(data.len()) > MAX_BUFFERED {
             return Err(Error::Protocol("входной буфер переполнен"));
         }
@@ -404,6 +416,16 @@ impl Connection {
     /// Любое нарушение протокола, отказ проверки подлинности или
     /// предупреждение от сервера.
     pub fn process(&mut self) -> Result<()> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
+        match self.advance() {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.fail(error)),
+        }
+    }
+
+    fn advance(&mut self) -> Result<()> {
         while let Some(record) = self.next_record() {
             self.handle_record(&record)?;
             if self.state == State::Closed {
@@ -411,6 +433,29 @@ impl Connection {
             }
         }
         Ok(())
+    }
+
+    /// Похоронить соединение.
+    ///
+    /// В TLS любая ошибка разбора терминальна. Оставить автомат живым
+    /// значило бы дать противнику право на вторую попытку в том же
+    /// соединении: подобрать другую ветвь состояния, дослать другую
+    /// запись, повторить с изменением. Поэтому ключи уничтожаются, а
+    /// непрочитанный ввод — заведомо недоверенный — отбрасывается.
+    fn fail(&mut self, error: Error) -> Error {
+        self.state = State::Closed;
+        self.failure = Some(error);
+        self.read = None;
+        self.write = None;
+        self.incoming.clear();
+        self.messages = MessageReader::new();
+        error
+    }
+
+    /// Ошибка, которая убила соединение, если она была.
+    #[must_use]
+    pub const fn failure(&self) -> Option<Error> {
+        self.failure
     }
 
     /// Отрезать от входного буфера одну целую запись.
@@ -438,25 +483,21 @@ impl Connection {
             return Ok(());
         }
 
-        // Открытое предупреждение. В TLS 1.3 зашифрованные записи всегда
-        // помечены снаружи как `application_data`, поэтому внешний тип
-        // `alert` означает именно открытый текст — и встречается это
-        // сплошь и рядом: сервер, отказавший до установки ключей, шлёт
-        // предупреждение как есть. Пытаться расшифровать такую запись
-        // значило бы превратить внятный отказ сервера в невнятную
-        // ошибку проверки подлинности.
-        if outer == ContentType::Alert {
-            return self.handle_alert(record.get(HEADER_LEN..).unwrap_or_default());
-        }
-
         let (content_type, body) = match self.read.as_mut() {
-            // Ключи ещё не поставлены: запись открытая.
+            // Ключей ещё нет — всё открытое, включая предупреждения.
+            // Сервер, отказавший на нашем `ClientHello`, шлёт причину
+            // именно так, и разобрать её надо: иначе внятный отказ
+            // превратился бы в невнятный обрыв.
             None => (outer, record.get(HEADER_LEN..).unwrap_or_default().to_vec()),
+            // Ключи поставлены — открытых записей больше не бывает.
+            // В TLS 1.3 всё зашифрованное помечено снаружи как
+            // `application_data`, поэтому любой другой внешний тип здесь
+            // означает вставку в поток. Принимать открытое предупреждение
+            // на этой стадии значило бы дать любому, кто способен
+            // вклиниться в TCP, гасить соединение одним пакетом.
             Some(protection) => {
-                if outer == ContentType::Handshake {
-                    return Err(Error::Protocol(
-                        "открытое сообщение рукопожатия после установки ключей",
-                    ));
+                if outer != ContentType::ApplicationData {
+                    return Err(Error::Protocol("открытая запись после установки ключей"));
                 }
                 protection.decrypt(record)?
             }
@@ -895,6 +936,9 @@ impl Connection {
     /// [`Error::Protocol`], если рукопожатие ещё не завершено,
     /// [`Error::Closed`] после закрытия.
     pub fn send(&mut self, data: &[u8]) -> Result<()> {
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
         match self.state {
             State::Connected => {}
             State::Closed => return Err(Error::Closed),

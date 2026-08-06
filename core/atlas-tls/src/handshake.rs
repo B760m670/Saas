@@ -19,6 +19,17 @@ use crate::error::{Error, Result};
 use crate::hello::Extension;
 use crate::keyschedule::Hash;
 
+/// Предел длины одного сообщения рукопожатия.
+///
+/// Поле длины трёхбайтовое и формально разрешает шестнадцать мегабайт. Настоящее
+/// сообщение таких размеров не бывает: самое большое — `Certificate` с
+/// длинной цепочкой, метками SCT и вшитым OCSP — укладывается в десятки
+/// килобайт. Без предела собеседник объявляет их все и заставляет нас
+/// копить их в памяти по 16 килобайт за запись, ничего не нарушая
+/// формально. Четверть мегабайта — с большим запасом над реальностью и
+/// на два порядка ниже формального потолка.
+pub const MAX_MESSAGE_LEN: usize = 256 * 1024;
+
 /// Особое значение поля `random`, которым сервер помечает
 /// `HelloRetryRequest`.
 ///
@@ -136,7 +147,8 @@ impl MessageReader {
     ///
     /// # Errors
     ///
-    /// [`Error::Malformed`], если объявленная длина неправдоподобна.
+    /// [`Error::Malformed`], если объявленная длина превышает
+    /// [`MAX_MESSAGE_LEN`].
     pub fn next_message(&mut self) -> Result<Option<Message>> {
         let Some(header) = self.buffer.get(..4) else {
             return Ok(None);
@@ -145,6 +157,12 @@ impl MessageReader {
             [code, a, b, c] => (*code, u32::from_be_bytes([0, *a, *b, *c]) as usize),
             _ => return Ok(None),
         };
+
+        if len > MAX_MESSAGE_LEN {
+            return Err(Error::Malformed(
+                "сообщение рукопожатия неправдоподобной длины",
+            ));
+        }
 
         let total = 4_usize
             .checked_add(len)
@@ -641,6 +659,36 @@ mod tests {
         let message = reader.next_message().unwrap().unwrap();
         assert_eq!(message.msg_type, HandshakeType::Unknown(0x63));
         assert_eq!(message.body, b"opaque");
+    }
+
+    #[test]
+    fn an_implausibly_long_message_is_refused_before_it_is_buffered() {
+        let mut reader = MessageReader::new();
+        // Заголовок объявляет чуть больше предела; тела нет вовсе.
+        let declared = u32::try_from(MAX_MESSAGE_LEN + 1).unwrap().to_be_bytes();
+        reader.push(&[
+            HandshakeType::Certificate.code(),
+            declared[1],
+            declared[2],
+            declared[3],
+        ]);
+
+        assert!(
+            reader.next_message().is_err(),
+            "отказ обязан наступить по заголовку, а не после накопления тела"
+        );
+        assert_eq!(reader.pending(), 4, "тело копить мы даже не начали");
+    }
+
+    #[test]
+    fn a_message_at_the_limit_is_still_accepted() {
+        let body = vec![0x5a_u8; MAX_MESSAGE_LEN];
+        let message = build_message(HandshakeType::Certificate, &body).unwrap();
+
+        let mut reader = MessageReader::new();
+        reader.push(&message);
+        let parsed = reader.next_message().unwrap().unwrap();
+        assert_eq!(parsed.body.len(), MAX_MESSAGE_LEN);
     }
 
     #[test]
