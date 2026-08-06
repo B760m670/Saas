@@ -574,6 +574,28 @@ fn hello_retry_request_is_honoured() {
 }
 
 #[test]
+fn a_retry_to_any_advertised_group_is_survivable() {
+    // Профиль объявляет четыре группы, а долю шлёт для двух. Значит,
+    // сервер вправе запросить любую из оставшихся — и на каждой из них
+    // рукопожатие обязано сойтись. Иначе объявление группы, которую мы
+    // не умеем, превращается в гарантированный обрыв.
+    for requested in [Group::Secp256r1, Group::Secp384r1, Group::X25519MlKem768] {
+        let mut config = ClientConfig::new("example.org");
+        config.groups = vec![Group::X25519];
+
+        let options = ServerOptions {
+            retry_to: Some(requested),
+            ..ServerOptions::new()
+        };
+        let (client, server) = handshake(options, config);
+
+        assert!(server.finished, "{requested:?}: рукопожатие не сошлось");
+        assert_eq!(client.group(), Some(requested));
+        assert!(client.was_retried());
+    }
+}
+
+#[test]
 fn hello_retry_request_keeps_the_first_hello_intact() {
     // RFC 8446 разрешает изменить во втором приветствии только key_share,
     // cookie и early_data. Для нас это не формальность: REALITY кладёт в

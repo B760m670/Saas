@@ -20,6 +20,8 @@ ml-kem.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 brotli-decompressor = { version = "5.0.3", default-features = false, features = ["alloc-stdlib", "std"] }
+p256 = { version = "0.14.0", default-features = false, features = ["ecdh", "arithmetic"] }
+p384 = { version = "0.14.0", default-features = false, features = ["ecdh", "arithmetic"] }
 
 [lints]
 workspace = true

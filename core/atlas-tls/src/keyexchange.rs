@@ -32,11 +32,12 @@
 //! обобщать этот код «на все гибриды» без отдельной проверки.
 
 use ml_kem::{Decapsulate as _, Encapsulate as _, Generate as _, KeyExport as _, TryKeyInit as _};
+use p256::elliptic_curve::sec1::ToSec1Point as _;
 
 use atlas_crypto::rng::OsRng;
 
 use crate::error::{Error, Result};
-use crate::profile::{X25519, X25519_MLKEM768};
+use crate::profile::{SECP256R1, SECP384R1, X25519, X25519_MLKEM768};
 
 /// Длина открытого ключа X25519.
 pub const X25519_LEN: usize = 32;
@@ -46,6 +47,14 @@ pub const MLKEM_PUBLIC_LEN: usize = 1184;
 pub const MLKEM_CIPHERTEXT_LEN: usize = 1088;
 /// Длина общего секрета ML-KEM-768.
 pub const MLKEM_SHARED_LEN: usize = 32;
+/// Длина несжатой точки `secp256r1`: префикс `0x04`, затем X и Y.
+pub const SECP256R1_POINT_LEN: usize = 65;
+/// Длина общего секрета `secp256r1` — только координата X.
+pub const SECP256R1_SHARED_LEN: usize = 32;
+/// Длина несжатой точки `secp384r1`.
+pub const SECP384R1_POINT_LEN: usize = 97;
+/// Длина общего секрета `secp384r1`.
+pub const SECP384R1_SHARED_LEN: usize = 48;
 
 /// Группа обмена ключами.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +64,16 @@ pub enum Group {
     /// Гибрид `X25519MLKEM768` — то, что Chrome ставит первым и что
     /// выбирает большинство современных серверов.
     X25519MlKem768,
+    /// `secp256r1`, она же P-256.
+    ///
+    /// Доли для неё мы не шлём — как и Chrome, — но объявляем в
+    /// `supported_groups`. Значит, сервер вправе запросить её через
+    /// `HelloRetryRequest`, и уметь её обязательно: объявить группу и
+    /// не суметь её выполнить — это гарантированный обрыв на серверах,
+    /// настроенных на кривые NIST.
+    Secp256r1,
+    /// `secp384r1`, она же P-384. Объявляется по той же причине.
+    Secp384r1,
 }
 
 impl Group {
@@ -64,6 +83,8 @@ impl Group {
         match self {
             Self::X25519 => X25519,
             Self::X25519MlKem768 => X25519_MLKEM768,
+            Self::Secp256r1 => SECP256R1,
+            Self::Secp384r1 => SECP384R1,
         }
     }
 
@@ -73,6 +94,8 @@ impl Group {
         match code {
             X25519 => Some(Self::X25519),
             X25519_MLKEM768 => Some(Self::X25519MlKem768),
+            SECP256R1 => Some(Self::Secp256r1),
+            SECP384R1 => Some(Self::Secp384r1),
             _ => None,
         }
     }
@@ -83,6 +106,8 @@ impl Group {
         match self {
             Self::X25519 => X25519_LEN,
             Self::X25519MlKem768 => MLKEM_PUBLIC_LEN + X25519_LEN,
+            Self::Secp256r1 => SECP256R1_POINT_LEN,
+            Self::Secp384r1 => SECP384R1_POINT_LEN,
         }
     }
 
@@ -95,6 +120,9 @@ impl Group {
         match self {
             Self::X25519 => X25519_LEN,
             Self::X25519MlKem768 => MLKEM_CIPHERTEXT_LEN + X25519_LEN,
+            // У кривых NIST стороны симметричны: обе шлют точку.
+            Self::Secp256r1 => SECP256R1_POINT_LEN,
+            Self::Secp384r1 => SECP384R1_POINT_LEN,
         }
     }
 
@@ -104,6 +132,9 @@ impl Group {
         match self {
             Self::X25519 => X25519_LEN,
             Self::X25519MlKem768 => MLKEM_SHARED_LEN + X25519_LEN,
+            // В TLS общим секретом служит только координата X.
+            Self::Secp256r1 => SECP256R1_SHARED_LEN,
+            Self::Secp384r1 => SECP384R1_SHARED_LEN,
         }
     }
 }
@@ -116,7 +147,16 @@ pub struct KeyExchange {
     group: Group,
     x: x25519_dalek::StaticSecret,
     pq: Option<ml_kem::DecapsulationKey768>,
+    nist: Option<NistSecret>,
     share: Vec<u8>,
+}
+
+/// Секретная часть обмена на кривой NIST.
+enum NistSecret {
+    /// P-256.
+    P256(p256::ecdh::EphemeralSecret),
+    /// P-384.
+    P384(p384::ecdh::EphemeralSecret),
 }
 
 impl core::fmt::Debug for KeyExchange {
@@ -138,14 +178,31 @@ impl KeyExchange {
         let x = x25519_dalek::StaticSecret::random_from_rng(&mut rng);
         let x_public = x25519_dalek::PublicKey::from(&x);
 
-        let (pq, share) = match group {
-            Group::X25519 => (None, x_public.as_bytes().to_vec()),
+        let mut pq = None;
+        let mut nist = None;
+        let share = match group {
+            Group::X25519 => x_public.as_bytes().to_vec(),
             Group::X25519MlKem768 => {
                 let dk = ml_kem::DecapsulationKey768::generate_from_rng(&mut rng);
                 let mut share = Vec::with_capacity(MLKEM_PUBLIC_LEN + X25519_LEN);
                 share.extend_from_slice(&dk.encapsulation_key().to_bytes());
                 share.extend_from_slice(x_public.as_bytes());
-                (Some(dk), share)
+                pq = Some(dk);
+                share
+            }
+            Group::Secp256r1 => {
+                let secret = p256::ecdh::EphemeralSecret::generate_from_rng(&mut rng);
+                // Несжатая форма SEC1: `0x04`, затем X и Y. Именно её ждёт TLS.
+                let share = secret.public_key().to_sec1_point(false).as_ref().to_vec();
+                nist = Some(NistSecret::P256(secret));
+                share
+            }
+            Group::Secp384r1 => {
+                let secret = p384::ecdh::EphemeralSecret::generate_from_rng(&mut rng);
+                // Несжатая форма SEC1: `0x04`, затем X и Y. Именно её ждёт TLS.
+                let share = secret.public_key().to_sec1_point(false).as_ref().to_vec();
+                nist = Some(NistSecret::P384(secret));
+                share
             }
         };
 
@@ -153,6 +210,7 @@ impl KeyExchange {
             group,
             x,
             pq,
+            nist,
             share,
         }
     }
@@ -180,6 +238,10 @@ impl KeyExchange {
             return Err(Error::Malformed("доля сервера неверной длины"));
         }
 
+        if matches!(self.group, Group::Secp256r1 | Group::Secp384r1) {
+            return self.agree_nist(peer_share);
+        }
+
         match (self.group, self.pq.as_ref()) {
             (Group::X25519, _) => Ok(self.agree_x25519(peer_share)?.to_vec()),
             (Group::X25519MlKem768, Some(dk)) => {
@@ -198,8 +260,40 @@ impl KeyExchange {
                 out.extend_from_slice(&x_shared);
                 Ok(out)
             }
-            (Group::X25519MlKem768, None) => {
-                Err(Error::Malformed("постквантовая половина не сгенерирована"))
+            _ => Err(Error::Malformed("половина обмена не сгенерирована")),
+        }
+    }
+
+    /// Общий секрет на кривой NIST: координата X произведения точек.
+    ///
+    /// Разбор чужой точки идёт через `from_sec1_bytes`, который
+    /// проверяет, что она **лежит на кривой**. Пропустить эту проверку —
+    /// классическая ошибка с недействительной кривой, позволяющая
+    /// вытянуть приватный ключ по частям.
+    fn agree_nist(&self, peer_share: &[u8]) -> Result<Vec<u8>> {
+        let secret = self
+            .nist
+            .as_ref()
+            .ok_or(Error::Malformed("половина обмена не сгенерирована"))?;
+
+        match secret {
+            NistSecret::P256(secret) => {
+                let peer = p256::PublicKey::from_sec1_bytes(peer_share)
+                    .map_err(|_| Error::Malformed("точка secp256r1 не на кривой"))?;
+                Ok(secret
+                    .diffie_hellman(&peer)
+                    .raw_secret_bytes()
+                    .as_slice()
+                    .to_vec())
+            }
+            NistSecret::P384(secret) => {
+                let peer = p384::PublicKey::from_sec1_bytes(peer_share)
+                    .map_err(|_| Error::Malformed("точка secp384r1 не на кривой"))?;
+                Ok(secret
+                    .diffie_hellman(&peer)
+                    .raw_secret_bytes()
+                    .as_slice()
+                    .to_vec())
             }
         }
     }
@@ -227,6 +321,11 @@ impl KeyExchange {
                 let ours = Self::generate(Group::X25519);
                 let shared = ours.agree_x25519(client_share)?;
                 Ok((ours.share().to_vec(), shared.to_vec()))
+            }
+            Group::Secp256r1 | Group::Secp384r1 => {
+                let ours = Self::generate(group);
+                let shared = ours.agree_nist(client_share)?;
+                Ok((ours.share().to_vec(), shared))
             }
             Group::X25519MlKem768 => {
                 let (ek_raw, x_raw) = client_share
@@ -298,6 +397,18 @@ impl KeyShares {
             entries: groups.iter().copied().map(KeyExchange::generate).collect(),
         }
     }
+
+    /// Все группы, которые профиль объявляет в `supported_groups`.
+    ///
+    /// Доли шлются не для всех — Chrome шлёт две, — но уметь надо все:
+    /// сервер вправе запросить любую объявленную через
+    /// `HelloRetryRequest`.
+    pub const ADVERTISED: [Group; 4] = [
+        Group::X25519MlKem768,
+        Group::X25519,
+        Group::Secp256r1,
+        Group::Secp384r1,
+    ];
 
     /// Набор, который предлагает Chrome: гибрид, затем классика.
     #[must_use]
@@ -508,17 +619,72 @@ mod tests {
 
     #[test]
     fn group_codes_round_trip() {
-        for group in [Group::X25519, Group::X25519MlKem768] {
+        for group in KeyShares::ADVERTISED {
             assert_eq!(Group::from_code(group.code()), Some(group));
             assert_eq!(
                 KeyExchange::generate(group).share().len(),
                 group.client_share_len()
             );
         }
-        assert_eq!(
-            Group::from_code(0x0017),
-            None,
-            "secp256r1 пока не поддержан"
-        );
+        assert_eq!(Group::from_code(0x0019), None, "secp521r1 мы не объявляем");
+    }
+
+    #[test]
+    fn every_advertised_group_can_actually_be_performed() {
+        // Объявить группу в `supported_groups` и не уметь её — значит
+        // гарантированно оборваться на сервере, который её запросит
+        // через `HelloRetryRequest`. Список объявляемых и список умеемых
+        // обязаны совпадать.
+        for group in KeyShares::ADVERTISED {
+            let client = KeyExchange::generate(group);
+            let (server_share, server_secret) =
+                KeyExchange::respond(group, client.share()).unwrap();
+            assert_eq!(
+                client.complete(&server_share).unwrap(),
+                server_secret,
+                "{group:?}"
+            );
+            assert_eq!(server_secret.len(), group.shared_secret_len(), "{group:?}");
+        }
+    }
+
+    #[test]
+    fn a_nist_point_off_the_curve_is_refused() {
+        // Классическая атака недействительной кривой: точка, не лежащая
+        // на кривой, позволяет вытянуть приватный ключ по частям.
+        for group in [Group::Secp256r1, Group::Secp384r1] {
+            let client = KeyExchange::generate(group);
+            let mut bogus = vec![0x04_u8; group.server_share_len()];
+            bogus[1] = 0x01;
+            assert!(client.complete(&bogus).is_err(), "{group:?}");
+            assert!(client
+                .complete(&vec![0x00; group.server_share_len()])
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn the_profile_advertises_exactly_what_we_can_do() {
+        // Сверка с профилем: каждая объявленная группа обязана быть
+        // выполнимой. Расхождение этих двух списков — гарантированный
+        // обрыв на серверах, настроенных на кривые NIST.
+        let params = crate::HelloParams::new("example.org");
+        let hello = crate::Chrome::v141().client_hello(&params).unwrap();
+        let groups = hello
+            .extensions
+            .iter()
+            .find(|e| e.ext_type == crate::ext::SUPPORTED_GROUPS)
+            .unwrap();
+
+        let listed = crate::bytes::Reader::new(&groups.body).list_u16().unwrap();
+        for code in listed {
+            if crate::grease::is_grease(code) {
+                continue;
+            }
+            assert!(
+                Group::from_code(code).is_some(),
+                "объявлена группа 0x{code:04x}, которую мы не умеем"
+            );
+        }
     }
 }
