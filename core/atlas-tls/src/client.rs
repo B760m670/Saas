@@ -40,6 +40,7 @@ use subtle::ConstantTimeEq as _;
 
 use crate::error::{Error, Result};
 use crate::ext;
+use crate::halves::{RecordReader, RecordWriter};
 use crate::handshake::{
     build_message, Certificate, CertificateVerify, CompressedCertificate, HandshakeType, Message,
     MessageReader, ServerHello, Transcript,
@@ -1062,6 +1063,34 @@ impl Connection {
             self.outgoing.extend_from_slice(&record);
         }
         Ok(())
+    }
+
+    /// Разъять установленное соединение на две независимые половины.
+    ///
+    /// Возвращается ещё и уже расшифрованное, но не отданное: иначе
+    /// данные, приехавшие в одном чтении с последней пачкой
+    /// рукопожатия, потерялись бы при разъятии — та же ошибка, что
+    /// однажды уже стоила дня поисков.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Protocol`], если рукопожатие ещё не завершено.
+    pub fn into_halves(self) -> Result<(RecordReader, RecordWriter, Vec<u8>)> {
+        if self.state != State::Connected {
+            return Err(Error::Protocol("соединение не установлено"));
+        }
+        let (Some(read), Some(write)) = (self.read, self.write) else {
+            return Err(Error::Protocol("ключи не поставлены"));
+        };
+        Ok((
+            RecordReader {
+                protection: read,
+                buffer: self.incoming,
+                closed: self.peer_closed,
+            },
+            RecordWriter { protection: write },
+            self.plaintext,
+        ))
     }
 
     /// Сообщить о закрытии своей стороны.

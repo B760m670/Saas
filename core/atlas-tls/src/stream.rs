@@ -13,6 +13,7 @@ use std::io::{self, Read, Write};
 
 use crate::client::{ClientConfig, Connection};
 use crate::error::Error;
+use crate::halves::{RecordReader, RecordWriter};
 
 /// Сколько байт читать за один заход у сокета.
 const CHUNK: usize = 16 * 1024;
@@ -108,6 +109,28 @@ impl<S: Read + Write> TlsStream<S> {
         self.socket
     }
 
+    /// Разъять поток на составляющие для работы в два потока.
+    ///
+    /// Возвращаются половины слоя записей, сам канал и уже
+    /// расшифрованное, но не отданное. Канал отдаётся как есть: как его
+    /// раздвоить, знает только вызывающий — у `TcpStream` для этого
+    /// есть `try_clone`, у чего-то другого будет свой способ.
+    ///
+    /// Собрать из этого готовые к работе половины помогают
+    /// [`TlsReader::new`] и [`TlsWriter::new`].
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::InvalidData`], если рукопожатие не завершено.
+    pub fn into_parts(self) -> io::Result<(RecordReader, RecordWriter, S, Vec<u8>)> {
+        let (reader, writer, mut plaintext) = self.connection.into_halves().map_err(to_io)?;
+        // Уже отданное вызывающему повторно отдавать нельзя.
+        let rest = self.pending.get(self.consumed..).unwrap_or_default();
+        let mut carry = rest.to_vec();
+        carry.append(&mut plaintext);
+        Ok((reader, writer, self.socket, carry))
+    }
+
     /// Отправить `close_notify`, если соединение ещё живо.
     ///
     /// # Errors
@@ -116,6 +139,98 @@ impl<S: Read + Write> TlsStream<S> {
     pub fn close(&mut self) -> io::Result<()> {
         self.connection.send_close_notify().map_err(to_io)?;
         self.flush_output()
+    }
+}
+
+/// Читающая половина потока TLS.
+#[derive(Debug)]
+pub struct TlsReader<R> {
+    socket: R,
+    reader: RecordReader,
+    pending: Vec<u8>,
+    consumed: usize,
+}
+
+impl<R: Read> TlsReader<R> {
+    /// Собрать половину из канала, состояния записей и остатка.
+    #[must_use]
+    pub const fn new(socket: R, reader: RecordReader, pending: Vec<u8>) -> Self {
+        Self {
+            socket,
+            reader,
+            pending,
+            consumed: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for TlsReader<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let mut buf = vec![0_u8; CHUNK];
+        loop {
+            if let Some(rest) = self.pending.get(self.consumed..) {
+                if !rest.is_empty() {
+                    let take = rest.len().min(out.len());
+                    if let (Some(dst), Some(src)) = (out.get_mut(..take), rest.get(..take)) {
+                        dst.copy_from_slice(src);
+                    }
+                    self.consumed += take;
+                    return Ok(take);
+                }
+            }
+            self.pending.clear();
+            self.consumed = 0;
+
+            if self.reader.peer_closed() {
+                return Ok(0);
+            }
+            let read = self.socket.read(&mut buf)?;
+            if read == 0 {
+                return Ok(0);
+            }
+            self.pending = self
+                .reader
+                .decrypt(buf.get(..read).unwrap_or_default())
+                .map_err(to_io)?;
+        }
+    }
+}
+
+/// Пишущая половина потока TLS.
+#[derive(Debug)]
+pub struct TlsWriter<W> {
+    socket: W,
+    writer: RecordWriter,
+}
+
+impl<W: Write> TlsWriter<W> {
+    /// Собрать половину из канала и состояния записей.
+    #[must_use]
+    pub const fn new(socket: W, writer: RecordWriter) -> Self {
+        Self { socket, writer }
+    }
+
+    /// Отправить `close_notify`.
+    ///
+    /// # Errors
+    ///
+    /// Ошибки сокета и отказ шифрования.
+    pub fn close(&mut self) -> io::Result<()> {
+        let record = self.writer.close_notify().map_err(to_io)?;
+        self.socket.write_all(&record)?;
+        self.socket.flush()
+    }
+}
+
+impl<W: Write> Write for TlsWriter<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        let records = self.writer.encrypt(data).map_err(to_io)?;
+        self.socket.write_all(&records)?;
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.socket.flush()
     }
 }
 

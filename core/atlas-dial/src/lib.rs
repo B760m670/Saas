@@ -56,13 +56,43 @@ use std::net::TcpStream;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use atlas_tls::client::{ClientConfig, HelloSealer, ServerVerifier};
+use atlas_tls::stream::{TlsReader, TlsWriter};
 use atlas_tls::{Chrome, TlsStream};
 use atlas_types::{Credentials, Flow as KeyFlow, Protocol, ProxyKey, SecurityKind};
-use atlas_vless::session::{Flow, Session};
+use atlas_vless::session::{Flow, Session, SessionReader, SessionWriter};
 use atlas_vless::{Address, Endpoint};
 
 /// Готовый туннель до адреса назначения.
 pub type Tunnel = Session<TlsStream<TcpStream>>;
+
+/// Читающая половина туннеля.
+pub type TunnelReader = SessionReader<TlsReader<TcpStream>>;
+
+/// Пишущая половина туннеля.
+pub type TunnelWriter = SessionWriter<TlsWriter<TcpStream>>;
+
+/// Разъять туннель на две независимые половины.
+///
+/// Обе стороны туннеля после рукопожатия независимы, и перекачка байт
+/// в обе стороны обязана идти двумя потоками без общего состояния.
+/// Попытка обойтись одним потоком и очередью уже приводила к взаимной
+/// блокировке: насос разбирал очередь на отправку только между
+/// блокирующими чтениями, и клиент, заговоривший первым после паузы,
+/// ждал до предела чтения. Разбор — в `docs/09-lab.md`, раздел 11.
+///
+/// # Errors
+///
+/// Ошибка раздвоения сокета либо незавершённое рукопожатие.
+pub fn split(tunnel: Tunnel) -> Result<(TunnelReader, TunnelWriter)> {
+    let (inbound, outbound, tls) = tunnel.into_parts();
+    let (records_in, records_out, socket, carry) = tls.into_parts().map_err(Error::Io)?;
+    let clone = socket.try_clone().map_err(Error::Io)?;
+
+    Ok((
+        SessionReader::new(TlsReader::new(socket, records_in, carry), inbound),
+        SessionWriter::new(TlsWriter::new(clone, records_out), outbound),
+    ))
+}
 
 /// Куда именно соединяться через точку выхода.
 #[derive(Debug, Clone, PartialEq, Eq)]

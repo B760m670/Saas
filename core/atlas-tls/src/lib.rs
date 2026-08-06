@@ -63,6 +63,7 @@ mod error;
 pub mod ext;
 pub mod fingerprint;
 pub mod grease;
+pub mod halves;
 pub mod handshake;
 mod hello;
 pub mod keyexchange;

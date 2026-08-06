@@ -150,30 +150,23 @@ fn read_connect(socket: &mut TcpStream) -> io::Result<(String, u16)> {
 
 /// Гонять байты между локальным клиентом и туннелем.
 ///
-/// Туннель нельзя раздвоить, как сокет, поэтому направления разведены
-/// так: чтение из туннеля живёт в отдельном потоке вместе с самим
-/// туннелем, а запись в него идёт через канал.
-fn splice<T: Read + Write + Send + 'static>(socket: TcpStream, tunnel: T) -> io::Result<()> {
+/// Оба направления независимы и живут каждое в своём потоке. Ни
+/// очереди, ни общего состояния: очередь здесь однажды уже стоила
+/// работоспособности — насос разбирал её только между блокирующими
+/// чтениями туннеля, и клиент, заговоривший первым после паузы, ждал
+/// ответа до предела чтения, а потом получал обрыв. Через `curl` это
+/// выживало случайно, потому что пачка сервера приходит несколькими
+/// сегментами. Разбор — в `docs/09-lab.md`, раздел 11.
+fn splice(socket: TcpStream, tunnel: atlas_dial::Tunnel) -> io::Result<()> {
+    let (mut tunnel_read, mut tunnel_write) =
+        atlas_dial::split(tunnel).map_err(|error| io::Error::other(error.to_string()))?;
     let mut local_read = socket.try_clone()?;
     let mut local_write = socket;
 
-    let (sender, receiver) = std::sync::mpsc::channel::<Vec<u8>>();
-    let mut tunnel_read = tunnel;
-
-    let pump = std::thread::spawn(move || -> io::Result<()> {
-        // Всё, что просят отправить, уходит в туннель; всё, что пришло
-        // оттуда, — локальному клиенту.
+    let down = std::thread::spawn(move || {
+        // Из туннеля — локальному клиенту.
         let mut buf = vec![0_u8; 16 * 1024];
         loop {
-            // Сначала отдать накопившееся к отправке, не блокируясь.
-            while let Ok(chunk) = receiver.try_recv() {
-                if chunk.is_empty() {
-                    let _ = tunnel_read.flush();
-                    return Ok(());
-                }
-                tunnel_read.write_all(&chunk)?;
-                tunnel_read.flush()?;
-            }
             match tunnel_read.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
@@ -187,24 +180,25 @@ fn splice<T: Read + Write + Send + 'static>(socket: TcpStream, tunnel: T) -> io:
             }
         }
         let _ = local_write.shutdown(std::net::Shutdown::Write);
-        Ok(())
     });
 
+    // От локального клиента — в туннель.
     let mut buf = vec![0_u8; 16 * 1024];
     loop {
         match local_read.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(read) => {
-                if sender
-                    .send(buf.get(..read).unwrap_or_default().to_vec())
+                if tunnel_write
+                    .write_all(buf.get(..read).unwrap_or_default())
                     .is_err()
+                    || tunnel_write.flush().is_err()
                 {
                     break;
                 }
             }
         }
     }
-    let _ = sender.send(Vec::new());
-    let _ = pump.join();
+    let _ = local_read.shutdown(std::net::Shutdown::Read);
+    let _ = down.join();
     Ok(())
 }

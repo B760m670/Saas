@@ -163,17 +163,20 @@ impl Sniffer {
 #[derive(Debug)]
 pub struct Session<S> {
     stream: S,
-    flow: Flow,
+    inbound: Inbound,
+    outbound: Outbound,
+}
 
-    /// Заголовок запроса, ещё не ушедший в сеть.
-    prefix: Option<Vec<u8>>,
+/// Состояние входящего направления.
+///
+/// Вынесено из [`Session`] отдельно не ради красоты: то же состояние
+/// нужно [`SessionReader`], а держать две копии логики снятия
+/// обрамления — верный способ развести их со временем.
+#[derive(Debug)]
+pub struct Inbound {
     /// Прочитан ли заголовок ответа.
     response_read: bool,
-
-    padder: Option<Padder>,
     unpadder: Option<Unpadder>,
-    sniffer: Sniffer,
-
     /// Расшифрованное и распакованное, но не отданное вызывающему.
     pending: Vec<u8>,
     consumed: usize,
@@ -181,71 +184,22 @@ pub struct Session<S> {
     raw: Vec<u8>,
 }
 
-impl<S: Read + Write> Session<S> {
-    /// Начать сессию: подготовить заголовок запроса.
-    ///
-    /// В сеть ничего не уходит до первой записи — заголовок отправится
-    /// вместе с данными.
-    ///
-    /// # Errors
-    ///
-    /// [`io::ErrorKind::InvalidInput`], если заголовок не кодируется.
-    pub fn connect(
-        stream: S,
-        uuid: [u8; 16],
-        destination: Endpoint,
-        flow: Flow,
-    ) -> io::Result<Self> {
-        let mut request = Request::tcp(uuid, destination);
-        if flow != Flow::Plain {
-            request = request.with_flow(flow.as_str());
-        }
-        let prefix = request
-            .encode()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+/// Состояние исходящего направления.
+#[derive(Debug)]
+pub struct Outbound {
+    flow: Flow,
+    /// Заголовок запроса, ещё не ушедший в сеть.
+    prefix: Option<Vec<u8>>,
+    padder: Option<Padder>,
+    sniffer: Sniffer,
+}
 
-        let (padder, unpadder) = match flow {
-            Flow::Plain => (None, None),
-            Flow::Vision => (Some(Padder::new(uuid)), Some(Unpadder::new(uuid))),
-        };
-
-        Ok(Self {
-            stream,
-            flow,
-            prefix: Some(prefix),
-            response_read: false,
-            padder,
-            unpadder,
-            sniffer: Sniffer::default(),
-            pending: Vec::new(),
-            consumed: 0,
-            raw: Vec::new(),
-        })
-    }
-
-    /// Разобрать сессию обратно на части.
-    #[must_use]
-    pub fn into_inner(self) -> S {
-        self.stream
-    }
-
-    /// Режим потока.
-    #[must_use]
-    pub const fn flow(&self) -> Flow {
-        self.flow
-    }
-
-    /// Перешло ли обрамление в прямой режим.
-    #[must_use]
-    pub fn is_direct(&self) -> bool {
-        self.padder.as_ref().is_none_or(Padder::is_finished)
-    }
-
+impl Inbound {
     /// Прочитать и снять заголовок ответа.
     ///
     /// Заголовок короткий — версия, длина addons и сами addons, — но
     /// может приехать не целиком: это поток, а не пакеты.
-    fn read_response(&mut self) -> io::Result<()> {
+    fn read_response(&mut self, stream: &mut impl Read) -> io::Result<()> {
         let mut buf = vec![0_u8; CHUNK];
         loop {
             match Response::decode(&self.raw) {
@@ -269,7 +223,7 @@ impl<S: Read + Write> Session<S> {
                 }
             }
 
-            let read = self.stream.read(&mut buf)?;
+            let read = stream.read(&mut buf)?;
             if read == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -300,12 +254,11 @@ impl<S: Read + Write> Session<S> {
         }
         Ok(())
     }
-}
 
-impl<S: Read + Write> Read for Session<S> {
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+    /// Отдать вызывающему очередную порцию, дочитывая при нужде.
+    fn read_from(&mut self, stream: &mut impl Read, out: &mut [u8]) -> io::Result<usize> {
         if !self.response_read {
-            self.read_response()?;
+            self.read_response(stream)?;
             self.absorb()?;
         }
 
@@ -324,7 +277,7 @@ impl<S: Read + Write> Read for Session<S> {
             self.pending.clear();
             self.consumed = 0;
 
-            let read = self.stream.read(&mut buf)?;
+            let read = stream.read(&mut buf)?;
             if read == 0 {
                 return Ok(0);
             }
@@ -335,8 +288,14 @@ impl<S: Read + Write> Read for Session<S> {
     }
 }
 
-impl<S: Read + Write> Write for Session<S> {
-    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+impl Outbound {
+    /// Перешло ли обрамление в прямой режим.
+    fn is_direct(&self) -> bool {
+        self.padder.as_ref().is_none_or(Padder::is_finished)
+    }
+
+    /// Обрамить порцию и отправить её вместе с заголовком запроса.
+    fn write_to(&mut self, stream: &mut impl Write, data: &[u8]) -> io::Result<usize> {
         if data.is_empty() {
             return Ok(0);
         }
@@ -371,17 +330,161 @@ impl<S: Read + Write> Write for Session<S> {
             }
         }
 
-        self.stream.write_all(&out)?;
+        stream.write_all(&out)?;
         Ok(data.len())
     }
 
-    fn flush(&mut self) -> io::Result<()> {
+    /// Дослать заголовок запроса, если он ещё не ушёл.
+    fn flush_to(&mut self, stream: &mut impl Write) -> io::Result<()> {
         // Заголовок, не ушедший с данными, обязан уйти хотя бы теперь:
         // иначе сервер не узнает, куда соединяться.
         if let Some(prefix) = self.prefix.take() {
-            self.stream.write_all(&prefix)?;
+            stream.write_all(&prefix)?;
         }
-        self.stream.flush()
+        stream.flush()
+    }
+}
+
+impl<S: Read + Write> Session<S> {
+    /// Начать сессию: подготовить заголовок запроса.
+    ///
+    /// В сеть ничего не уходит до первой записи — заголовок отправится
+    /// вместе с данными.
+    ///
+    /// # Errors
+    ///
+    /// [`io::ErrorKind::InvalidInput`], если заголовок не кодируется.
+    pub fn connect(
+        stream: S,
+        uuid: [u8; 16],
+        destination: Endpoint,
+        flow: Flow,
+    ) -> io::Result<Self> {
+        let mut request = Request::tcp(uuid, destination);
+        if flow != Flow::Plain {
+            request = request.with_flow(flow.as_str());
+        }
+        let prefix = request
+            .encode()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+
+        let (padder, unpadder) = match flow {
+            Flow::Plain => (None, None),
+            Flow::Vision => (Some(Padder::new(uuid)), Some(Unpadder::new(uuid))),
+        };
+
+        Ok(Self {
+            stream,
+            inbound: Inbound {
+                response_read: false,
+                unpadder,
+                pending: Vec::new(),
+                consumed: 0,
+                raw: Vec::new(),
+            },
+            outbound: Outbound {
+                flow,
+                prefix: Some(prefix),
+                padder,
+                sniffer: Sniffer::default(),
+            },
+        })
+    }
+
+    /// Разобрать сессию обратно на части.
+    #[must_use]
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+
+    /// Режим потока.
+    #[must_use]
+    pub const fn flow(&self) -> Flow {
+        self.outbound.flow
+    }
+
+    /// Перешло ли обрамление в прямой режим.
+    #[must_use]
+    pub fn is_direct(&self) -> bool {
+        self.outbound.is_direct()
+    }
+
+    /// Разъять сессию на состояния направлений и сам канал.
+    ///
+    /// Канал отдаётся как есть: раздвоить его умеет только вызывающий.
+    /// Собрать половины помогают [`SessionReader::new`] и
+    /// [`SessionWriter::new`].
+    #[must_use]
+    pub fn into_parts(self) -> (Inbound, Outbound, S) {
+        (self.inbound, self.outbound, self.stream)
+    }
+}
+
+/// Читающая половина сессии.
+#[derive(Debug)]
+pub struct SessionReader<R> {
+    stream: R,
+    inbound: Inbound,
+}
+
+impl<R: Read> SessionReader<R> {
+    /// Собрать половину из канала и состояния направления.
+    #[must_use]
+    pub const fn new(stream: R, inbound: Inbound) -> Self {
+        Self { stream, inbound }
+    }
+}
+
+impl<R: Read> Read for SessionReader<R> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        self.inbound.read_from(&mut self.stream, out)
+    }
+}
+
+/// Пишущая половина сессии.
+#[derive(Debug)]
+pub struct SessionWriter<W> {
+    stream: W,
+    outbound: Outbound,
+}
+
+impl<W: Write> SessionWriter<W> {
+    /// Собрать половину из канала и состояния направления.
+    #[must_use]
+    pub const fn new(stream: W, outbound: Outbound) -> Self {
+        Self { stream, outbound }
+    }
+
+    /// Перешло ли обрамление в прямой режим.
+    #[must_use]
+    pub fn is_direct(&self) -> bool {
+        self.outbound.is_direct()
+    }
+}
+
+impl<W: Write> Write for SessionWriter<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.outbound.write_to(&mut self.stream, data)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.outbound.flush_to(&mut self.stream)
+    }
+}
+
+impl<S: Read + Write> Read for Session<S> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        self.inbound.read_from(&mut self.stream, out)
+    }
+}
+
+impl<S: Read + Write> Write for Session<S> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        self.outbound.write_to(&mut self.stream, data)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.outbound.flush_to(&mut self.stream)
     }
 }
 
