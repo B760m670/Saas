@@ -425,3 +425,248 @@ mod tests {
         );
     }
 }
+
+/// Выпуск временного сертификата точки выхода.
+///
+/// Обратная сторона разбора: сервер собирает то, что клиент потом
+/// разбирает. Сертификат одноразовый — своя пара Ed25519 на каждое
+/// соединение, — и по форме неотличим от обычного, потому что формой он
+/// обычный и является. Отличается только содержимое поля подписи: там
+/// не подпись, а `HMAC-SHA512` от общего секрета.
+pub mod issue {
+    use super::{ED25519_PUBLIC_LEN, OID_ED25519, TAG_BIT_STRING, TAG_EXTENSIONS, TAG_SEQUENCE};
+
+    /// Тег DER: INTEGER.
+    const TAG_INTEGER: u8 = 0x02;
+    /// Тег DER: OCTET STRING.
+    const TAG_OCTET_STRING: u8 = 0x04;
+    /// Тег DER: OBJECT IDENTIFIER.
+    const TAG_OID: u8 = 0x06;
+    /// Тег DER: `UTF8String`.
+    const TAG_UTF8: u8 = 0x0c;
+    /// Тег DER: `UTCTime`.
+    const TAG_UTC_TIME: u8 = 0x17;
+    /// Тег DER: SET.
+    const TAG_SET: u8 = 0x31;
+    /// Контекстный `[0]` в явной форме — поле `version`.
+    const TAG_VERSION: u8 = 0xa0;
+
+    /// OID `id-at-commonName` (2.5.4.3).
+    const OID_COMMON_NAME: [u8; 3] = [0x55, 0x04, 0x03];
+    /// OID `id-ce-subjectAltName` (2.5.29.17) — под подпись ML-DSA-65.
+    const OID_SUBJECT_ALT_NAME: [u8; 3] = [0x55, 0x1d, 0x11];
+
+    /// Сколько секунд сертификат считается действительным.
+    ///
+    /// Значение видит только клиент, и то не проверяет: подлинность
+    /// доказывает `HMAC`, а не сроки. Но сертификат с осмысленным
+    /// сроком выглядит обычнее, а вреда от этого нет.
+    const VALIDITY: u32 = 90 * 24 * 60 * 60;
+
+    /// Собрать элемент DER.
+    fn der(tag: u8, value: &[u8]) -> Vec<u8> {
+        let mut out = vec![tag];
+        let length = value.len();
+        if length < 0x80 {
+            out.push(u8::try_from(length).unwrap_or(0));
+        } else if length < 0x100 {
+            out.extend([0x81, u8::try_from(length).unwrap_or(0)]);
+        } else if length < 0x1_0000 {
+            let bytes = u16::try_from(length).unwrap_or(u16::MAX).to_be_bytes();
+            out.extend([0x82, bytes[0], bytes[1]]);
+        } else {
+            let bytes = u32::try_from(length).unwrap_or(u32::MAX).to_be_bytes();
+            out.extend([0x83, bytes[1], bytes[2], bytes[3]]);
+        }
+        out.extend_from_slice(value);
+        out
+    }
+
+    /// `BIT STRING` без неиспользованных битов.
+    fn bit_string(value: &[u8]) -> Vec<u8> {
+        let mut body = vec![0_u8];
+        body.extend_from_slice(value);
+        der(TAG_BIT_STRING, &body)
+    }
+
+    /// `Name` из одного `commonName`.
+    fn name(common_name: &str) -> Vec<u8> {
+        let mut attribute = Vec::new();
+        attribute.extend(der(TAG_OID, &OID_COMMON_NAME));
+        attribute.extend(der(TAG_UTF8, common_name.as_bytes()));
+        der(TAG_SEQUENCE, &der(TAG_SET, &der(TAG_SEQUENCE, &attribute)))
+    }
+
+    /// Перевести секунды эпохи в `UTCTime` вида `YYMMDDHHMMSSZ`.
+    ///
+    /// Григорианский календарь без часовых поясов и високосных секунд —
+    /// ровно то, что требует ASN.1.
+    fn utc_time(seconds: u32) -> Vec<u8> {
+        let days = i64::from(seconds / 86_400);
+        let rest = seconds % 86_400;
+        let (year, month, day) = civil_from_days(days);
+
+        let text = format!(
+            "{:02}{:02}{:02}{:02}{:02}{:02}Z",
+            year % 100,
+            month,
+            day,
+            rest / 3600,
+            (rest % 3600) / 60,
+            rest % 60
+        );
+        der(TAG_UTC_TIME, text.as_bytes())
+    }
+
+    /// Дата по числу дней от 1970-01-01. Алгоритм Хиннанта.
+    fn civil_from_days(days: i64) -> (i64, i64, i64) {
+        let shifted = days + 719_468;
+        let era = shifted.div_euclid(146_097);
+        let day_of_era = shifted.rem_euclid(146_097);
+        let year_of_era =
+            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let year = year_of_era + era * 400;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let shifted_month = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+        let month = if shifted_month < 10 {
+            shifted_month + 3
+        } else {
+            shifted_month - 9
+        };
+        (if month <= 2 { year + 1 } else { year }, month, day)
+    }
+
+    /// Собрать временный сертификат точки выхода.
+    ///
+    /// `signature` — `HMAC-SHA512` от общего секрета и открытого ключа;
+    /// именно он занимает место подписи. `extension` — необязательная
+    /// подпись ML-DSA-65, если включена постквантовая проверка.
+    #[must_use]
+    pub fn temporary_certificate(
+        public_key: &[u8; ED25519_PUBLIC_LEN],
+        common_name: &str,
+        now: u32,
+        signature: &[u8],
+        extension: Option<&[u8]>,
+    ) -> Vec<u8> {
+        let mut tbs = Vec::new();
+        tbs.extend(der(TAG_VERSION, &der(TAG_INTEGER, &[0x02]))); // v3
+
+        // Серийный номер: производная от открытого ключа. Постоянного
+        // счётчика у одноразового сертификата быть не может, а
+        // случайность здесь ничего не даёт.
+        let mut serial = vec![0x00];
+        serial.extend_from_slice(public_key.get(..8).unwrap_or_default());
+        tbs.extend(der(TAG_INTEGER, &serial));
+
+        let algorithm = der(TAG_SEQUENCE, &OID_ED25519);
+        tbs.extend(algorithm.clone());
+        tbs.extend(name(common_name)); // issuer: сам себе
+        tbs.extend(der(
+            TAG_SEQUENCE,
+            &[
+                utc_time(now.saturating_sub(3600)),
+                utc_time(now.saturating_add(VALIDITY)),
+            ]
+            .concat(),
+        ));
+        tbs.extend(name(common_name)); // subject
+
+        let mut spki = algorithm.clone();
+        spki.extend(bit_string(public_key));
+        tbs.extend(der(TAG_SEQUENCE, &spki));
+
+        if let Some(value) = extension {
+            let mut entry = Vec::new();
+            entry.extend(der(TAG_OID, &OID_SUBJECT_ALT_NAME));
+            entry.extend(der(TAG_OCTET_STRING, value));
+            tbs.extend(der(
+                TAG_EXTENSIONS,
+                &der(TAG_SEQUENCE, &der(TAG_SEQUENCE, &entry)),
+            ));
+        }
+
+        let mut certificate = Vec::new();
+        certificate.extend(der(TAG_SEQUENCE, &tbs));
+        certificate.extend(algorithm);
+        certificate.extend(bit_string(signature));
+        der(TAG_SEQUENCE, &certificate)
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    mod tests {
+        use super::*;
+        use crate::cert::TemporaryCertificate;
+
+        #[test]
+        fn what_we_issue_is_what_we_parse() {
+            let public_key = [0x77_u8; ED25519_PUBLIC_LEN];
+            let signature = vec![0x11_u8; 64];
+            let der_bytes = temporary_certificate(
+                &public_key,
+                "www.microsoft.com",
+                1_800_000_000,
+                &signature,
+                None,
+            );
+
+            let parsed = TemporaryCertificate::parse(&der_bytes).unwrap();
+            assert_eq!(parsed.public_key, public_key);
+            assert_eq!(parsed.signature, signature);
+            assert_eq!(parsed.first_extension, None);
+        }
+
+        #[test]
+        fn the_post_quantum_extension_survives_the_round_trip() {
+            let value = vec![0x33_u8; 3309];
+            let der_bytes = temporary_certificate(
+                &[0x01; ED25519_PUBLIC_LEN],
+                "example.org",
+                1_800_000_000,
+                &[0x22; 64],
+                Some(&value),
+            );
+            let parsed = TemporaryCertificate::parse(&der_bytes).unwrap();
+            assert_eq!(parsed.first_extension, Some(value));
+        }
+
+        #[test]
+        fn dates_are_converted_correctly() {
+            // Значения сверены независимо, а не выведены тем же кодом.
+            for (seconds, expected) in [
+                (946_684_800_u32, "000101000000Z"), // 2000-01-01, високосный
+                (1_786_032_000, "260806160000Z"),
+                (1_800_000_000, "270115080000Z"),
+                (951_782_400, "000229000000Z"),   // 29 февраля 2000
+                (1_709_164_800, "240229000000Z"), // 29 февраля 2024
+            ] {
+                assert_eq!(
+                    utc_time(seconds),
+                    der(TAG_UTC_TIME, expected.as_bytes()),
+                    "{seconds}"
+                );
+            }
+        }
+
+        #[test]
+        fn long_form_lengths_are_emitted_where_needed() {
+            // Сертификат с подписью ML-DSA-65 выходит за 256 байт, и
+            // короткая форма длины перестаёт годиться.
+            for size in [0_usize, 100, 200, 300, 3309] {
+                let der_bytes = temporary_certificate(
+                    &[0x05; ED25519_PUBLIC_LEN],
+                    "example.org",
+                    1_800_000_000,
+                    &[0x44; 64],
+                    (size > 0).then(|| vec![0x66; size]).as_deref(),
+                );
+                assert!(
+                    TemporaryCertificate::parse(&der_bytes).is_ok(),
+                    "расширение {size} байт"
+                );
+            }
+        }
+    }
+}

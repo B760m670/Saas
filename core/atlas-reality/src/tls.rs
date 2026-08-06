@@ -35,7 +35,7 @@
 //! проверку. Различать их клиент не должен — снаружи эти случаи и не
 //! различаются, в этом и смысл REALITY.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use hmac::{KeyInit as _, Mac as _, SimpleHmac};
 use sha2::Sha512;
@@ -247,4 +247,168 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
         .zip(right)
         .fold(0_u8, |acc, (a, b)| acc | (a ^ b))
         == 0
+}
+
+/// Источник временного сертификата для серверной стороны TLS.
+///
+/// Точка выхода не имеет своего сертификата и не может его иметь: любой
+/// выпущенный на её имя документ попал бы в журналы прозрачности и стал
+/// бы поводом для блокировки. Вместо этого она порождает сертификат
+/// заново на каждое соединение — из метки, которую клиент спрятал в
+/// `session_id`, и из своего приватного ключа.
+///
+/// # Что происходит с чужими
+///
+/// Отказ означает, что метка не открылась: перед нами не наш клиент, а
+/// зонд, сканер или случайный браузер. Вызывающий обязан поступить с
+/// таким соединением так же, как поступил бы сайт прикрытия, — то есть
+/// проксировать его туда без изменений. Именно на этом держится
+/// неотличимость: посторонний видит настоящий чужой сайт, потому что
+/// перед ним и есть настоящий чужой сайт.
+#[derive(Debug)]
+pub struct Certificates {
+    /// Серверная сторона REALITY. Под замком, потому что окно повторов
+    /// изменяется на каждом соединении, а соединения приходят
+    /// одновременно.
+    server: Mutex<crate::Server>,
+    /// Имя, которое ставится в сертификат.
+    common_name: String,
+    /// Ключ ML-DSA-65 для постквантового подтверждения, если включено.
+    post_quantum: Option<Arc<atlas_crypto::sign::SigningKey>>,
+}
+
+impl Certificates {
+    /// Создать источник поверх серверной стороны REALITY.
+    ///
+    /// `common_name` — обычно домен сайта прикрытия: сертификат видит
+    /// только наш клиент, и то не проверяет имя, но правдоподобное
+    /// значение ничего не стоит.
+    #[must_use]
+    pub fn new(server: crate::Server, common_name: impl Into<String>) -> Self {
+        Self {
+            server: Mutex::new(server),
+            common_name: common_name.into(),
+            post_quantum: None,
+        }
+    }
+
+    /// Подписывать сертификат ещё и ключом ML-DSA-65.
+    #[must_use]
+    pub fn with_post_quantum(mut self, key: Arc<atlas_crypto::sign::SigningKey>) -> Self {
+        self.post_quantum = Some(key);
+        self
+    }
+}
+
+impl atlas_tls::server::CertificateSource for Certificates {
+    fn accept(
+        &self,
+        hello: &atlas_tls::ClientHello,
+        raw: &[u8],
+    ) -> atlas_tls::Result<Box<dyn atlas_tls::server::Pending>> {
+        let client_public = client_x25519(hello)
+            .ok_or(atlas_tls::Error::Untrusted("в приветствии нет доли x25519"))?;
+
+        let now = crate::now_seconds();
+        let mut server = self
+            .server
+            .lock()
+            .map_err(|_| atlas_tls::Error::Untrusted("состояние точки выхода повреждено"))?;
+
+        // Метка либо открывается нашим ключом, либо нет. Третьего не
+        // дано, и подробностей наружу не уходит: различать «не тот
+        // ключ», «не тот shortId» и «повтор» — значит дать зонду оракул.
+        server
+            .authenticate(raw, &client_public, now)
+            .map_err(|_| atlas_tls::Error::Untrusted("метка не наша"))?;
+        let auth_key = server
+            .auth_key_for(raw, &client_public)
+            .map_err(|_| atlas_tls::Error::Untrusted("общий ключ не выводится"))?;
+        drop(server);
+
+        Ok(Box::new(PendingCertificate {
+            auth_key,
+            client_hello: raw.to_vec(),
+            common_name: self.common_name.clone(),
+            now,
+            post_quantum: self.post_quantum.clone(),
+        }))
+    }
+}
+
+/// Клиент признан своим; осталось дождаться `ServerHello`.
+#[derive(Debug)]
+struct PendingCertificate {
+    auth_key: [u8; 32],
+    client_hello: Vec<u8>,
+    common_name: String,
+    now: u32,
+    post_quantum: Option<Arc<atlas_crypto::sign::SigningKey>>,
+}
+
+impl atlas_tls::server::Pending for PendingCertificate {
+    fn finish(
+        self: Box<Self>,
+        server_hello: &[u8],
+    ) -> atlas_tls::Result<atlas_tls::server::Credentials> {
+        // Ключ Ed25519 — свой на каждое соединение. Эталонная
+        // реализация держит его константой в коде; свежий не хуже и не
+        // лучше по стойкости (подлинность доказывает `HMAC`, а не он),
+        // зато не превращает утечку одной константы в общую для всех.
+        let key = atlas_crypto::sign::ClassicKey::generate();
+        let public_key = key.public_key();
+
+        let Ok(mut mac) = SimpleHmac::<Sha512>::new_from_slice(&self.auth_key) else {
+            return Err(atlas_tls::Error::Untrusted("HMAC не заводится"));
+        };
+        mac.update(&public_key);
+        let signature = mac.clone().finalize().into_bytes().to_vec();
+
+        // Постквантовая подпись покрывает оба приветствия — потому её и
+        // нельзя было сделать раньше, до сборки ответа.
+        let extension = self.post_quantum.as_ref().map(|signing| {
+            mac.update(&self.client_hello);
+            mac.update(server_hello);
+            let message = mac.finalize().into_bytes();
+            signing.sign_post_quantum(&message)
+        });
+
+        let certificate = crate::cert::issue::temporary_certificate(
+            &public_key,
+            &self.common_name,
+            self.now,
+            &signature,
+            extension.as_deref(),
+        );
+
+        Ok(atlas_tls::server::Credentials {
+            chain: vec![certificate],
+            key,
+        })
+    }
+}
+
+/// Открытый ключ `x25519` клиента из расширения `key_share`.
+///
+/// Тот же порядок, что и на клиентской стороне: классическая доля
+/// первой, половина гибридной — запасным вариантом.
+fn client_x25519(hello: &atlas_tls::ClientHello) -> Option<[u8; 32]> {
+    use atlas_tls::bytes::Reader;
+
+    let extension = hello.extension(atlas_tls::ext::KEY_SHARE)?;
+    let mut outer = Reader::new(&extension.body);
+    let mut list = Reader::new(outer.vec_u16().ok()?);
+
+    let mut classic = None;
+    let mut hybrid = None;
+    while !list.is_empty() {
+        let group = list.u16().ok()?;
+        let share = list.vec_u16().ok()?;
+        if group == X25519 && share.len() == 32 {
+            classic = share.try_into().ok();
+        } else if group == X25519_MLKEM768 && share.len() == 1216 {
+            hybrid = share.get(1184..).and_then(|tail| tail.try_into().ok());
+        }
+    }
+    classic.or(hybrid)
 }

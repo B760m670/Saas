@@ -171,6 +171,61 @@ impl VerifyingKey {
     }
 }
 
+/// Голая пара Ed25519 — без постквантовой половины.
+///
+/// Нужна там, где формат задаём не мы. Единственный такой случай —
+/// временный сертификат REALITY: точка выхода кладёт в него ключ
+/// Ed25519 и подписывает им `CertificateVerify` рукопожатия, потому что
+/// так устроен TLS, а не потому, что нам так удобнее.
+///
+/// Для всего своего пользоваться надо [`SigningKey`]: гибрид требует
+/// сломать оба независимых допущения, а не одно.
+pub struct ClassicKey(ed25519_dalek::SigningKey);
+
+impl core::fmt::Debug for ClassicKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("ClassicKey(<скрыто>)")
+    }
+}
+
+impl ClassicKey {
+    /// Сгенерировать новую пару.
+    #[must_use]
+    pub fn generate() -> Self {
+        Self(ed25519_dalek::SigningKey::generate(&mut OsRng))
+    }
+
+    /// Открытый ключ, 32 байта.
+    #[must_use]
+    pub fn public_key(&self) -> [u8; ED_PUBLIC_LEN] {
+        self.0.verifying_key().to_bytes()
+    }
+
+    /// Подписать сообщение как есть.
+    #[must_use]
+    pub fn sign(&self, message: &[u8]) -> [u8; ED_SIGNATURE_LEN] {
+        self.0.sign(message).to_bytes()
+    }
+
+    /// Проверить подпись открытым ключом.
+    #[must_use]
+    pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> bool {
+        let Ok(key_bytes): core::result::Result<[u8; ED_PUBLIC_LEN], _> = public_key.try_into()
+        else {
+            return false;
+        };
+        let Ok(sig_bytes): core::result::Result<[u8; ED_SIGNATURE_LEN], _> = signature.try_into()
+        else {
+            return false;
+        };
+        let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes) else {
+            return false;
+        };
+        key.verify(message, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
+            .is_ok()
+    }
+}
+
 /// Открытый ключ голой ML-DSA-65 — без классической половины.
 ///
 /// Гибрид [`VerifyingKey`] — то, чем подписывает **наш** control plane, и

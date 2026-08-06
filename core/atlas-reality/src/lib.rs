@@ -65,7 +65,7 @@ pub mod tls;
 pub use error::{Error, Result};
 pub use marker::Marker;
 pub use replay::ReplayWindow;
-pub use tls::{AuthKey, Sealer, Verifier};
+pub use tls::{AuthKey, Certificates, Sealer, Verifier};
 
 use atlas_crypto::rng::OsRng;
 
@@ -74,6 +74,19 @@ use atlas_crypto::rng::OsRng;
 /// Записанный `ClientHello` старше этого срока сервер отвергает, что
 /// закрывает повтор.
 pub const DEFAULT_MAX_SKEW: u32 = 120;
+
+/// Текущее время в секундах эпохи.
+///
+/// Единственное место в крейте, где берутся системные часы: всё
+/// остальное принимает время параметром, чтобы тесты были
+/// воспроизводимы. Серверной стороне часы всё-таки нужны — она сверяет
+/// с ними отметку в метке.
+#[must_use]
+pub fn now_seconds() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| u32::try_from(elapsed.as_secs()).unwrap_or(0))
+}
 
 /// Сколько секунд помнить метку при заданном расхождении часов.
 ///
