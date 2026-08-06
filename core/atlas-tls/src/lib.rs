@@ -72,8 +72,8 @@ pub mod record;
 pub mod stream;
 
 pub use client::{
-    AcceptAnyServer, ClientConfig, Connection, PeerIdentity, RandomSessionId, ServerVerifier,
-    SessionIdSource,
+    AcceptAnyServer, ClientConfig, Connection, HelloSealer, PeerIdentity, RandomSessionId,
+    ServerVerifier, SessionIdSource,
 };
 pub use error::{Error, Result};
 pub use fingerprint::{Ja3, Ja4, Transport};

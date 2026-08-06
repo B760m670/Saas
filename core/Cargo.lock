@@ -90,6 +90,7 @@ dependencies = [
  "atlas-crypto",
  "atlas-tls",
  "hkdf",
+ "hmac",
  "serde_json",
  "sha2",
  "thiserror",

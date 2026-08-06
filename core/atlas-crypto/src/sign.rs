@@ -66,6 +66,31 @@ impl SigningKey {
     }
 }
 
+impl SigningKey {
+    /// Подписать сообщение **одной лишь** ML-DSA-65, как есть.
+    ///
+    /// Пара к [`PostQuantumKey::verify`]. Нужна там, где схему задаём не
+    /// мы: точка выхода REALITY кладёт такую подпись в расширение
+    /// временного сертификата, и добавить туда свой префикс разделения
+    /// назначений значило бы разойтись с чужой реализацией.
+    ///
+    /// Для всего своего пользоваться надо [`SigningKey::sign`]: гибрид
+    /// требует сломать оба независимых допущения, а не одно.
+    #[must_use]
+    pub fn sign_post_quantum(&self, message: &[u8]) -> Vec<u8> {
+        self.pq.sign(message).encode().as_slice().to_vec()
+    }
+
+    /// Голая постквантовая половина открытого ключа.
+    ///
+    /// Именно её точка выхода публикует для проверки своей подписи в
+    /// сертификате REALITY.
+    #[must_use]
+    pub fn post_quantum_public_key(&self) -> Vec<u8> {
+        self.verifying_key().post_quantum_bytes()
+    }
+}
+
 /// Открытый ключ для проверки подписи.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VerifyingKey {
@@ -106,6 +131,12 @@ impl VerifyingKey {
         )
     }
 
+    /// Голая постквантовая половина ключа.
+    #[must_use]
+    pub fn post_quantum_bytes(&self) -> Vec<u8> {
+        self.pq.encode().as_slice().to_vec()
+    }
+
     /// Сериализовать в байты: сначала Ed25519, затем ML-DSA-65.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -137,6 +168,47 @@ impl VerifyingKey {
         let pq = ml_dsa::VerifyingKey::<MlDsa65>::decode(&pq_encoded);
 
         Ok(Self { ed, pq })
+    }
+}
+
+/// Открытый ключ голой ML-DSA-65 — без классической половины.
+///
+/// Гибрид [`VerifyingKey`] — то, чем подписывает **наш** control plane, и
+/// для него это правильный выбор. Но проверять чужие подписи, сделанные
+/// одной лишь ML-DSA-65, гибридом нельзя: там нет второй половины.
+///
+/// Такой случай ровно один — постквантовое подтверждение точки выхода в
+/// REALITY. Сообщение там подписывается как есть, без разделения
+/// назначений: схему задаём не мы, и добавить свой префикс значило бы
+/// разойтись с чужой реализацией.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostQuantumKey(ml_dsa::VerifyingKey<MlDsa65>);
+
+impl PostQuantumKey {
+    /// Восстановить ключ из байтов.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadEncoding`] при неверной длине.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        let encoded = EncodedVerifyingKey::<MlDsa65>::try_from(bytes)
+            .map_err(|_| Error::BadEncoding("открытый ключ ML-DSA-65"))?;
+        Ok(Self(ml_dsa::VerifyingKey::<MlDsa65>::decode(&encoded)))
+    }
+
+    /// Проверить подпись над сообщением.
+    ///
+    /// Возвращает признак, а не `Result`: у вызывающего нет права
+    /// сообщать наружу, чем именно проверка не устроила.
+    #[must_use]
+    pub fn verify(&self, message: &[u8], signature: &[u8]) -> bool {
+        let Ok(encoded) = EncodedSignature::<MlDsa65>::try_from(signature) else {
+            return false;
+        };
+        let Some(parsed) = ml_dsa::Signature::<MlDsa65>::decode(&encoded) else {
+            return false;
+        };
+        self.0.verify(message, &parsed).is_ok()
     }
 }
 

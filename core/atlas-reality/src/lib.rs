@@ -56,13 +56,16 @@
 #![warn(missing_docs, clippy::pedantic)]
 
 pub mod auth;
+pub mod cert;
 mod error;
 pub mod marker;
 pub mod replay;
+pub mod tls;
 
 pub use error::{Error, Result};
 pub use marker::Marker;
 pub use replay::ReplayWindow;
+pub use tls::{AuthKey, Sealer, Verifier};
 
 use atlas_crypto::rng::OsRng;
 
@@ -248,6 +251,22 @@ impl Server {
         self.seen.len()
     }
 
+    /// Вычислить общий ключ для этого приветствия.
+    ///
+    /// Точке выхода он нужен после приёма метки: временный сертификат,
+    /// которым она доказывает себя клиенту, строится именно на нём.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TooShort`], если сообщение не той формы.
+    pub fn auth_key_for(&self, handshake: &[u8], client_public: &[u8; 32]) -> Result<[u8; 32]> {
+        let shared = self
+            .secret
+            .diffie_hellman(&x25519_dalek::PublicKey::from(*client_public));
+        let random = auth::random_of_public(handshake)?;
+        Ok(auth::derive_auth_key(shared.as_bytes(), &random))
+    }
+
     /// Проверить метку.
     ///
     /// `client_public` транспорт берёт из `key_share` полученного
@@ -264,12 +283,7 @@ impl Server {
         client_public: &[u8; 32],
         now: u32,
     ) -> Result<Marker> {
-        let shared = self
-            .secret
-            .diffie_hellman(&x25519_dalek::PublicKey::from(*client_public));
-        let random = auth::random_of_public(handshake)?;
-        let key = auth::derive_auth_key(shared.as_bytes(), &random);
-
+        let key = self.auth_key_for(handshake, client_public)?;
         let marker = auth::open(handshake, &key)?;
 
         if marker.skew_from(now) > self.max_skew {

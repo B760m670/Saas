@@ -54,6 +54,12 @@ use crate::record::{Aead, ContentType, Protection, HEADER_LEN, MAX_PLAINTEXT};
 /// записи. Защита от собеседника, который шлёт по байту.
 const MAX_BUFFERED: usize = 1 << 20;
 
+/// Версия в заголовке записи с первым приветствием.
+///
+/// Именно `0x0301`, а не `0x0303`: так делает `BoringSSL`, и значение
+/// входит в то, что видит наблюдатель на первом же пакете.
+const RECORD_VERSION_HELLO: u16 = 0x0301;
+
 /// Сведения о сервере, по которым решается, доверять ли ему.
 #[derive(Debug)]
 pub struct PeerIdentity<'a> {
@@ -65,6 +71,14 @@ pub struct PeerIdentity<'a> {
     pub certificate_verify: &'a CertificateVerify,
     /// Хэш транскрипта, над которым сделана подпись.
     pub transcript_hash: &'a [u8],
+    /// Сырые байты нашего `ClientHello` — того, что реально ушло.
+    ///
+    /// Нужны REALITY: постквантовое подтверждение привязано к конкретному
+    /// рукопожатию именно через них. После `HelloRetryRequest` здесь
+    /// лежит второе приветствие.
+    pub client_hello: &'a [u8],
+    /// Сырые байты `ServerHello`.
+    pub server_hello: &'a [u8],
 }
 
 /// Правило принятия сервера.
@@ -111,6 +125,32 @@ pub trait SessionIdSource: core::fmt::Debug + Send + Sync {
     fn session_id(&self, shares: &KeyShares) -> Result<Vec<u8>>;
 }
 
+/// Правка готового `ClientHello` перед отправкой.
+///
+/// Существует ради REALITY и вряд ли понадобится кому-то ещё. Метка
+/// REALITY лежит в `legacy_session_id`, но аутентифицирует **всё
+/// сообщение целиком** — поэтому её нельзя выдать заранее, как обычное
+/// значение поля: пока сообщение не собрано, шифровать нечего.
+///
+/// Отсюда правка на месте, уже над сериализованными байтами, и жёсткое
+/// требование к реализации: **длина сообщения меняться не должна**.
+/// Метка занимает ровно те же тридцать два байта, что и случайный
+/// идентификатор сессии у браузера, — в этом весь смысл, отпечаток
+/// обязан остаться браузерным.
+pub trait HelloSealer: core::fmt::Debug + Send + Sync {
+    /// Изменить сообщение на месте.
+    ///
+    /// `shares` даёт доступ к сгенерированным долям обмена: REALITY
+    /// выводит ключ метки из секретной части доли `x25519`, и отдельной
+    /// пары для этого не заводится — иначе на проводе появился бы лишний
+    /// открытый ключ.
+    ///
+    /// # Errors
+    ///
+    /// Ошибка запечатывания.
+    fn seal(&self, handshake: &mut [u8], shares: &KeyShares) -> Result<()>;
+}
+
 /// Случайный `session_id` — то, что шлёт обычный браузер.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RandomSessionId;
@@ -136,6 +176,8 @@ pub struct ClientConfig {
     pub verifier: Box<dyn ServerVerifier>,
     /// Откуда берётся `legacy_session_id`.
     pub session_id: Box<dyn SessionIdSource>,
+    /// Правка готового приветствия перед отправкой — для REALITY.
+    pub sealer: Option<Box<dyn HelloSealer>>,
     /// Содержимое нашей половины ALPS.
     ///
     /// Chrome объявляет `application_settings` и, когда сервер отвечает
@@ -160,6 +202,7 @@ impl ClientConfig {
             groups: vec![Group::X25519MlKem768, Group::X25519],
             verifier: Box::new(AcceptAnyServer),
             session_id: Box::new(RandomSessionId),
+            sealer: None,
             alps_settings: Vec::new(),
         }
     }
@@ -175,6 +218,13 @@ impl ClientConfig {
     #[must_use]
     pub fn with_session_id(mut self, source: Box<dyn SessionIdSource>) -> Self {
         self.session_id = source;
+        self
+    }
+
+    /// Задать правку готового приветствия.
+    #[must_use]
+    pub fn with_sealer(mut self, sealer: Box<dyn HelloSealer>) -> Self {
+        self.sealer = Some(sealer);
         self
     }
 
@@ -219,6 +269,7 @@ pub struct Connection {
     shares: KeyShares,
     hello: ClientHello,
     retried: bool,
+    sealed: bool,
     sent_ccs: bool,
     certificate_requested: bool,
 
@@ -239,6 +290,11 @@ pub struct Connection {
     server_application_secret: Vec<u8>,
     read: Option<Protection>,
     write: Option<Protection>,
+
+    /// Сырые байты отправленного приветствия и полученного ответа.
+    /// Хранятся ради REALITY — см. [`PeerIdentity`].
+    hello_raw: Vec<u8>,
+    server_hello_raw: Vec<u8>,
 
     /// Причина, по которой соединение стало непригодным.
     ///
@@ -279,6 +335,7 @@ impl Connection {
             shares,
             hello,
             retried: false,
+            sealed: false,
             sent_ccs: false,
             certificate_requested: false,
 
@@ -302,6 +359,8 @@ impl Connection {
             read: None,
             write: None,
 
+            hello_raw: Vec::new(),
+            server_hello_raw: Vec::new(),
             failure: None,
             certificate: None,
             alpn: None,
@@ -315,8 +374,35 @@ impl Connection {
 
     /// Отправить текущее приветствие: в транскрипт и в исходящий буфер.
     fn emit_client_hello(&mut self) -> Result<()> {
-        self.transcript.extend(&self.hello.to_handshake()?);
-        let record = self.hello.to_record()?;
+        let mut handshake = self.hello.to_handshake()?;
+
+        // Печать ставится ровно один раз, на первом приветствии. Второе,
+        // после `HelloRetryRequest`, обязано нести тот же `session_id`
+        // (RFC 8446, раздел 4.1.2), поэтому запечатанное значение
+        // возвращается в модель приветствия и переезжает во второй круг
+        // как есть. Перепечатать его нельзя: аутентифицируется всё
+        // сообщение, а оно изменилось.
+        if !self.sealed {
+            if let Some(sealer) = self.config.sealer.as_ref() {
+                let before = handshake.len();
+                sealer.seal(&mut handshake, &self.shares)?;
+                if handshake.len() != before {
+                    return Err(Error::Protocol("печать изменила длину приветствия"));
+                }
+                self.hello.session_id = session_id_of(&handshake)?;
+            }
+            self.sealed = true;
+        }
+
+        self.transcript.extend(&handshake);
+        self.hello_raw.clone_from(&handshake);
+
+        let mut record = Vec::with_capacity(handshake.len() + HEADER_LEN);
+        record.push(ContentType::Handshake.code());
+        record.extend_from_slice(&RECORD_VERSION_HELLO.to_be_bytes());
+        let length = u16::try_from(handshake.len()).map_err(|_| Error::TooLong)?;
+        record.extend_from_slice(&length.to_be_bytes());
+        record.extend_from_slice(&handshake);
         self.outgoing.extend_from_slice(&record);
         Ok(())
     }
@@ -596,6 +682,7 @@ impl Connection {
         }
 
         self.transcript.extend(&message.raw);
+        self.server_hello_raw.clone_from(&message.raw);
 
         let (group_code, peer_share) = hello
             .key_share()
@@ -771,6 +858,8 @@ impl Connection {
             certificate,
             certificate_verify: &verify,
             transcript_hash: &transcript_hash,
+            client_hello: &self.hello_raw,
+            server_hello: &self.server_hello_raw,
         })?;
 
         self.transcript.extend(&message.raw);
@@ -1047,6 +1136,21 @@ impl std::io::Write for BoundedSink {
 /// Следующий секрет трафика: `HKDF-Expand-Label(secret, "traffic upd", "", L)`.
 fn next_traffic_secret(hash: Hash, secret: &[u8]) -> Vec<u8> {
     expand_label(hash, secret, "traffic upd", &[], hash.len())
+}
+
+/// Вытащить `legacy_session_id` из сериализованного приветствия.
+///
+/// Смещение фиксировано: тип, трёхбайтовая длина, версия, тридцать два
+/// байта `random`, затем однобайтовая длина идентификатора.
+fn session_id_of(handshake: &[u8]) -> Result<Vec<u8>> {
+    /// Позиция байта длины `legacy_session_id`.
+    const LENGTH_AT: usize = 4 + 2 + 32;
+
+    let len = usize::from(*handshake.get(LENGTH_AT).ok_or(Error::Truncated)?);
+    handshake
+        .get(LENGTH_AT + 1..LENGTH_AT + 1 + len)
+        .map(<[u8]>::to_vec)
+        .ok_or(Error::Truncated)
 }
 
 /// Разобрать список расширений сообщения рукопожатия.
