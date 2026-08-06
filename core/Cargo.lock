@@ -87,6 +87,8 @@ name = "atlas-tls"
 version = "0.1.0"
 dependencies = [
  "atlas-crypto",
+ "hkdf",
+ "hmac",
  "md-5",
  "serde_json",
  "sha2",

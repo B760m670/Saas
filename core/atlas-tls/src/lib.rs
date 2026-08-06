@@ -32,6 +32,7 @@ pub mod ext;
 pub mod fingerprint;
 pub mod grease;
 mod hello;
+pub mod keyschedule;
 pub mod profile;
 
 pub use error::{Error, Result};

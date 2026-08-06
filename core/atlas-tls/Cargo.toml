@@ -11,6 +11,8 @@ repository.workspace = true
 atlas-crypto = { path = "../atlas-crypto" }
 md-5 = { version = "0.11", default-features = false }
 sha2 = { version = "0.11", default-features = false }
+hkdf = { version = "0.13", default-features = false }
+hmac = { version = "0.13", default-features = false }
 thiserror.workspace = true
 
 [lints]
