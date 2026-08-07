@@ -27,6 +27,7 @@
 
 import SwiftUI
 import UIKit
+import WebKit
 import XCTest
 
 // `AtlasCore` приходит вместе с модулем приложения: оно его
@@ -224,4 +225,135 @@ private func askProxy(port: UInt16) throws -> String {
 
 private enum Failure: Error {
     case socket, connect, send, receive
+}
+
+/// Браузер: проверяется то, ради чего он и написан.
+///
+/// Не «открывается ли окно», а **уходит ли трафик в туннель** и
+/// **убраны ли пути утечки**. Первое проверяется наличием настройки
+/// прокси, второе — исполнением скрипта затыкания в настоящем движке.
+@MainActor
+final class BrowserTests: XCTestCase {
+
+    /// Адрес прокси разбирается в точку подключения.
+    func testTheProxyAddressBecomesAnEndpoint() {
+        XCTAssertNotNil(WebView.endpoint(from: "127.0.0.1:1080"))
+        XCTAssertNil(WebView.endpoint(from: "127.0.0.1"), "адрес без порта не годится")
+        XCTAssertNil(WebView.endpoint(from: ":1080"), "адрес без узла не годится")
+        XCTAssertNil(WebView.endpoint(from: "127.0.0.1:не-порт"))
+    }
+
+    /// Введённое без схемы считается адресом, а не поисковым запросом.
+    ///
+    /// Отправлять напечатанное в поисковую службу значило бы отдавать ей
+    /// всё, что человек набирает, — включая то, ради сокрытия чего он и
+    /// включил туннель.
+    func testTypedTextBecomesAnAddressNotASearch() {
+        XCTAssertEqual(
+            WebView.url(from: "example.org")?.absoluteString,
+            "https://example.org"
+        )
+        XCTAssertEqual(
+            WebView.url(from: "https://example.org/путь")?.scheme,
+            "https"
+        )
+        XCTAssertNil(WebView.url(from: "   "))
+    }
+
+    /// Скрипт затыкания действительно убирает точки входа.
+    ///
+    /// Проверяется исполнением в настоящем `WKWebView`: скрипт
+    /// объявляется, страница загружается из строки, и у неё же
+    /// спрашивается, что осталось. Проверять текст скрипта глазами
+    /// бессмысленно — важно поведение движка.
+    func testHardeningRemovesTheLeakingEntryPoints() async throws {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(Hardening.userScript())
+
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.loadHTMLString("<html><head></head><body>проба</body></html>", baseURL: nil)
+        try await settle(view)
+
+        for name in ["window.RTCPeerConnection", "window.WebTransport", "window.PublicKeyCredential"] {
+            let answer = try await view.evaluateJavaScript("typeof \(name)")
+            XCTAssertEqual(
+                answer as? String, "undefined",
+                "\(name) осталась доступной странице"
+            )
+        }
+        let credentials = try await view.evaluateJavaScript("typeof navigator.credentials")
+        XCTAssertEqual(credentials as? String, "undefined", "WebAuthn остался доступен")
+    }
+
+    /// Убранное нельзя вернуть со стороны страницы.
+    ///
+    /// Свойства объявлены неконфигурируемыми именно ради этого: иначе
+    /// достаточно одной строки скрипта на странице, чтобы утечка
+    /// вернулась.
+    func testTheRemovedEntryPointsCannotBeRestored() async throws {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(Hardening.userScript())
+
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.loadHTMLString("<html><body></body></html>", baseURL: nil)
+        try await settle(view)
+
+        let attempt = """
+            (function () {
+                try { window.RTCPeerConnection = function () {}; } catch (e) {}
+                try {
+                    Object.defineProperty(window, 'WebTransport', { value: function () {} });
+                } catch (e) {}
+                return typeof window.RTCPeerConnection + ',' + typeof window.WebTransport;
+            })();
+            """
+        let answer = try await view.evaluateJavaScript(attempt)
+        XCTAssertEqual(
+            answer as? String, "undefined,undefined",
+            "страница вернула себе убранную возможность"
+        )
+    }
+
+    /// Подсказки предзагрузки вычищаются из дерева.
+    func testPrefetchHintsAreStripped() async throws {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(Hardening.userScript())
+
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.loadHTMLString(
+            """
+            <html><head>
+            <link rel="dns-prefetch" href="//tracker.example.com">
+            <link rel="preconnect" href="//cdn.example.com">
+            <link rel="stylesheet" href="data:text/css,">
+            </head><body></body></html>
+            """,
+            baseURL: nil
+        )
+        try await settle(view)
+
+        let left = try await view.evaluateJavaScript(
+            "document.querySelectorAll('link[rel*=prefetch], link[rel*=preconnect]').length"
+        )
+        XCTAssertEqual(left as? Int, 0, "подсказка предзагрузки осталась в дереве")
+
+        // Безобидная ссылка обязана уцелеть: вычищать всё подряд —
+        // значит сломать страницы без нужды.
+        let kept = try await view.evaluateJavaScript(
+            "document.querySelectorAll('link[rel=stylesheet]').length"
+        )
+        XCTAssertEqual(kept as? Int, 1, "вычищено лишнее")
+    }
+
+    /// Дать движку дойти до конца загрузки.
+    private func settle(_ view: WKWebView) async throws {
+        for _ in 0..<200 where view.isLoading {
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        // Наблюдателю за деревом нужен ещё один оборот цикла.
+        try await Task.sleep(nanoseconds: 150_000_000)
+    }
 }

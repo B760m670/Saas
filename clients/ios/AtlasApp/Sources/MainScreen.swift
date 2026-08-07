@@ -21,6 +21,7 @@ struct MainScreen: View {
     @EnvironmentObject private var model: AppModel
     @State private var showingProfile = false
     @State private var showingRules = false
+    @State private var showingBrowser = false
     @State private var ssid = ""
 
     var body: some View {
@@ -94,6 +95,14 @@ struct MainScreen: View {
                 LabeledContent("Принято", value: format(stats.fromTarget))
             }
 
+            // Браузер стоит первым: он работает везде, включая
+            // сотовую связь, а профиль — только в названной сети Wi-Fi.
+            Button {
+                showingBrowser = true
+            } label: {
+                Label("Открыть браузер", systemImage: "safari")
+            }
+
             TextField("Имя сети Wi-Fi", text: $ssid)
                 .autocorrectionDisabled()
             Button("Настроить эту сеть Wi-Fi") { showingProfile = true }
@@ -103,6 +112,11 @@ struct MainScreen: View {
         }
         .sheet(isPresented: $showingProfile) {
             ProfileScreen(xml: model.mobileconfig(ssid: ssid, password: nil))
+        }
+        .sheet(isPresented: $showingBrowser) {
+            if case .running(let address) = model.state {
+                BrowserScreen(proxy: address)
+            }
         }
     }
 
