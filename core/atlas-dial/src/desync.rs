@@ -529,6 +529,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_remembered_strategy_is_tried_first_and_only_once() {
+        let mut selector = Selector::with_known(Strategy::Records);
+        let mut tried = Vec::new();
+        let chosen = selector.choose(|s| {
+            tried.push(s);
+            s == Strategy::Disorder
+        });
+
+        assert_eq!(chosen, Some(Strategy::Disorder));
+        assert_eq!(
+            tried.first(),
+            Some(&Strategy::Records),
+            "память идёт первой"
+        );
+        assert_eq!(
+            tried.iter().filter(|s| **s == Strategy::Records).count(),
+            1,
+            "запомненный приём пробуется дважды — это лишняя неудачная попытка"
+        );
+        assert_eq!(selector.known(), Some(Strategy::Disorder));
+    }
+
+    // Успешный перебор обязан останавливаться: пробовать грубые приёмы
+    // после того, как сработал безобидный, незачем.
+    #[test]
+    fn probing_stops_at_the_first_success() {
+        let mut selector = Selector::new();
+        let mut tried = Vec::new();
+        let chosen = selector.choose(|s| {
+            tried.push(s);
+            s == Strategy::Split
+        });
+
+        assert_eq!(chosen, Some(Strategy::Split));
+        assert_eq!(tried, vec![Strategy::None, Strategy::Split]);
+    }
+
+    // Сеть меняется. Держаться за отживший приём — значит каждый раз
+    // начинать с заведомо неудачной попытки.
+    #[test]
+    fn a_total_failure_forgets_the_past() {
+        let mut selector = Selector::with_known(Strategy::Split);
+        assert_eq!(selector.choose(|_| false), None);
+        assert_eq!(selector.known(), None);
+    }
+
+    #[test]
+    fn every_strategy_is_offered_exactly_once() {
+        let mut selector = Selector::with_known(Strategy::Disorder);
+        let mut tried = Vec::new();
+        selector.choose(|s| {
+            tried.push(s);
+            false
+        });
+        assert_eq!(
+            tried.len(),
+            ORDER.len(),
+            "приёмы обязаны идти по одному разу"
+        );
+        for strategy in ORDER {
+            assert!(tried.contains(&strategy), "{strategy:?} не был опробован");
+        }
+    }
+
     // Приём применяется к настоящему сокету: проверяется, что оба
     // куска доехали и склеились в исходное сообщение.
     #[test]
@@ -603,5 +668,84 @@ mod tests {
             "TTL обязан вернуться: иначе всё дальнейшее соединение умрёт по дороге"
         );
         assert_eq!(server.join().unwrap(), wire);
+    }
+}
+
+/// Порядок перебора приёмов.
+///
+/// От самого безобидного к самому грубому. Смысл порядка не в
+/// эффективности, а в цене ошибки: разрез потока не меняет ничего,
+/// кроме размера пакетов, а рассинхронизация нарочно роняет пакет и
+/// добавляет задержку на повторную передачу. Если хватает малого,
+/// большего делать не надо.
+pub const ORDER: [Strategy; 4] = [
+    Strategy::None,
+    Strategy::Split,
+    Strategy::Records,
+    Strategy::Disorder,
+];
+
+/// Выбор приёма с памятью.
+///
+/// # Зачем
+///
+/// У разных операторов работает разное: где-то хватает разреза потока,
+/// где-то нужен низкий TTL, где-то не работает ничего. Угадать это
+/// нельзя — ни из кода, ни из документации. Единственный способ —
+/// попробовать на месте.
+///
+/// Перебирать заново на каждом соединении при этом нельзя: первые
+/// попытки заведомо неудачны, и каждая стоит времени. Поэтому
+/// удавшийся приём запоминается и идёт первым, а полный перебор
+/// случается только когда запомненный перестал работать.
+#[derive(Debug, Clone, Default)]
+pub struct Selector {
+    known: Option<Strategy>,
+}
+
+impl Selector {
+    /// Пустой выбор: ничего ещё не пробовали.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { known: None }
+    }
+
+    /// Начать с известного приёма.
+    #[must_use]
+    pub const fn with_known(strategy: Strategy) -> Self {
+        Self {
+            known: Some(strategy),
+        }
+    }
+
+    /// Что сработало в прошлый раз.
+    #[must_use]
+    pub const fn known(&self) -> Option<Strategy> {
+        self.known
+    }
+
+    /// Подобрать приём, пробуя по очереди.
+    ///
+    /// `attempt` возвращает `true`, если соединение состоялось.
+    /// Запомненный приём пробуется первым и не пробуется дважды.
+    pub fn choose<F>(&mut self, mut attempt: F) -> Option<Strategy>
+    where
+        F: FnMut(Strategy) -> bool,
+    {
+        let first = self.known.into_iter();
+        let rest = ORDER.into_iter().filter(|s| Some(*s) != self.known);
+
+        for strategy in first.chain(rest) {
+            if attempt(strategy) {
+                self.known = Some(strategy);
+                return Some(strategy);
+            }
+        }
+
+        // Ничего не сработало — забыть прошлое. Сеть изменилась, и
+        // держаться за отжившее означало бы каждый раз начинать с
+        // заведомо неудачной попытки.
+        self.known = None;
+        None
     }
 }
