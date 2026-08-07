@@ -1,44 +1,41 @@
 # Проверка ядра.
 #
-# # Про стоимость — это здесь главное
+# # Про стоимость — и про ошибку, которую здесь чуть не закрепили
 #
-# Первая редакция гоняла девять работ на каждый push **и** на каждый
-# pull_request. Среди них три на macOS и одна на Windows, а минуты на
-# них списываются с множителями ×10 и ×2. Выходило около 358 минут на
-# один коммит — при бесплатном лимите приватного репозитория в 2000
-# минут в месяц этого хватало на пять коммитов. Дальше прогоны
-# перестали начинаться, а потом и создаваться.
+# Первая редакция этого файла гоняла девять работ на каждый push **и**
+# на каждый pull_request. Увидев зависшие прогоны, я решил, что дело в
+# исчерпанных минутах, и убрал сборки под macOS и Windows в ручной
+# запуск.
 #
-# Отсюда три правила, которых стоит держаться:
+# Посылка была неверной. **Репозиторий публичный**, а для публичных
+# репозиториев минуты Actions бесплатны и не ограничены; отчёт по
+# расходу это подтверждает — `total_ms: 0` по всем раннерам. Тратить
+# было нечего, и убирать сборки было незачем: именно они проверяют, что
+# ядро собирается под iOS и Android, а это единственная такая проверка
+# в проекте.
 #
-# 1. **Ни одного двойного прогона.** `push` только для основной ветки,
-#    всё остальное проверяется событием `pull_request`. Раньше ветка с
-#    открытым PR проверялась дважды на каждый коммит — ровно вдвое
-#    дороже без единого лишнего слова о качестве кода.
-# 2. **На каждый коммит — только Linux.** Тесты, clippy, формат, аудит
-#    и сборка под три дешёвых триплета. Это ловит подавляющее
-#    большинство ошибок и стоит около 20 минут.
-# 3. **macOS и Windows — по явной просьбе.** Сборка под Apple и
-#    Windows проверяет совместимость с платформой, а не логику; делать
-#    это перед выпуском достаточно, и это разница между 20 и 180
-#    минутами.
+# Что из той правки уцелело и почему: **push только для main**. Ветка с
+# открытым PR раньше проверялась дважды на каждый коммит — событием
+# `push` и событием `pull_request`. Это не про деньги, а про то, что
+# два одинаковых прогона не говорят ничего сверх одного, занимают
+# очередь и удваивают шум в интерфейсе.
+#
+# Настоящая причина зависших прогонов осталась внешней: 6 августа около
+# 18:18 UTC прогоны встали в очередь и перестали создаваться, а ручной
+# запуск десятью часами позже пошёл немедленно. Это было со стороны
+# GitHub, а не с нашей.
 
 name: core
 
 on:
   push:
     # Только основная ветка: ветки с открытым PR проверяет событие
-    # ниже, и дублировать его — значит платить дважды.
+    # ниже, и дублировать его — значит гонять два одинаковых прогона.
     branches: [main]
     paths: ["core/**", ".github/workflows/core.yml"]
   pull_request:
     paths: ["core/**", ".github/workflows/core.yml"]
   workflow_dispatch:
-    inputs:
-      expensive:
-        description: "Собрать ещё и под macOS и Windows (дорого по минутам)"
-        type: boolean
-        default: false
 
 concurrency:
   group: core-${{ github.ref }}
@@ -87,14 +84,21 @@ jobs:
 
   cross:
     name: сборка под ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-linux-android
-          - armv7-linux-androideabi
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest, target: aarch64-linux-android }
+          - { os: ubuntu-latest, target: armv7-linux-androideabi }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          # Целевые платформы клиента: сборка ядра под устройство и
+          # симулятор. Единственная проверка в проекте, доказывающая,
+          # что ядро вообще собирается под iOS.
+          - { os: macos-latest, target: aarch64-apple-ios }
+          - { os: macos-latest, target: aarch64-apple-ios-sim }
     steps:
       - uses: actions/checkout@v5
 
@@ -146,37 +150,6 @@ jobs:
             echo "AR_$(echo '${{ matrix.target }}' | tr '-' '_')=$bin/llvm-ar"
             echo "CARGO_TARGET_${env_target}_LINKER=$bin/$clang"
           } >> "$GITHUB_ENV"
-
-      - name: Сборка
-        run: cargo build --release --target ${{ matrix.target }}
-
-  # Только по явной просьбе: около 160 минут за один прогон против
-  # двадцати у всего остального. Совместимость с платформой достаточно
-  # проверять перед выпуском, а не на каждый коммит.
-  cross-costly:
-    name: сборка под ${{ matrix.target }}
-    if: inputs.expensive
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-latest, target: aarch64-apple-ios }
-          - { os: macos-latest, target: aarch64-apple-ios-sim }
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Установить toolchain с целевой платформой
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: core
-          key: ${{ matrix.target }}
 
       - name: Сборка
         run: cargo build --release --target ${{ matrix.target }}
