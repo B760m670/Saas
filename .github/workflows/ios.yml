@@ -95,8 +95,16 @@ jobs:
       # architecture x86_64». Отсюда третий триплет и склейка `lipo`:
       # так проект собирается и на агенте, и на любой машине
       # разработчика, чем бы она ни была.
+      # `IPHONEOS_DEPLOYMENT_TARGET` здесь не украшение. Части
+      # зависимостей написаны на C (ядра blake3), и `cc-rs` без этой
+      # переменной берёт версию из SDK — то есть собирает их под
+      # iOS 18.5 при заявленной нижней границе 14.0. Компоновщик про это
+      # предупреждает, а на устройстве с iOS 14 такое просто не
+      # запустилось бы.
       - name: Собрать ядро под устройство и симулятор
         working-directory: core
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "14.0"
         run: |
           cargo build --release -p atlas-ffi --target aarch64-apple-ios
           cargo build --release -p atlas-ffi --target aarch64-apple-ios-sim
@@ -111,6 +119,9 @@ jobs:
           set -euo pipefail
           mkdir -p core/target/universal-ios/Release-iphoneos
           mkdir -p core/target/universal-ios/Release-iphonesimulator
+          # Проверка идёт в `Debug`: только там включена поддержка
+          # `@testable`, без которой набор не видит нутро приложения.
+          mkdir -p core/target/universal-ios/Debug-iphonesimulator
 
           cp core/target/aarch64-apple-ios/release/libatlas_ffi.a \
              core/target/universal-ios/Release-iphoneos/
@@ -119,6 +130,8 @@ jobs:
              core/target/aarch64-apple-ios-sim/release/libatlas_ffi.a \
              core/target/x86_64-apple-ios/release/libatlas_ffi.a \
              -output core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a
+          cp core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a \
+             core/target/universal-ios/Debug-iphonesimulator/
 
           echo "срезы архива для симулятора:"
           lipo -info core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a
@@ -178,7 +191,7 @@ jobs:
         run: |
           set -o pipefail
           xcodebuild test -project Atlas.xcodeproj -scheme Atlas \
-                     -configuration Release \
+                     -configuration Debug \
                      -destination "id=${{ steps.simulator.outputs.udid }}" \
                      -derivedDataPath build-sim \
                      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
