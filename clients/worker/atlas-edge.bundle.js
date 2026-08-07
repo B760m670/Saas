@@ -410,6 +410,19 @@ class Reader {
         }
     }
 
+    /** Забрать то, что пришло, дождавшись хотя бы чего-нибудь. */
+    async some() {
+        while (this.length === 0) {
+            if (this.closed) {
+                throw new Error("соединение закрыто");
+            }
+            await new Promise((resolve) => {
+                this.waiting = resolve;
+            });
+        }
+        return this.exact(this.length);
+    }
+
     /** Забрать ровно `want` байт, дождавшись их появления. */
     async exact(want) {
         while (this.length < want) {
@@ -438,8 +451,16 @@ class Reader {
     }
 }
 
-/** Прочитать одну запись сквозного канала. */
+/**
+ * Прочитать порцию данных.
+ *
+ * В обычном режиме записей нет вовсе: что пришло сообщением WebSocket,
+ * то и есть данные.
+ */
 async function readRecord(reader, session) {
+    if (!session) {
+        return reader.some();
+    }
     const header = await reader.exact(2);
     const len = (header[0] << 8) | header[1];
     if (len > MAX_RECORD) {
@@ -450,15 +471,35 @@ async function readRecord(reader, session) {
     return session.open(header, sealed);
 }
 
-/** Обслужить одно соединение целиком. */
-async function serve(socket, secret, uuid) {
+/**
+ * Обслужить одно соединение целиком.
+ *
+ * # Два режима, и это не украшение
+ *
+ * `sealed` — наш сквозной канал: он закрывает посредника между
+ * телефоном и Cloudflare, но требует нашего же клиента. Чужие клиенты
+ * такого рукопожатия не умеют и не научатся.
+ *
+ * Обычный режим — голый VLESS поверх WebSocket, как его понимают Happ,
+ * Hiddify, v2rayNG и все прочие. Скрытность в нём держится только на
+ * TLS самого Cloudflare, зато работает он с тем, что человек уже
+ * поставил из App Store.
+ *
+ * Выбор делается по пути, а не угадыванием: угадывать по первым байтам
+ * значит однажды принять чужое приветствие за своё.
+ */
+async function serve(socket, secret, uuid, sealed) {
     socket.accept();
     const reader = new Reader(socket);
 
-    const hello = await reader.exact(CLIENT_HELLO_LEN);
-    const now = Math.floor(Date.now() / 1000);
-    const { response, session } = await respond(secret, hello, now);
-    socket.send(response);
+    let session = null;
+    if (sealed) {
+        const hello = await reader.exact(CLIENT_HELLO_LEN);
+        const now = Math.floor(Date.now() / 1000);
+        const agreed = await respond(secret, hello, now);
+        session = agreed.session;
+        socket.send(agreed.response);
+    }
 
     // Первая запись несёт заголовок VLESS и, как правило, начало данных.
     const first = await readRecord(reader, session);
@@ -480,7 +521,8 @@ async function serve(socket, secret, uuid) {
     if (rest.length > 0) {
         await writer.write(rest);
     }
-    await socket.send(await session.seal(new Uint8Array([version, 0])));
+    const greeting = new Uint8Array([version, 0]);
+    socket.send(session ? await session.seal(greeting) : greeting);
 
     // Назначение → клиент.
     const downstream = (async () => {
@@ -491,7 +533,8 @@ async function serve(socket, secret, uuid) {
                 break;
             }
             for (let at = 0; at < value.length; at += MAX_RECORD) {
-                socket.send(await session.seal(value.subarray(at, at + MAX_RECORD)));
+                const piece = value.subarray(at, at + MAX_RECORD);
+            socket.send(session ? await session.seal(piece) : piece);
             }
         }
     })();
@@ -543,10 +586,14 @@ export default {
             return new Response("Internal Server Error", { status: 500 });
         }
 
+        // Путь решает, каким протоколом говорить. `/e` — наш сквозной
+        // канал, всё остальное — обычный VLESS для чужих клиентов.
+        const sealed = new URL(request.url).pathname.endsWith("/e");
+
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
 
-        serve(server, secret, uuid).catch((error) => {
+        serve(server, secret, uuid, sealed).catch((error) => {
             console.error(error.message);
             try {
                 server.close(1011);
