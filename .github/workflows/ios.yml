@@ -73,7 +73,7 @@ jobs:
   # доказывающая, что приложение вообще собирается: ни Xcode, ни
   # устройства больше нигде в проекте нет.
   app:
-    name: приложение Atlas-lite (macOS)
+    name: приложение Atlas (macOS)
     runs-on: macos-15
     needs: wrapper
     steps:
@@ -104,7 +104,7 @@ jobs:
       - name: Собрать ядро под устройство и симулятор
         working-directory: core
         env:
-          IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+          IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         run: |
           cargo build --release -p atlas-ffi --target aarch64-apple-ios
           cargo build --release -p atlas-ffi --target aarch64-apple-ios-sim
@@ -203,12 +203,32 @@ jobs:
       - name: Упаковать IPA
         working-directory: clients/ios
         run: |
+          set -euo pipefail
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/Atlas.app Payload/
-          zip -qry Atlas-lite.ipa Payload
-          ls -la Atlas-lite.ipa
+          zip -qry Atlas.ipa Payload
+          ls -la Atlas.ipa
+
+      # Размер артефакта однажды изменился в разы без внятной причины, и
+      # объяснять такое догадками нельзя. Здесь видно, что внутри
+      # действительно приложение: двоичный файл нужной архитектуры,
+      # непустой, с ожидаемым идентификатором.
+      - name: Проверить, что в пакете настоящее приложение
+        working-directory: clients/ios
+        run: |
+          set -euo pipefail
+          binary=Payload/Atlas.app/Atlas
+          test -f "$binary" || { echo "нет двоичного файла" >&2; exit 1; }
+          echo "размер двоичного файла: $(du -h "$binary" | cut -f1)"
+          lipo -info "$binary"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+            Payload/Atlas.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" \
+            Payload/Atlas.app/Info.plist
+          echo "состав пакета:"
+          ls -la Payload/Atlas.app/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Atlas-lite
-          path: clients/ios/Atlas-lite.ipa
+          name: Atlas
+          path: clients/ios/Atlas.ipa

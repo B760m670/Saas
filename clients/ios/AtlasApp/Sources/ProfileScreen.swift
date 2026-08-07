@@ -5,7 +5,7 @@
 //  ссылке, которую откроет система. Отсюда крошечный сервер на петле —
 //  он живёт ровно столько, сколько открыт этот экран.
 //
-//  Нижняя граница — iOS 15, см. `MainScreen`.
+//  Нижняя граница — iOS 16, см. `MainScreen`.
 //
 
 import SwiftUI
@@ -17,7 +17,7 @@ struct ProfileScreen: View {
     @State private var server: ProfileServer?
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 if let xml {
                     Section {

@@ -8,11 +8,10 @@
 //
 //  # Про нижнюю границу
 //
-//  iOS 15 — ровно то, что требует LiveContainer, под которым живёт
-//  сборка `lite`. Из iOS 16 здесь сознательно ничего нет: `16` отрезал
-//  бы iPhone 6s, 7 и SE первого поколения и сузил бы диапазон
-//  TrollStore, на котором держится сборка `full`. Единственная
-//  заметная потеря — `LabeledContent`, вместо него своя строка ниже.
+//  iOS 16. Основной способ установки — подпись своим сертификатом, а не
+//  LiveContainer, поэтому его требование (15+) перестало определять
+//  порог. Отсюда `NavigationStack` вместо устаревшего `NavigationView`
+//  и `LabeledContent` вместо самодельной строки.
 //
 
 import AtlasCore
@@ -25,7 +24,7 @@ struct MainScreen: View {
     @State private var ssid = ""
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 keySection
                 switchSection
@@ -36,7 +35,6 @@ struct MainScreen: View {
             }
             .navigationTitle("ATLAS")
         }
-        .navigationViewStyle(StackNavigationViewStyle())
         .sheet(isPresented: $showingRules) {
             RulesScreen(script: model.pacScript() ?? "правила недоступны")
         }
@@ -51,8 +49,8 @@ struct MainScreen: View {
                 .disabled(model.state.isRunning)
 
             if let described = model.described {
-                Row(title: "Точка выхода", value: "\(described.host):\(described.port)")
-                Row(title: "Сайт прикрытия", value: described.sni ?? "—")
+                LabeledContent("Точка выхода", value: "\(described.host):\(described.port)")
+                LabeledContent("Сайт прикрытия", value: described.sni ?? "—")
                 if described.reality {
                     Label("REALITY", systemImage: "checkmark.shield")
                         .foregroundStyle(.secondary)
@@ -88,12 +86,12 @@ struct MainScreen: View {
     private var runningSection: some View {
         Section("Работает") {
             if case .running(let address) = model.state {
-                Row(title: "Прокси", value: address)
+                LabeledContent("Прокси", value: address)
             }
             if let stats = model.stats {
-                Row(title: "Соединений", value: "\(stats.accepted)")
-                Row(title: "Передано", value: format(stats.toTarget))
-                Row(title: "Принято", value: format(stats.fromTarget))
+                LabeledContent("Соединений", value: "\(stats.accepted)")
+                LabeledContent("Передано", value: format(stats.toTarget))
+                LabeledContent("Принято", value: format(stats.fromTarget))
             }
 
             TextField("Имя сети Wi-Fi", text: $ssid)
@@ -110,7 +108,7 @@ struct MainScreen: View {
 
     private var aboutSection: some View {
         Section {
-            Row(title: "Версия ядра", value: Atlas.version)
+            LabeledContent("Версия ядра", value: Atlas.version)
         } footer: {
             Text(
                 "На мобильном интернете системная настройка прокси недоступна — "
@@ -125,31 +123,12 @@ struct MainScreen: View {
     }
 }
 
-/// Строка «название — значение».
-///
-/// Своя, потому что `LabeledContent` появился только в iOS 16, а
-/// нижняя граница здесь — iOS 15.
-private struct Row: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            Text(title)
-            Spacer(minLength: 12)
-            Text(value)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.trailing)
-        }
-    }
-}
-
 /// Показ правил: то, что идёт мимо туннеля, обязано быть видно.
 struct RulesScreen: View {
     let script: String
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             ScrollView {
                 Text(script)
                     .font(.system(.footnote, design: .monospaced))
