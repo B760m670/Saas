@@ -1,7 +1,7 @@
 //! Запуск точки выхода.
 //!
 //! ```text
-//! atlas-exit --listen 0.0.0.0:443 --cover www.microsoft.com:443
+//! atlas-exit --listen 0.0.0.0:443 --host 203.0.113.7 --cover www.microsoft.com:443
 //! ```
 //!
 //! При первом запуске ключи генерируются и печатается готовая ссылка
@@ -9,6 +9,12 @@
 //! записывается: точка выхода одноразовая по замыслу, а долговечность
 //! ключа означала бы, что его утечка компрометирует всё прошлое.
 //! Постоянный ключ задаётся явно через `--secret`.
+//!
+//! `--host` — это адрес, **по которому до машины достучится клиент**, а
+//! не адрес прослушивания. Они совпадают редко: слушают обычно на всех
+//! картах (`0.0.0.0`), а снаружи машина видна по одному конкретному
+//! адресу, и часто ещё через проброс порта. Правило выбора и причины —
+//! в [`atlas_exit::link`].
 
 #![allow(
     clippy::unwrap_used,
@@ -20,7 +26,7 @@
 use std::net::TcpListener;
 use std::sync::Arc;
 
-use atlas_exit::{ExitConfig, ExitPoint, Policy};
+use atlas_exit::{link, ExitConfig, ExitPoint, Policy};
 use atlas_reality::Server;
 
 fn main() {
@@ -34,8 +40,13 @@ fn main() {
     let flag = |name: &str| args.iter().any(|a| a == name);
 
     if flag("--help") || flag("-h") {
-        println!("atlas-exit --listen АДРЕС --cover ДОМЕН:ПОРТ [--secret BASE64] [--sid HEX]");
-        println!("           [--uuid UUID] [--allow-private]");
+        println!("atlas-exit --listen АДРЕС --cover ДОМЕН:ПОРТ [--host АДРЕС[:ПОРТ]]");
+        println!("           [--secret BASE64] [--sid HEX] [--uuid UUID] [--allow-private]");
+        println!();
+        println!("  --listen  где занять сокет; по умолчанию 127.0.0.1:8443");
+        println!("  --host    как до этой машины достучится клиент — внешний адрес");
+        println!("            или имя. Обязателен, если --listen на всех картах");
+        println!("  --cover   чужой сайт, которым прикидываемся для посторонних");
         return;
     }
 
@@ -75,18 +86,36 @@ fn main() {
         eprintln!("не удалось занять {listen}: {error}");
         std::process::exit(1);
     });
-    let bound = listener
-        .local_addr()
-        .map_or(listen.clone(), |a| a.to_string());
+    let bound = listener.local_addr().unwrap_or_else(|error| {
+        eprintln!("не удалось узнать занятый адрес: {error}");
+        std::process::exit(1);
+    });
 
-    println!("точка выхода     {bound}");
+    // Отказ здесь — до первого принятого соединения. Ключ, который
+    // никуда не ведёт, хуже, чем отсутствие ключа: он выглядит
+    // рабочим, и искать причину пойдут в туннеле.
+    let (endpoint, reach) =
+        link::endpoint(bound, value("--host").as_deref()).unwrap_or_else(|error| {
+            eprintln!("{error}");
+            std::process::exit(1);
+        });
+
+    println!("слушает          {bound}");
+    println!("адрес для ключа  {endpoint} — {}", reach.note());
     println!("сайт прикрытия   {cover}");
     println!("публичный ключ   {public_key}");
     println!();
     println!("Ключ доступа (вставить в клиент):");
     println!(
-        "vless://{uuid}@{bound}?type=tcp&security=reality&sni={sni}\
-&pbk={public_key}&sid={short_id}&fp=chrome&flow=xtls-rprx-vision#atlas"
+        "{}",
+        link::AccessKey {
+            endpoint: &endpoint,
+            uuid: &uuid,
+            sni: &sni,
+            public_key: &public_key,
+            short_id: &short_id,
+        }
+        .to_link()
     );
     println!();
 

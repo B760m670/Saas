@@ -81,6 +81,17 @@ struct MainScreen: View {
                     .font(.footnote)
                     .foregroundStyle(.red)
             }
+        } footer: {
+            // Неактивная кнопка без объяснения выглядит как поломка.
+            // Здесь она неактивна по одной причине, и причина названа.
+            if model.described == nil {
+                Text(
+                    "Кнопка включится, когда появится ключ доступа. Ключ "
+                        + "печатает точка выхода — программа atlas-exit, "
+                        + "запущенная на вашей машине. Порядок: "
+                        + "docs/12-exit-node.md в репозитории."
+                )
+            }
         }
     }
 
@@ -122,6 +133,13 @@ struct MainScreen: View {
 
     private var aboutSection: some View {
         Section {
+            // Две разные версии, и путать их нельзя.
+            //
+            // Версия ядра вкомпилирована в Rust и не меняется от сборки
+            // к сборке — по ней нельзя понять, свежее ли приложение.
+            // Версия сборки растёт с каждым изменением основной ветки, и
+            // именно её надо называть, сообщая о неполадке.
+            LabeledContent("Версия сборки", value: Bundle.main.atlasVersion)
             LabeledContent("Версия ядра", value: Atlas.version)
         } footer: {
             Text(
@@ -134,6 +152,28 @@ struct MainScreen: View {
 
     private func format(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .binary)
+    }
+}
+
+extension Bundle {
+    /// Версия сборки в виде `0.1.7 (7)`.
+    ///
+    /// Отсутствие полей не считается ошибкой: под LiveContainer и в
+    /// наборе тестов пакет не тот, что на устройстве, и падать из-за
+    /// справочной строки было бы несоразмерно.
+    var atlasVersion: String {
+        let short = object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let build = object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        switch (short, build) {
+        case let (.some(short), .some(build)) where short != build:
+            return "\(short) (\(build))"
+        case let (.some(short), _):
+            return short
+        case let (_, .some(build)):
+            return build
+        default:
+            return "неизвестна"
+        }
     }
 }
 

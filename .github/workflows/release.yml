@@ -21,6 +21,18 @@
 # У события `push` фильтр по путям применяется и к меткам. Метка на
 # коммите, не трогавшем `clients/ios/**`, не запустила бы выпуск вовсе —
 # и молча.
+#
+# # Почему в выпуске не только приложение
+#
+# Приложение без ключа доступа не делает ничего, а ключ печатает точка
+# выхода. Требовать от человека установить Rust и собрать её самому
+# значит закрыть проект для всех, кроме программистов. Поэтому здесь же
+# собираются готовые `atlas-exit` под три системы.
+#
+# Linux собирается под musl и выходит статическим: у сборки под glibc
+# нижняя граница версии определяется агентом, и на системе постарше
+# такой файл просто не запустится, сообщив про `GLIBC_2.39` вместо
+# внятной причины.
 
 name: release
 
@@ -32,6 +44,11 @@ on:
       - "core/**"
       - ".github/workflows/release.yml"
     tags: ["v*"]
+  # Сборки точки выхода прогоняются и на PR — публикация нет, см. ниже.
+  pull_request:
+    paths:
+      - "core/**"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -43,9 +60,138 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Точка выхода под три системы. Идёт параллельно сборке приложения и
+  # заканчивается раньше неё: работы лёгкие, а выпуск ждёт обеих.
+  exit:
+    name: точка выхода (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux x86-64
+            target: x86_64-unknown-linux-musl
+            archive: atlas-exit-linux-x86_64.tar.gz
+          - os: windows-latest
+            label: Windows x86-64
+            target: x86_64-pc-windows-msvc
+            archive: atlas-exit-windows-x86_64.zip
+          - os: macos-15
+            label: macOS (универсальный)
+            target: universal
+            archive: atlas-exit-macos-universal.tar.gz
+    steps:
+      - uses: actions/checkout@v5
+
+      # `musl-gcc` нужен не Rust, а частям на C (ядра blake3): без него
+      # `cc-rs` берёт системный компилятор и линкует к glibc, теряя весь
+      # смысл статической сборки.
+      - name: Инструменты musl
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Триплеты
+        shell: bash
+        run: |
+          if [ "${{ matrix.target }}" = "universal" ]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          else
+            rustup target add ${{ matrix.target }}
+          fi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+          key: exit-${{ matrix.target }}
+
+      - name: Собрать
+        working-directory: core
+        shell: bash
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.target }}" = "universal" ]; then
+            # Один файл на Intel и на Apple Silicon: спрашивать у
+            # человека, какой у него Mac, — лишний шаг и лишняя ошибка.
+            cargo build --release -p atlas-exit --bin atlas-exit \
+                        --target aarch64-apple-darwin
+            cargo build --release -p atlas-exit --bin atlas-exit \
+                        --target x86_64-apple-darwin
+            mkdir -p target/out
+            lipo -create \
+              target/aarch64-apple-darwin/release/atlas-exit \
+              target/x86_64-apple-darwin/release/atlas-exit \
+              -output target/out/atlas-exit
+            lipo -info target/out/atlas-exit
+          else
+            cargo build --release -p atlas-exit --bin atlas-exit \
+                        --target ${{ matrix.target }}
+            mkdir -p target/out
+            built=target/${{ matrix.target }}/release/atlas-exit
+            if [ -f "$built.exe" ]; then
+              cp "$built.exe" target/out/
+            else
+              cp "$built" target/out/
+            fi
+          fi
+          ls -la target/out
+
+      # Сборка, которая не запускается, — не сборка. Здесь же видно,
+      # что новый отказ при `0.0.0.0` без `--host` действительно
+      # отказывает, а не печатает мёртвый ключ.
+      - name: Проверить, что запускается
+        working-directory: core
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary=target/out/atlas-exit
+          if [ -f "$binary.exe" ]; then
+            binary="$binary.exe"
+          fi
+          "$binary" --help
+          if "$binary" --listen 0.0.0.0:18443 --cover example.com:443; then
+            echo "::error::ключ с адресом 0.0.0.0 напечатан — это нерабочий ключ"
+            exit 1
+          fi
+          "$binary" --listen 127.0.0.1:18443 --cover example.com:443 &
+          pid=$!
+          sleep 2
+          kill "$pid" 2>/dev/null || true
+          echo "запускается и слушает"
+
+      - name: Упаковать
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd core/target/out
+          if [ -f atlas-exit.exe ]; then
+            7z a -tzip "../../../${{ matrix.archive }}" atlas-exit.exe
+          else
+            chmod +x atlas-exit
+            tar czf "../../../${{ matrix.archive }}" atlas-exit
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+          if-no-files-found: error
+
+  # На PR не идёт: выпуск публикуется с основной ветки и ниоткуда больше.
+  #
+  # Работа тяжёлая — агент Apple, Xcode, три триплета Rust, — и на PR
+  # она дублировала бы `ios.yml`, ничего не доказывая сверх него. А вот
+  # `exit` выше на PR идёт, и намеренно: `publish` теперь **ждёт** его,
+  # и упавшая сборка точки выхода остановила бы публикацию приложения
+  # тоже. Проверять такое впервые уже после слияния — значит узнавать о
+  # поломке по мёртвой ссылке.
   publish:
     name: собрать и опубликовать
     runs-on: macos-15
+    needs: exit
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v5
         with:
@@ -145,10 +291,31 @@ jobs:
           # Сломанный источник установщик не покажет и не объяснит почему.
           python3 -c "import json; json.load(open('source.json')); print('источник разбирается')"
 
+      - uses: actions/download-artifact@v4
+        with:
+          path: clients/ios/exit
+          merge-multiple: true
+
+      - name: Проверить, что точка выхода приехала
+        working-directory: clients/ios
+        run: |
+          set -euo pipefail
+          for archive in atlas-exit-linux-x86_64.tar.gz \
+                         atlas-exit-windows-x86_64.zip \
+                         atlas-exit-macos-universal.tar.gz; do
+            test -s "exit/$archive" || {
+              echo "::error::в выпуск не попал $archive"
+              exit 1
+            }
+          done
+          ls -la exit
+
       - name: Заметки к выпуску
         run: |
           cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
-          Источник приложений для AltStore, SideStore и LiveContainer:
+          ## Приложение для iPhone
+
+          Источник для AltStore, SideStore и LiveContainer:
 
           ```
           https://github.com/B760m670/Saas/releases/download/ios-dev/source.json
@@ -159,10 +326,28 @@ jobs:
 
           Сборка **не подписана** — подпись ставит тот, кто устанавливает.
 
-          Что внутри: своё ядро на Rust — TLS 1.3 с отпечатком Chrome 141,
-          REALITY обеих сторон, VLESS с обрамлением XTLS-Vision. Встроенный
-          браузер уводит трафик в туннель и **отказывается загружать
-          страницы, если туннель недоступен**.
+          ## Точка выхода
+
+          Приложение без ключа доступа не делает ничего, а ключ печатает
+          точка выхода — её запускают на своей машине. Готовые файлы здесь
+          же: `atlas-exit-linux-x86_64.tar.gz` (статический, без
+          зависимостей), `atlas-exit-windows-x86_64.zip`,
+          `atlas-exit-macos-universal.tar.gz` (Intel и Apple Silicon).
+
+          ```
+          atlas-exit --listen 0.0.0.0:443 --host ВАШ_ВНЕШНИЙ_АДРЕС \
+                     --cover www.microsoft.com:443
+          ```
+
+          Порядок целиком, вместе с проверкой достижимости и разбором
+          случая «за NAT», — в `docs/12-exit-node.md`.
+
+          ## Что внутри
+
+          Своё ядро на Rust: TLS 1.3 с отпечатком Chrome 141, REALITY обеих
+          сторон, VLESS с обрамлением XTLS-Vision. Встроенный браузер уводит
+          трафик в туннель и **отказывается загружать страницы, если туннель
+          недоступен**.
 
           Под LiveContainer видно интерфейс и поведение, но соединения не
           будет: расширения он не регистрирует, а системный трафик в прокси
@@ -193,14 +378,14 @@ jobs:
               --title "${{ steps.channel.outputs.title }}" \
               --notes-file "$RUNNER_TEMP/notes.md" \
               --target "$GITHUB_SHA"
-            gh release upload "$tag" Atlas.ipa source.json --clobber
+            gh release upload "$tag" Atlas.ipa source.json exit/* --clobber
           else
             gh release create "$tag" \
               ${{ steps.channel.outputs.prerelease }} \
               --title "${{ steps.channel.outputs.title }}" \
               --notes-file "$RUNNER_TEMP/notes.md" \
               --target "$GITHUB_SHA" \
-              Atlas.ipa source.json
+              Atlas.ipa source.json exit/*
           fi
 
           echo "источник: ${{ github.server_url }}/${{ github.repository }}/releases/download/$tag/source.json"
