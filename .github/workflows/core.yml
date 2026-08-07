@@ -74,6 +74,15 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+      # Статический архив `atlas-ffi` нужен проверке границы C: она
+      # собирает настоящую программу на C и линкует её с ним. Сам
+      # `cargo test` архива не создаёт — он собирает библиотеку как
+      # `rlib` для тестового набора, а `staticlib` появляется только от
+      # `cargo build`. Локально архив обычно уже лежит от прежних
+      # сборок, поэтому нехватка вылезла только здесь.
+      - name: Собрать статическую библиотеку для проверки границы C
+        run: cargo build -p atlas-ffi
+
       - name: Тесты
         run: cargo test --all-features
 
