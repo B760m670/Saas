@@ -80,6 +80,18 @@ pub enum Strategy {
     /// ничего не теряется, сервер получает обычный поток.
     #[default]
     Split,
+    /// Пересобрать приветствие в несколько записей TLS.
+    ///
+    /// Не разрез потока, а **другой приём**: одна запись превращается
+    /// в несколько, каждая со своим заголовком. Так устроена
+    /// фрагментация в Xray, и она бьёт по другому классу DPI —
+    /// по тем, кто разбирает TLS наивно, по первой записи, не собирая
+    /// сообщение из нескольких.
+    ///
+    /// Приёмы дополняют друг друга: разрез потока обходит тех, кто не
+    /// собирает TCP; нарезка записей — тех, кто не собирает TLS.
+    /// Собирающих и то, и другое на магистральной скорости мало.
+    Records,
     /// То же, но первый кусок отправляется с малым TTL.
     ///
     /// Он умирает по дороге, поэтому до ТСПУ доходит **сначала второй**
@@ -196,6 +208,53 @@ pub fn split_point(data: &[u8]) -> SplitPoint {
     }
 }
 
+/// Наибольший размер куска при нарезке записей.
+///
+/// Мелкие куски заметны сами по себе: обычный браузер не шлёт
+/// приветствие по сорок байт. Величина выбрана так, чтобы имя сайта
+/// заведомо не поместилось в одну запись, но записей вышло немного.
+const RECORD_PIECE: usize = 64;
+
+/// Пересобрать приветствие в несколько записей TLS.
+///
+/// Возвращает `None`, если данные не похожи на цельную запись
+/// рукопожатия — тогда трогать их незачем.
+#[must_use]
+pub fn refragment(data: &[u8]) -> Option<Vec<Vec<u8>>> {
+    if *data.first()? != HANDSHAKE {
+        return None;
+    }
+    let body_len = be16(data, 3)?;
+    let end = RECORD_HEADER.checked_add(body_len)?;
+    if body_len <= RECORD_PIECE || end > data.len() {
+        return None;
+    }
+    let body = data.get(RECORD_HEADER..end)?;
+
+    let mut out: Vec<Vec<u8>> = body
+        .chunks(RECORD_PIECE)
+        .map(|piece| {
+            let mut record = Vec::with_capacity(RECORD_HEADER + piece.len());
+            // Заголовок берётся от исходной записи: тип и версия обязаны
+            // остаться теми же, меняется только длина.
+            record.push(HANDSHAKE);
+            record.extend_from_slice(data.get(1..3).unwrap_or(&[0x03, 0x01]));
+            let len = u16::try_from(piece.len()).unwrap_or(0);
+            record.extend_from_slice(&len.to_be_bytes());
+            record.extend_from_slice(piece);
+            record
+        })
+        .collect();
+
+    // Всё, что шло за записью, уходит как есть.
+    if let Some(tail) = data.get(end..) {
+        if !tail.is_empty() {
+            out.push(tail.to_vec());
+        }
+    }
+    Some(out)
+}
+
 /// Отправить первые байты соединения выбранным приёмом.
 ///
 /// # Errors
@@ -213,6 +272,17 @@ pub fn send_first(socket: &mut TcpStream, data: &[u8], strategy: Strategy) -> io
 
     match strategy {
         Strategy::None => unreachable!("случай отсеян выше"),
+        Strategy::Records => {
+            let Some(pieces) = refragment(data) else {
+                return socket.write_all(data);
+            };
+            for piece in pieces {
+                socket.write_all(&piece)?;
+                socket.flush()?;
+                std::thread::sleep(PIECE_DELAY);
+            }
+            Ok(())
+        }
         Strategy::Split => {
             socket.write_all(head)?;
             socket.flush()?;
@@ -311,6 +381,41 @@ mod tests {
     }
 
     // Разрез обязан быть настоящим: пустой кусок ничего не прячет.
+    // Нарезка записей: имя не должно уместиться ни в одной записи, а
+    // склеенные тела обязаны дать исходное сообщение байт в байт.
+    #[test]
+    fn refragmentation_hides_the_name_and_loses_nothing() {
+        let wire = hello("rutracker.org");
+        let pieces = refragment(&wire).expect("длинное приветствие обязано нарезаться");
+        assert!(
+            pieces.len() >= 2,
+            "нарезка обязана дать больше одной записи"
+        );
+
+        let needle = b"rutracker.org";
+        for piece in &pieces {
+            assert_eq!(piece[0], HANDSHAKE, "тип записи обязан остаться прежним");
+            assert_eq!(&piece[1..3], &wire[1..3], "версия обязана остаться прежней");
+            let declared = usize::from(u16::from_be_bytes([piece[3], piece[4]]));
+            assert_eq!(declared, piece.len() - 5, "длина записи обязана сойтись");
+            assert!(
+                !piece.windows(needle.len()).any(|w| w == needle),
+                "имя целиком уместилось в одну запись"
+            );
+        }
+
+        let rebuilt: Vec<u8> = pieces.iter().flat_map(|p| p[5..].to_vec()).collect();
+        assert_eq!(rebuilt, wire[5..], "склеенные тела обязаны дать исходное");
+    }
+
+    // Непонятное или короткое сообщение трогать незачем: пересборка
+    // ради пересборки только добавит приметности.
+    #[test]
+    fn nothing_worth_cutting_is_left_alone() {
+        assert_eq!(refragment(&[]), None);
+        assert_eq!(refragment(&[0x17, 0x03, 0x03, 0x00, 0x10]), None);
+    }
+
     #[test]
     fn the_split_leaves_both_pieces_non_empty() {
         let wire = hello("example.com");
