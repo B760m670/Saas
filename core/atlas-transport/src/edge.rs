@@ -339,6 +339,72 @@ impl core::fmt::Debug for Session {
     }
 }
 
+/// Одноразовое число из счётчика.
+///
+/// Счётчик, а не случайность: при 96-битном одноразовом числе случайный
+/// выбор столкнулся бы сам с собой раньше, чем кончился бы разумный
+/// объём разговора.
+fn nonce_for(counter: u64) -> Nonce<aes_gcm::aead::consts::U12> {
+    let mut raw = [0_u8; 12];
+    if let Some(slot) = raw.get_mut(4..) {
+        slot.copy_from_slice(&counter.to_be_bytes());
+    }
+    Nonce::from(raw)
+}
+
+/// Зашифровать запись заданным ключом и счётчиком.
+///
+/// Тело вынесено сюда, потому что им пользуются и целая сессия, и её
+/// шифрующая половина. Два одинаковых тела рядом рано или поздно
+/// разъедутся — и разъедутся молча.
+fn seal_with(key: &Aes256Gcm, counter: &mut u64, plain: &[u8]) -> Result<Vec<u8>, EdgeError> {
+    if plain.len() > MAX_RECORD {
+        return Err(EdgeError::TooLong);
+    }
+    let at = *counter;
+    *counter = counter.checked_add(1).ok_or(EdgeError::CounterExhausted)?;
+
+    // Длина идёт в связанные данные, а не только в заголовок: иначе
+    // посредник мог бы переписать её, не тронув шифртекст.
+    let len = u16::try_from(plain.len()).map_err(|_| EdgeError::TooLong)?;
+    let header = len.to_be_bytes();
+
+    let sealed = key
+        .encrypt(
+            &nonce_for(at),
+            Payload {
+                msg: plain,
+                aad: &header,
+            },
+        )
+        .map_err(|_| EdgeError::BadRecord)?;
+
+    let mut out = Vec::with_capacity(2 + sealed.len());
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&sealed);
+    Ok(out)
+}
+
+/// Расшифровать запись заданным ключом и счётчиком.
+fn open_with(
+    key: &Aes256Gcm,
+    counter: &mut u64,
+    header: [u8; 2],
+    sealed: &[u8],
+) -> Result<Vec<u8>, EdgeError> {
+    let plain = key
+        .decrypt(
+            &nonce_for(*counter),
+            Payload {
+                msg: sealed,
+                aad: &header,
+            },
+        )
+        .map_err(|_| EdgeError::BadRecord)?;
+    *counter = counter.checked_add(1).ok_or(EdgeError::CounterExhausted)?;
+    Ok(plain)
+}
+
 impl Session {
     fn new(sending: [u8; 32], receiving: [u8; 32]) -> Self {
         Self {
@@ -363,6 +429,24 @@ impl Session {
             slot.copy_from_slice(&counter.to_be_bytes());
         }
         Nonce::from(raw)
+    }
+
+    /// Разделить на половины: шифрующую и расшифровывающую.
+    ///
+    /// Общего состояния между ними нет — счётчики направлений
+    /// независимы по устройству протокола.
+    #[must_use]
+    pub fn split(self) -> (Sealer, Opener) {
+        (
+            Sealer {
+                key: self.sending,
+                counter: self.sent,
+            },
+            Opener {
+                key: self.receiving,
+                counter: self.received,
+            },
+        )
     }
 
     /// Зашифровать запись целиком, вместе с длиной.
@@ -425,6 +509,47 @@ impl Session {
             .checked_add(1)
             .ok_or(EdgeError::CounterExhausted)?;
         Ok(plain)
+    }
+}
+
+/// Половина сессии, которая шифрует.
+///
+/// Счётчики направлений независимы, поэтому сессия разделяется начисто
+/// — без общего состояния и без блокировки. Это не мелочь: у
+/// WebSocket ниже разделить так не выходит, и разница стоит того,
+/// чтобы её видеть.
+#[derive(Debug)]
+pub struct Sealer {
+    key: Aes256Gcm,
+    counter: u64,
+}
+
+/// Половина сессии, которая расшифровывает.
+#[derive(Debug)]
+pub struct Opener {
+    key: Aes256Gcm,
+    counter: u64,
+}
+
+impl Sealer {
+    /// Зашифровать запись целиком, вместе с длиной.
+    ///
+    /// # Errors
+    ///
+    /// [`EdgeError::TooLong`] или [`EdgeError::CounterExhausted`].
+    pub fn seal(&mut self, plain: &[u8]) -> Result<Vec<u8>, EdgeError> {
+        seal_with(&self.key, &mut self.counter, plain)
+    }
+}
+
+impl Opener {
+    /// Расшифровать запись с уже прочитанным заголовком.
+    ///
+    /// # Errors
+    ///
+    /// [`EdgeError::BadRecord`] при подмене или сбое счётчика.
+    pub fn open(&mut self, header: [u8; 2], sealed: &[u8]) -> Result<Vec<u8>, EdgeError> {
+        open_with(&self.key, &mut self.counter, header, sealed)
     }
 }
 
