@@ -1,0 +1,173 @@
+# Выпуск: метка `v*` собирает IPA и публикует его файлом выпуска.
+#
+# # Почему это отдельный файл, а не шаг в проверке
+#
+# У события `push` фильтр по путям применяется и к меткам. Метка,
+# поставленная на коммит, который не трогал `clients/ios/**`, не
+# запустила бы выпуск вовсе — и молча. Отдельный файл без фильтра
+# путей снимает вопрос.
+#
+# # Почему выпуск, а не артефакт сборки
+#
+# Артефакт требует входа в GitHub и живёт девяносто дней. Ссылка в
+# источнике приложений обязана быть открытой и постоянной — такую даёт
+# только файл выпуска.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Метка выпуска, например v0.1.0"
+        required: true
+
+permissions:
+  # Нужно, чтобы создать выпуск и положить обновлённый источник в
+  # основную ветку. Больше ничего не требуется.
+  contents: write
+
+jobs:
+  publish:
+    name: собрать и опубликовать
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Источник кладётся обратно в основную ветку, поэтому нужна
+          # настоящая история, а не срез в один коммит.
+          fetch-depth: 0
+
+      - name: Определить версию
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) echo "метка обязана начинаться с v: $tag" >&2; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Триплеты устройства и симулятора
+        run: |
+          rustup target add aarch64-apple-ios \
+                            aarch64-apple-ios-sim \
+                            x86_64-apple-ios
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      - name: Собрать ядро
+        working-directory: core
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        run: |
+          cargo build --release -p atlas-ffi --target aarch64-apple-ios
+          cargo build --release -p atlas-ffi --target aarch64-apple-ios-sim
+          cargo build --release -p atlas-ffi --target x86_64-apple-ios
+
+      - name: Разложить архивы там, где их ищет проект
+        run: |
+          set -euo pipefail
+          mkdir -p core/target/universal-ios/Release-iphoneos
+          mkdir -p core/target/universal-ios/Release-iphonesimulator
+          cp core/target/aarch64-apple-ios/release/libatlas_ffi.a \
+             core/target/universal-ios/Release-iphoneos/
+          lipo -create \
+             core/target/aarch64-apple-ios-sim/release/libatlas_ffi.a \
+             core/target/x86_64-apple-ios/release/libatlas_ffi.a \
+             -output core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a
+
+      - name: Собрать приложение
+        working-directory: clients/ios
+        run: |
+          set -o pipefail
+          brew install xcodegen
+          xcodegen generate
+          xcodebuild -project Atlas.xcodeproj -scheme Atlas \
+                     -configuration Release -sdk iphoneos \
+                     -derivedDataPath build \
+                     MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+                     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+                     build | tail -20
+
+      - name: Упаковать IPA
+        working-directory: clients/ios
+        run: |
+          set -euo pipefail
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Atlas.app Payload/
+          zip -qry Atlas.ipa Payload
+          test -f Payload/Atlas.app/Atlas || { echo "нет двоичного файла" >&2; exit 1; }
+          lipo -info Payload/Atlas.app/Atlas
+          ls -la Atlas.ipa
+
+      - name: Собрать источник приложений
+        working-directory: clients/ios
+        run: |
+          set -euo pipefail
+          download="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/Atlas.ipa"
+          python3 make-source.py \
+            "${{ steps.version.outputs.version }}" \
+            Atlas.ipa \
+            "$download" \
+            source.json
+          # Источник обязан разбираться: сломанный установщик не покажет
+          # ничего и не объяснит почему.
+          python3 -c "import json,sys; json.load(open('source.json')); print('источник разбирается')"
+          cp source.json "$RUNNER_TEMP/source.json"
+
+      - name: Заметки к выпуску
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
+          Сборка **не подписана**: подпись ставит тот, кто устанавливает —
+          AltStore, SideStore или LiveContainer.
+
+          Что внутри: своё ядро на Rust — TLS 1.3 с отпечатком Chrome 141,
+          REALITY обеих сторон, VLESS с обрамлением XTLS-Vision. Встроенный
+          браузер уводит трафик в туннель и **отказывается загружать
+          страницы, если туннель недоступен**.
+
+          Известные слабые места перечислены в `docs/11-weaknesses.md` и
+          ведутся вместе с кодом — включая те пути утечки WebKit, которые
+          закрыты лишь по мере сил.
+          NOTES
+
+      # Публикуется через `gh`, а не сторонним действием: у инструмента
+      # обхода цензуры каждое чужое действие в сборке — ещё одна чужая
+      # рука в цепочке поставки.
+      - name: Опубликовать выпуск
+        working-directory: clients/ios
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "ATLAS ${{ steps.version.outputs.version }}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            Atlas.ipa source.json
+
+      # Ссылка на источник должна быть постоянной, поэтому он лежит в
+      # основной ветке, а не только в выпуске.
+      - name: Обновить источник в основной ветке
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          cp "$RUNNER_TEMP/source.json" clients/ios/source.json
+          git add clients/ios/source.json
+          if git diff --cached --quiet; then
+            echo "источник не изменился"
+          else
+            git commit -m "chore(ios): источник приложений для ${{ steps.version.outputs.tag }}"
+            git push origin main
+          fi

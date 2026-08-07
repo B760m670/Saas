@@ -11,6 +11,7 @@ on:
   push:
     # Только основная ветка: ветку с открытым PR проверяет событие
     # ниже, и два одинаковых прогона не говорят ничего сверх одного.
+    # Выпуск по метке живёт отдельно, в `release.yml`.
     branches: [main]
     paths:
       - "clients/ios/**"
@@ -232,3 +233,4 @@ jobs:
         with:
           name: Atlas
           path: clients/ios/Atlas.ipa
+
