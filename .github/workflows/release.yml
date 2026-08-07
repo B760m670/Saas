@@ -1,33 +1,46 @@
-# Выпуск: метка `v*` собирает IPA и публикует его файлом выпуска.
+# Выпуск: сборка IPA и источника приложений.
 #
-# # Почему это отдельный файл, а не шаг в проверке
+# # Два канала
 #
-# У события `push` фильтр по путям применяется и к меткам. Метка,
-# поставленная на коммит, который не трогал `clients/ios/**`, не
-# запустила бы выпуск вовсе — и молча. Отдельный файл без фильтра
-# путей снимает вопрос.
+# - `ios-dev` — постоянная метка, файлы перезаписываются на каждом
+#   изменении основной ветки. Ссылка на источник не меняется никогда,
+#   поэтому её достаточно добавить в установщик один раз.
+# - `v*` — обычный выпуск с закреплённой версией.
 #
-# # Почему выпуск, а не артефакт сборки
+# # Почему файл выпуска, а не файл в ветке
 #
-# Артефакт требует входа в GitHub и живёт девяносто дней. Ссылка в
-# источнике приложений обязана быть открытой и постоянной — такую даёт
-# только файл выпуска.
+# Ссылка обязана быть открытой и постоянной. Артефакт сборки требует
+# входа в GitHub и живёт девяносто дней. Файл в ветке
+# (`raw.githubusercontent.com`) постоянен, но этот домен в ограничивающих
+# сетях фильтруют заметно чаще, чем домен выпусков, — а речь именно о
+# людях в таких сетях. К тому же файл в ветке пришлось бы дописывать
+# сборкой, то есть давать ей право писать в основную ветку.
+#
+# # Почему отдельный файл, а не шаг в проверке
+#
+# У события `push` фильтр по путям применяется и к меткам. Метка на
+# коммите, не трогавшем `clients/ios/**`, не запустила бы выпуск вовсе —
+# и молча.
 
 name: release
 
 on:
   push:
+    branches: [main]
+    paths:
+      - "clients/ios/**"
+      - "core/**"
+      - ".github/workflows/release.yml"
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Метка выпуска, например v0.1.0"
-        required: true
 
 permissions:
-  # Нужно, чтобы создать выпуск и положить обновлённый источник в
-  # основную ветку. Больше ничего не требуется.
+  # Нужно, чтобы создать выпуск и переставить постоянную метку.
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -36,21 +49,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # Источник кладётся обратно в основную ветку, поэтому нужна
-          # настоящая история, а не срез в один коммит.
           fetch-depth: 0
 
-      - name: Определить версию
-        id: version
+      - name: Определить канал и версию
+        id: channel
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
-          case "$tag" in
-            v*) ;;
-            *) echo "метка обязана начинаться с v: $tag" >&2; exit 1 ;;
-          esac
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"
+            version="${tag#v}"
+            prerelease=""
+            title="ATLAS $version"
+          else
+            # Постоянный канал. Версия растёт с номером сборки, иначе
+            # установщик не увидит, что появилось обновление.
+            tag="ios-dev"
+            version="0.1.${{ github.run_number }}"
+            prerelease="--prerelease"
+            title="ATLAS $version (текущая сборка)"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          echo "канал $tag, версия $version"
 
       - name: Триплеты устройства и симулятора
         run: |
@@ -92,7 +114,8 @@ jobs:
           xcodebuild -project Atlas.xcodeproj -scheme Atlas \
                      -configuration Release -sdk iphoneos \
                      -derivedDataPath build \
-                     MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+                     MARKETING_VERSION="${{ steps.channel.outputs.version }}" \
+                     CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
                      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
                      build | tail -20
 
@@ -105,69 +128,79 @@ jobs:
           zip -qry Atlas.ipa Payload
           test -f Payload/Atlas.app/Atlas || { echo "нет двоичного файла" >&2; exit 1; }
           lipo -info Payload/Atlas.app/Atlas
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            Payload/Atlas.app/Info.plist
           ls -la Atlas.ipa
 
       - name: Собрать источник приложений
         working-directory: clients/ios
         run: |
           set -euo pipefail
-          download="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/Atlas.ipa"
+          base="${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.channel.outputs.tag }}"
           python3 make-source.py \
-            "${{ steps.version.outputs.version }}" \
+            "${{ steps.channel.outputs.version }}" \
             Atlas.ipa \
-            "$download" \
+            "$base/Atlas.ipa" \
             source.json
-          # Источник обязан разбираться: сломанный установщик не покажет
-          # ничего и не объяснит почему.
-          python3 -c "import json,sys; json.load(open('source.json')); print('источник разбирается')"
-          cp source.json "$RUNNER_TEMP/source.json"
+          # Сломанный источник установщик не покажет и не объяснит почему.
+          python3 -c "import json; json.load(open('source.json')); print('источник разбирается')"
 
       - name: Заметки к выпуску
         run: |
           cat > "$RUNNER_TEMP/notes.md" <<'NOTES'
-          Сборка **не подписана**: подпись ставит тот, кто устанавливает —
-          AltStore, SideStore или LiveContainer.
+          Источник приложений для AltStore, SideStore и LiveContainer:
+
+          ```
+          https://github.com/B760m670/Saas/releases/download/ios-dev/source.json
+          ```
+
+          Ссылка постоянная: файлы этого выпуска перезаписываются на каждом
+          изменении основной ветки.
+
+          Сборка **не подписана** — подпись ставит тот, кто устанавливает.
 
           Что внутри: своё ядро на Rust — TLS 1.3 с отпечатком Chrome 141,
           REALITY обеих сторон, VLESS с обрамлением XTLS-Vision. Встроенный
           браузер уводит трафик в туннель и **отказывается загружать
           страницы, если туннель недоступен**.
 
-          Известные слабые места перечислены в `docs/11-weaknesses.md` и
-          ведутся вместе с кодом — включая те пути утечки WebKit, которые
-          закрыты лишь по мере сил.
+          Под LiveContainer видно интерфейс и поведение, но соединения не
+          будет: расширения он не регистрирует, а системный трафик в прокси
+          не заворачивает. Для настоящей работы нужна установка своим
+          сертификатом.
+
+          Известные слабые места — в `docs/11-weaknesses.md`, ведутся вместе
+          с кодом.
           NOTES
 
       # Публикуется через `gh`, а не сторонним действием: у инструмента
       # обхода цензуры каждое чужое действие в сборке — ещё одна чужая
       # рука в цепочке поставки.
-      - name: Опубликовать выпуск
+      - name: Опубликовать
         working-directory: clients/ios
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "ATLAS ${{ steps.version.outputs.version }}" \
-            --notes-file "$RUNNER_TEMP/notes.md" \
-            Atlas.ipa source.json
+          tag="${{ steps.channel.outputs.tag }}"
 
-      # Ссылка на источник должна быть постоянной, поэтому он лежит в
-      # основной ветке, а не только в выпуске.
-      - name: Обновить источник в основной ветке
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
-          git checkout main
-          cp "$RUNNER_TEMP/source.json" clients/ios/source.json
-          git add clients/ios/source.json
-          if git diff --cached --quiet; then
-            echo "источник не изменился"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Постоянный канал: метка переставляется на текущий коммит,
+            # файлы заменяются. Ссылка при этом не меняется.
+            git tag -f "$tag"
+            git push -f origin "refs/tags/$tag"
+            gh release edit "$tag" \
+              --title "${{ steps.channel.outputs.title }}" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              --target "$GITHUB_SHA"
+            gh release upload "$tag" Atlas.ipa source.json --clobber
           else
-            git commit -m "chore(ios): источник приложений для ${{ steps.version.outputs.tag }}"
-            git push origin main
+            gh release create "$tag" \
+              ${{ steps.channel.outputs.prerelease }} \
+              --title "${{ steps.channel.outputs.title }}" \
+              --notes-file "$RUNNER_TEMP/notes.md" \
+              --target "$GITHUB_SHA" \
+              Atlas.ipa source.json
           fi
+
+          echo "источник: ${{ github.server_url }}/${{ github.repository }}/releases/download/$tag/source.json"
