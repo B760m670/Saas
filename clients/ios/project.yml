@@ -10,9 +10,16 @@ name: Atlas
 options:
   bundleIdPrefix: org.atlas
   deploymentTarget:
-    # Минимум, поддерживаемый самим LiveContainer. Ниже опускаться
-    # некуда, см. docs/05-clients.md.
-    iOS: "14.0"
+    # Ровно требование LiveContainer: его README говорит
+    # «iOS/iPadOS 15+». Раньше здесь стояло 14.0 со ссылкой на тот же
+    # README — это было неверно и не давало ничего: под iOS 14 не
+    # запустится сам LiveContainer, а значит и сборка `lite`.
+    #
+    # Ниже 15 опускаться незачем, выше — стоило бы обдумать отдельно:
+    # 16 отрезает iPhone 6s, 7 и SE первого поколения и сужает
+    # диапазон TrollStore, на котором держится сборка `full`.
+    # См. docs/05-clients.md.
+    iOS: "15.0"
   createIntermediateGroups: true
 
 packages:

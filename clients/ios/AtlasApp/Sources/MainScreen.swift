@@ -6,15 +6,13 @@
 //  происходит, он обязан иметь возможность увидеть — отсюда экран
 //  правил и показ адреса.
 //
-//  # Почему здесь старые вызовы SwiftUI
+//  # Про нижнюю границу
 //
-//  Нижняя граница — iOS 14: это минимум, поддерживаемый самим
-//  LiveContainer, а именно под ним живёт сборка `lite`. Поэтому здесь
-//  нет ни `LabeledContent` (iOS 16), ни `Section("строка")`,
-//  `.foregroundStyle`, `.autocorrectionDisabled`,
-//  `.textInputAutocapitalization` (все iOS 15). Всё это выглядит
-//  современнее и молча отрезало бы часть тех, ради кого сборка `lite`
-//  и существует.
+//  iOS 15 — ровно то, что требует LiveContainer, под которым живёт
+//  сборка `lite`. Из iOS 16 здесь сознательно ничего нет: `16` отрезал
+//  бы iPhone 6s, 7 и SE первого поколения и сузил бы диапазон
+//  TrollStore, на котором держится сборка `full`. Единственная
+//  заметная потеря — `LabeledContent`, вместо него своя строка ниже.
 //
 
 import AtlasCore
@@ -36,7 +34,7 @@ struct MainScreen: View {
                 }
                 aboutSection
             }
-            .navigationBarTitle("ATLAS")
+            .navigationTitle("ATLAS")
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .sheet(isPresented: $showingRules) {
@@ -45,10 +43,10 @@ struct MainScreen: View {
     }
 
     private var keySection: some View {
-        Section(header: Text("Ключ доступа")) {
+        Section("Ключ доступа") {
             TextField("vless://…", text: $model.key)
-                .disableAutocorrection(true)
-                .autocapitalization(.none)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
                 .onChange(of: model.key) { _ in model.refreshDescription() }
                 .disabled(model.state.isRunning)
 
@@ -57,11 +55,11 @@ struct MainScreen: View {
                 Row(title: "Сайт прикрытия", value: described.sni ?? "—")
                 if described.reality {
                     Label("REALITY", systemImage: "checkmark.shield")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 }
             } else if !model.key.isEmpty {
                 Label("Ключ не разбирается", systemImage: "exclamationmark.triangle")
-                    .foregroundColor(.orange)
+                    .foregroundStyle(.orange)
             }
         }
     }
@@ -82,13 +80,13 @@ struct MainScreen: View {
                 // обязан.
                 Text(reason)
                     .font(.footnote)
-                    .foregroundColor(.red)
+                    .foregroundStyle(.red)
             }
         }
     }
 
     private var runningSection: some View {
-        Section(header: Text("Работает")) {
+        Section("Работает") {
             if case .running(let address) = model.state {
                 Row(title: "Прокси", value: address)
             }
@@ -99,7 +97,7 @@ struct MainScreen: View {
             }
 
             TextField("Имя сети Wi-Fi", text: $ssid)
-                .disableAutocorrection(true)
+                .autocorrectionDisabled()
             Button("Настроить эту сеть Wi-Fi") { showingProfile = true }
                 .disabled(ssid.isEmpty)
 
@@ -111,14 +109,14 @@ struct MainScreen: View {
     }
 
     private var aboutSection: some View {
-        Section(
-            footer: Text(
+        Section {
+            Row(title: "Версия ядра", value: Atlas.version)
+        } footer: {
+            Text(
                 "На мобильном интернете системная настройка прокси недоступна — "
                     + "там работает только встроенный браузер. На Wi-Fi профиль "
                     + "уводит через ядро весь системный трафик."
             )
-        ) {
-            Row(title: "Версия ядра", value: Atlas.version)
         }
     }
 
@@ -130,7 +128,7 @@ struct MainScreen: View {
 /// Строка «название — значение».
 ///
 /// Своя, потому что `LabeledContent` появился только в iOS 16, а
-/// нижняя граница здесь — iOS 14.
+/// нижняя граница здесь — iOS 15.
 private struct Row: View {
     let title: String
     let value: String
@@ -140,7 +138,7 @@ private struct Row: View {
             Text(title)
             Spacer(minLength: 12)
             Text(value)
-                .foregroundColor(.secondary)
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.trailing)
         }
     }
@@ -158,7 +156,7 @@ struct RulesScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding()
             }
-            .navigationBarTitle("Правила")
+            .navigationTitle("Правила")
         }
     }
 }

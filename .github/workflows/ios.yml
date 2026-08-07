@@ -98,13 +98,13 @@ jobs:
       # `IPHONEOS_DEPLOYMENT_TARGET` здесь не украшение. Части
       # зависимостей написаны на C (ядра blake3), и `cc-rs` без этой
       # переменной берёт версию из SDK — то есть собирает их под
-      # iOS 18.5 при заявленной нижней границе 14.0. Компоновщик про это
-      # предупреждает, а на устройстве с iOS 14 такое просто не
+      # iOS 18.5 при заявленной нижней границе. Компоновщик про это
+      # предупреждает, а на старом устройстве такое просто не
       # запустилось бы.
       - name: Собрать ядро под устройство и симулятор
         working-directory: core
         env:
-          IPHONEOS_DEPLOYMENT_TARGET: "14.0"
+          IPHONEOS_DEPLOYMENT_TARGET: "15.0"
         run: |
           cargo build --release -p atlas-ffi --target aarch64-apple-ios
           cargo build --release -p atlas-ffi --target aarch64-apple-ios-sim

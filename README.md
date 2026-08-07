@@ -93,7 +93,7 @@ docs/            проектная документация
 
 **Ядро — своё, на Rust.** Xray и sing-box не встраиваются. Плата за это — риск разойтись с браузером по отпечатку, поэтому сверка JA4 с эталоном Chrome стоит в CI и роняет сборку при расхождении в одном символе. Подробно — [02-architecture.md](docs/02-architecture.md) и [08-fingerprint-calibration.md](docs/08-fingerprint-calibration.md).
 
-**iOS — два варианта из одной кодовой базы.** `lite` работает под LiveContainer с бесплатным Apple ID на актуальных iOS и забирает системный трафик Wi-Fi через `.mobileconfig` с PAC; `full` с `NEPacketTunnelProvider` требует TrollStore или платного аккаунта. Deployment target — iOS 14.0. Почему именно так — [05-clients.md](docs/05-clients.md).
+**iOS — два варианта из одной кодовой базы.** `lite` работает под LiveContainer с бесплатным Apple ID на актуальных iOS и забирает системный трафик Wi-Fi через `.mobileconfig` с PAC; `full` с `NEPacketTunnelProvider` требует TrollStore или платного аккаунта. Deployment target — iOS 15.0 (ровно требование LiveContainer). Почему именно так — [05-clients.md](docs/05-clients.md).
 
 ## Состояние ядра
 
