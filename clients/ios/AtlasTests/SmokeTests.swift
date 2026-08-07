@@ -260,6 +260,30 @@ final class BrowserTests: XCTestCase {
         XCTAssertNil(WebView.url(from: "   "))
     }
 
+
+    /// Дождаться, пока скрипт затыкания доказуемо отработал.
+    ///
+    /// `settle(view)` говорит только о том, что навигация завершилась.
+    /// Между этим и исполнением скрипта, объявленного «в начале
+    /// документа», есть окно, и проверки то попадали в него, то нет —
+    /// отсюда плавающие отказы, каждый раз в другом месте.
+    ///
+    /// Ожидание не маскирует поломку, а разделяет две разные: если
+    /// скрипт не исполнится вовсе, ожидание истечёт и скажет об этом
+    /// прямо. Защита, срабатывающая три раза из четырёх, течёт один раз
+    /// из четырёх — и знать об этом надо от проверки, а не от
+    /// пользователя.
+    private func awaitHardening(_ view: WKWebView, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<50 {
+            let ready = try? await view.evaluateJavaScript(
+                "typeof window.__atlasSealFailures !== 'undefined'"
+            )
+            if (ready as? Bool) == true { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("скрипт затыкания не исполнился за отведённое время", file: file, line: line)
+    }
+
     /// Скрипт затыкания действительно убирает точки входа.
     ///
     /// Проверяется исполнением в настоящем `WKWebView`: скрипт
@@ -274,6 +298,7 @@ final class BrowserTests: XCTestCase {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.loadHTMLString("<html><head></head><body>проба</body></html>", baseURL: nil)
         try await settle(view)
+        try await awaitHardening(view)
 
         // Скрипт копит причины неудач вместо того, чтобы их глотать.
         // Без них отказ сообщает только «осталась доступной» — и
@@ -307,6 +332,7 @@ final class BrowserTests: XCTestCase {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.loadHTMLString("<html><body></body></html>", baseURL: nil)
         try await settle(view)
+        try await awaitHardening(view)
 
         let attempt = """
             (function () {
@@ -353,6 +379,7 @@ final class BrowserTests: XCTestCase {
             baseURL: nil
         )
         try await settle(view)
+        try await awaitHardening(view)
 
         let left = try await view.evaluateJavaScript(
             "document.querySelectorAll('link[rel*=prefetch], link[rel*=preconnect]').length"
