@@ -84,15 +84,62 @@ enum Hardening {
             // Простого `delete` мало: страница вправе восстановить
             // свойство из прототипа или из другого окна. Свойство
             // объявляется неконфигурируемым и неизменяемым.
+            // Неудачи копятся, а не проглатываются. Молчащий `catch`
+            // однажды уже спрятал настоящую поломку: возможность
+            // осталась доступной странице, а узнали мы об этом от
+            // проверки, которой нечего было сказать о причине.
+            window.__atlasSealFailures = [];
+
             function seal(target, name) {
-                try {
-                    Object.defineProperty(target, name, {
-                        get: function () { return undefined; },
-                        set: function () {},
-                        configurable: false,
-                        enumerable: false
-                    });
-                } catch (ignored) {}
+                if (!target) return;
+
+                // Свойство может лежать не на самом объекте, а на его
+                // прототипе. Тогда собственное свойство его заслоняет —
+                // но снимать надо и то, и другое: страница доберётся до
+                // прототипа напрямую.
+                var targets = [target];
+                var proto = Object.getPrototypeOf(target);
+                if (proto && proto !== Object.prototype) targets.push(proto);
+
+                for (var i = 0; i < targets.length; i += 1) {
+                    var where = targets[i];
+                    if (!Object.prototype.hasOwnProperty.call(where, name)) continue;
+
+                    // Сначала снять, потом объявить заново. Объявление
+                    // поверх существующего неконфигурируемого свойства
+                    // бросает исключение — а снятое место свободно.
+                    try { delete where[name]; } catch (ignored) {}
+
+                    try {
+                        Object.defineProperty(where, name, {
+                            get: function () { return undefined; },
+                            set: function () {},
+                            configurable: false,
+                            enumerable: false
+                        });
+                    } catch (error) {
+                        window.__atlasSealFailures.push(name + ': ' + error);
+                    }
+                }
+
+                // Последняя попытка: если свойство всё ещё отвечает,
+                // объявить его на самом объекте поверх прототипа.
+                if (typeof target[name] !== 'undefined') {
+                    try {
+                        Object.defineProperty(target, name, {
+                            get: function () { return undefined; },
+                            set: function () {},
+                            configurable: false,
+                            enumerable: false
+                        });
+                    } catch (error) {
+                        window.__atlasSealFailures.push(name + ' (поверх): ' + error);
+                    }
+                }
+
+                if (typeof target[name] !== 'undefined') {
+                    window.__atlasSealFailures.push(name + ': осталась доступной');
+                }
             }
 
             // WebRTC: классический путь раскрытия настоящего адреса.

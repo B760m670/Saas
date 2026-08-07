@@ -275,11 +275,19 @@ final class BrowserTests: XCTestCase {
         view.loadHTMLString("<html><head></head><body>проба</body></html>", baseURL: nil)
         try await settle(view)
 
+        // Скрипт копит причины неудач вместо того, чтобы их глотать.
+        // Без них отказ сообщает только «осталась доступной» — и
+        // разбираться приходится вслепую, без движка под рукой.
+        let failures =
+            (try? await view.evaluateJavaScript(
+                "(window.__atlasSealFailures || ['список недоступен']).join(' | ')"
+            )) as? String ?? "скрипт не исполнился"
+
         for name in ["window.RTCPeerConnection", "window.WebTransport", "window.PublicKeyCredential"] {
             let answer = try await view.evaluateJavaScript("typeof \(name)")
             XCTAssertEqual(
                 answer as? String, "undefined",
-                "\(name) осталась доступной странице"
+                "\(name) осталась доступной странице. Причины: \(failures)"
             )
         }
         let credentials = try await view.evaluateJavaScript("typeof navigator.credentials")
