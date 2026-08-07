@@ -13,6 +13,8 @@
 
 pub mod frame;
 pub mod handshake;
+pub mod stream;
 
 pub use frame::{Decoder, Frame, Opcode};
 pub use handshake::{accept_for, ClientHandshake, DEFAULT_USER_AGENT};
+pub use stream::{Role, Stream, DEFAULT_FRAME_LIMIT};

@@ -28,7 +28,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::pedantic)]
 
+pub mod edge;
 mod error;
+#[cfg(test)]
+mod testing;
 pub mod ws;
 
 pub use error::{Error, Result};

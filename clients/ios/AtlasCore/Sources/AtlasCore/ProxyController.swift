@@ -98,6 +98,33 @@ public final class ProxyController: @unchecked Sendable {
         return outcome
     }
 
+    /// Запустить **без ключа** — ярус T0.
+    ///
+    /// Ни точки выхода, ни аккаунта, ни ключа. Обход достигается
+    /// нарезкой приветствия TLS по дороге к настоящему сайту.
+    @discardableResult
+    public func startDirect(options: ConnectionOptions = ConnectionOptions()) -> ConnectionState {
+        stop()
+        let outcome: ConnectionState
+        do {
+            let started = try AtlasProxy(directListen: "127.0.0.1:0", options: options)
+            let address = try started.address
+            lock.lock()
+            proxy = started
+            state = .running(address: address)
+            lock.unlock()
+            outcome = .running(address: address)
+        } catch {
+            let reason = (error as? AtlasError)?.reason ?? "\(error)"
+            lock.lock()
+            state = .failed(reason: reason)
+            lock.unlock()
+            outcome = .failed(reason: reason)
+        }
+        onChange(outcome)
+        return outcome
+    }
+
     /// Выключить.
     ///
     /// Ничего не делает, если уже выключено, и **не сообщает** об

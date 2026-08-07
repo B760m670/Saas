@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use atlas_types::ProxyKey;
 
+use crate::desync::{self, Strategy};
 use crate::pac;
 use crate::{dial_with, DialOptions, Target};
 
@@ -39,6 +40,11 @@ const CHUNK: usize = 16 * 1024;
 /// Счётчики работы прокси.
 #[derive(Debug, Default)]
 struct Counters {
+    /// Подобранный приём обхода, общий на всё время работы прокси.
+    ///
+    /// Хранится числом, потому что делится между потоками без
+    /// блокировки: приём подбирается редко, читается постоянно.
+    strategy: AtomicU64,
     accepted: AtomicU64,
     active: AtomicU64,
     failed: AtomicU64,
@@ -102,6 +108,28 @@ impl Proxy {
     /// Ошибки занятия адреса и негодные правила.
     pub fn start_with_rules(
         key: ProxyKey,
+        listen: &str,
+        options: DialOptions,
+        rules: Option<pac::Rules>,
+    ) -> io::Result<Self> {
+        Self::start_inner(Some(key), listen, options, rules)
+    }
+
+    /// Запустить прокси **без ключа** — ярус T0.
+    ///
+    /// Точки выхода нет вовсе: соединения идут напрямую к настоящим
+    /// сайтам, а обход достигается нарезкой приветствия TLS. Ни
+    /// аккаунта, ни ключа, ни узла за границей.
+    ///
+    /// # Errors
+    ///
+    /// Не удалось занять адрес.
+    pub fn start_direct(listen: &str, options: DialOptions) -> io::Result<Self> {
+        Self::start_inner(None, listen, options, None)
+    }
+
+    fn start_inner(
+        key: Option<ProxyKey>,
         listen: &str,
         options: DialOptions,
         rules: Option<pac::Rules>,
@@ -189,7 +217,7 @@ impl Drop for Proxy {
 /// Принимать соединения, пока не попросят остановиться.
 fn accept_loop(
     listener: &TcpListener,
-    key: &Arc<ProxyKey>,
+    key: &Arc<Option<ProxyKey>>,
     options: &Arc<DialOptions>,
     counters: &Arc<Counters>,
     running: &Arc<AtomicBool>,
@@ -207,7 +235,8 @@ fn accept_loop(
                 let spawned = std::thread::Builder::new()
                     .name("atlas-proxy-conn".to_owned())
                     .spawn(move || {
-                        if serve(socket, &key, &options, &owned, &script).is_err() {
+                        if serve(socket, key.as_ref().as_ref(), &options, &owned, &script).is_err()
+                        {
                             owned.failed.fetch_add(1, Ordering::Relaxed);
                         }
                         owned.active.fetch_sub(1, Ordering::Relaxed);
@@ -237,7 +266,7 @@ enum Request {
 /// Обслужить одно соединение прокси.
 fn serve(
     mut socket: TcpStream,
-    key: &ProxyKey,
+    key: Option<&ProxyKey>,
     options: &DialOptions,
     counters: &Counters,
     script: &str,
@@ -262,6 +291,12 @@ fn serve(
             return socket.flush();
         }
         Request::Connect(host, port) => (host, port),
+    };
+
+    // Ключа нет — идём ярусом T0: прямо к настоящему сайту, но с
+    // нарезкой приветствия. Ни узла, ни аккаунта здесь не участвует.
+    let Some(key) = key else {
+        return serve_direct(socket, &host, port, options, counters);
     };
 
     let tunnel = match dial_with(key, &Target::domain(host, port), options) {
@@ -339,8 +374,32 @@ fn read_request(socket: &mut TcpStream) -> io::Result<Request> {
 /// выживало случайно, потому что пачка сервера приходит несколькими
 /// сегментами. Разбор — в `docs/09-lab.md`, раздел 11.
 fn splice(socket: TcpStream, tunnel: crate::Tunnel, counters: &Counters) -> io::Result<()> {
-    let (mut tunnel_read, mut tunnel_write) =
+    let (tunnel_read, tunnel_write) =
         crate::split(tunnel).map_err(|error| io::Error::other(error.to_string()))?;
+    pump(socket, tunnel_read, tunnel_write, counters)
+}
+
+/// То же для прямого соединения — когда туннеля нет вовсе.
+///
+/// Ярус T0 ходит к настоящему сайту напрямую, поэтому «та сторона» —
+/// обычный сокет, а не туннель. Перекачка при этом та же самая, и
+/// повторять её вторым телом нельзя: два одинаковых цикла разъедутся.
+fn splice_direct(socket: TcpStream, remote: TcpStream, counters: &Counters) -> io::Result<()> {
+    let remote_read = remote.try_clone()?;
+    pump(socket, remote_read, remote, counters)
+}
+
+/// Перекачка в обе стороны между локальным клиентом и той стороной.
+fn pump<R, W>(
+    socket: TcpStream,
+    mut tunnel_read: R,
+    mut tunnel_write: W,
+    counters: &Counters,
+) -> io::Result<()>
+where
+    R: Read + Send,
+    W: Write + Send,
+{
     let mut local_read = socket.try_clone()?;
     let mut local_write = socket;
 
@@ -387,4 +446,78 @@ fn splice(socket: TcpStream, tunnel: crate::Tunnel, counters: &Counters) -> io::
         let _ = local_read.shutdown(std::net::Shutdown::Read);
     });
     Ok(())
+}
+
+impl Counters {
+    /// Какой приём обхода применять сейчас.
+    fn strategy(&self) -> Strategy {
+        match self.strategy.load(Ordering::Relaxed) {
+            0 => Strategy::None,
+            2 => Strategy::Records,
+            3 => Strategy::Disorder,
+            _ => Strategy::Split,
+        }
+    }
+}
+
+/// Прямое соединение с нарезкой приветствия — ярус T0.
+///
+/// # Почему первые байты идут особым путём
+///
+/// Всё, что решает, начинается в первом же пакете: ТСПУ ищет имя сайта
+/// в приветствии TLS. Дальше поток шифрован и цензору неинтересен,
+/// поэтому нарезается только начало, а остальное перекачивается как
+/// есть.
+///
+/// # Почему приём подбирается, а не задаётся
+///
+/// У разных операторов работает разное, и узнать это можно только
+/// попыткой. Подобранный приём запоминается на всё время работы
+/// прокси: перебирать на каждом соединении — значит платить неудачными
+/// попытками за каждую вкладку.
+fn serve_direct(
+    mut socket: TcpStream,
+    host: &str,
+    port: u16,
+    options: &DialOptions,
+    counters: &Counters,
+) -> io::Result<()> {
+    let mut remote = match connect_direct(host, port, options) {
+        Ok(remote) => remote,
+        Err(error) => {
+            let _ = socket.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\n");
+            return Err(error);
+        }
+    };
+
+    socket.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+    socket.flush()?;
+
+    // Первый кусок от клиента — то самое приветствие TLS.
+    let mut first = vec![0_u8; 8 * 1024];
+    let read = socket.read(&mut first)?;
+    if read == 0 {
+        return Ok(());
+    }
+    counters.to_target.fetch_add(read as u64, Ordering::Relaxed);
+
+    let strategy = counters.strategy();
+    desync::send_first(&mut remote, first.get(..read).unwrap_or_default(), strategy)?;
+
+    splice_direct(socket, remote, counters)
+}
+
+/// Открыть прямое соединение с настоящим сайтом.
+fn connect_direct(host: &str, port: u16, options: &DialOptions) -> io::Result<TcpStream> {
+    use std::net::ToSocketAddrs as _;
+
+    let address = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::other("адрес не разрешается"))?;
+    let socket = TcpStream::connect_timeout(&address, options.connect_timeout)?;
+    socket.set_read_timeout(options.read_timeout)?;
+    // Без этого система склеит куски обратно, и вся нарезка пропадёт.
+    socket.set_nodelay(true)?;
+    Ok(socket)
 }

@@ -1,0 +1,19 @@
+# Настройка развёртывания края.
+#
+# Имя определяет адрес: `<name>.<поддомен>.workers.dev`. Его же клиент
+# пишет в ключ доступа.
+name = "atlas-edge"
+main = "src/worker.js"
+compatibility_date = "2026-01-01"
+
+# Без этого флага `cloudflare:sockets` недоступен, и край не сможет
+# соединяться с адресом назначения вовсе.
+compatibility_flags = ["nodejs_compat"]
+
+# Секрет и идентификатор пользователя задаются отдельно и в файл не
+# попадают:
+#
+#   npx wrangler secret put ATLAS_SECRET
+#   npx wrangler secret put ATLAS_UUID
+#
+# Класть их сюда нельзя: файл лежит в репозитории.

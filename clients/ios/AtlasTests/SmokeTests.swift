@@ -260,6 +260,30 @@ final class BrowserTests: XCTestCase {
         XCTAssertNil(WebView.url(from: "   "))
     }
 
+
+    /// Дождаться, пока скрипт затыкания доказуемо отработал.
+    ///
+    /// `settle(view)` говорит только о том, что навигация завершилась.
+    /// Между этим и исполнением скрипта, объявленного «в начале
+    /// документа», есть окно, и проверки то попадали в него, то нет —
+    /// отсюда плавающие отказы, каждый раз в другом месте.
+    ///
+    /// Ожидание не маскирует поломку, а разделяет две разные: если
+    /// скрипт не исполнится вовсе, ожидание истечёт и скажет об этом
+    /// прямо. Защита, срабатывающая три раза из четырёх, течёт один раз
+    /// из четырёх — и знать об этом надо от проверки, а не от
+    /// пользователя.
+    private func awaitHardening(_ view: WKWebView, file: StaticString = #filePath, line: UInt = #line) async throws {
+        for _ in 0..<50 {
+            let ready = try? await view.evaluateJavaScript(
+                "typeof window.__atlasSealFailures !== 'undefined'"
+            )
+            if (ready as? Bool) == true { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("скрипт затыкания не исполнился за отведённое время", file: file, line: line)
+    }
+
     /// Скрипт затыкания действительно убирает точки входа.
     ///
     /// Проверяется исполнением в настоящем `WKWebView`: скрипт
@@ -274,12 +298,21 @@ final class BrowserTests: XCTestCase {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.loadHTMLString("<html><head></head><body>проба</body></html>", baseURL: nil)
         try await settle(view)
+        try await awaitHardening(view)
+
+        // Скрипт копит причины неудач вместо того, чтобы их глотать.
+        // Без них отказ сообщает только «осталась доступной» — и
+        // разбираться приходится вслепую, без движка под рукой.
+        let failures =
+            (try? await view.evaluateJavaScript(
+                "(window.__atlasSealFailures || ['список недоступен']).join(' | ')"
+            )) as? String ?? "скрипт не исполнился"
 
         for name in ["window.RTCPeerConnection", "window.WebTransport", "window.PublicKeyCredential"] {
             let answer = try await view.evaluateJavaScript("typeof \(name)")
             XCTAssertEqual(
                 answer as? String, "undefined",
-                "\(name) осталась доступной странице"
+                "\(name) осталась доступной странице. Причины: \(failures)"
             )
         }
         let credentials = try await view.evaluateJavaScript("typeof navigator.credentials")
@@ -299,6 +332,7 @@ final class BrowserTests: XCTestCase {
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.loadHTMLString("<html><body></body></html>", baseURL: nil)
         try await settle(view)
+        try await awaitHardening(view)
 
         let attempt = """
             (function () {
@@ -309,10 +343,21 @@ final class BrowserTests: XCTestCase {
                 return typeof window.RTCPeerConnection + ',' + typeof window.WebTransport;
             })();
             """
+        // Тот же приём, что и в соседних проверках: без диагностики
+        // отказ не отличает «затыкание не сработало» от «скрипт вообще
+        // не исполнялся». Разница здесь решающая — второе означало бы,
+        // что защиты нет ни в проверке, ни у пользователя.
+        let ran =
+            (try? await view.evaluateJavaScript(
+                "typeof window.__atlasSealFailures === 'undefined' "
+                    + "? 'скрипт не исполнялся' "
+                    + ": ('исполнялся, неудачи: ' + (window.__atlasSealFailures.join(' | ') || 'нет'))"
+            )) as? String ?? "опрос не удался"
+
         let answer = try await view.evaluateJavaScript(attempt)
         XCTAssertEqual(
             answer as? String, "undefined,undefined",
-            "страница вернула себе убранную возможность"
+            "страница вернула себе убранную возможность. Скрипт: \(ran)"
         )
     }
 
@@ -334,6 +379,7 @@ final class BrowserTests: XCTestCase {
             baseURL: nil
         )
         try await settle(view)
+        try await awaitHardening(view)
 
         let left = try await view.evaluateJavaScript(
             "document.querySelectorAll('link[rel*=prefetch], link[rel*=preconnect]').length"
@@ -342,10 +388,27 @@ final class BrowserTests: XCTestCase {
 
         // Безобидная ссылка обязана уцелеть: вычищать всё подряд —
         // значит сломать страницы без нужды.
+        // Что именно осталось в дереве — единственный способ отличить
+        // «вычистили лишнее» от «движок сам не создал элемент».
+        // Догадываться об этом, не имея движка под рукой, бесполезно:
+        // прошлый раз причина оказалась не той, что казалась.
+        let survivors =
+            (try? await view.evaluateJavaScript(
+                "Array.from(document.querySelectorAll('link'))"
+                    + ".map(function (l) { return l.outerHTML; }).join(' | ') || 'ни одной ссылки'"
+            )) as? String ?? "опрос не удался"
+        let failures =
+            (try? await view.evaluateJavaScript(
+                "(window.__atlasSealFailures || []).join(' | ') || 'нет'"
+            )) as? String ?? "опрос не удался"
+
         let kept = try await view.evaluateJavaScript(
             "document.querySelectorAll('link[rel=stylesheet]').length"
         )
-        XCTAssertEqual(kept as? Int, 1, "вычищено лишнее")
+        XCTAssertEqual(
+            kept as? Int, 1,
+            "вычищено лишнее. Осталось: \(survivors). Неудачи затыкания: \(failures)"
+        )
     }
 
     /// Дать движку дойти до конца загрузки.

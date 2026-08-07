@@ -162,10 +162,16 @@ dependencies = [
 name = "atlas-transport"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "atlas-crypto",
  "base64",
+ "hkdf",
+ "hmac",
  "sha1",
+ "sha2",
+ "subtle",
  "thiserror",
+ "x25519-dalek",
 ]
 
 [[package]]

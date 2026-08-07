@@ -48,6 +48,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs, clippy::pedantic)]
 
+pub mod desync;
 mod error;
 pub mod mobileconfig;
 pub mod pac;

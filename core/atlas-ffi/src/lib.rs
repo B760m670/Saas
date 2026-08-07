@@ -299,6 +299,55 @@ pub unsafe extern "C" fn atlas_proxy_start(
     }
 }
 
+/// Поднять прокси **без ключа** — ярус T0.
+///
+/// Точки выхода нет вовсе: соединения идут напрямую к настоящим
+/// сайтам, а обход достигается нарезкой приветствия TLS. Ни аккаунта,
+/// ни ключа, ни узла за границей.
+///
+/// Отдельная функция, а не пустой ключ в существующей: «без ключа» —
+/// это другой замысел, а не отсутствие поля. Прятать его в особое
+/// значение аргумента значило бы приглашать вызвать его случайно.
+///
+/// Возвращает нулевой указатель при неудаче; причина — в
+/// [`atlas_last_error`].
+///
+/// # Safety
+///
+/// `listen` — годная строка C. `options` либо нулевой, либо указывает
+/// на живую [`AtlasOptions`].
+#[no_mangle]
+pub unsafe extern "C" fn atlas_proxy_start_direct(
+    listen: *const c_char,
+    options: *const AtlasOptions,
+) -> *mut AtlasProxy {
+    // Условие: договор функции.
+    let Some(listen) = (unsafe { take(listen, "адрес прослушивания") }) else {
+        return core::ptr::null_mut();
+    };
+
+    let mut dial = DialOptions::default();
+    if !options.is_null() {
+        // Условие: указатель не нулевой и, по договору, годен.
+        let given = unsafe { *options };
+        dial.ech = given.ech != 0;
+        if given.connect_timeout_ms != 0 {
+            dial.connect_timeout = Duration::from_millis(u64::from(given.connect_timeout_ms));
+        }
+        if given.read_timeout_ms != 0 {
+            dial.read_timeout = Some(Duration::from_millis(u64::from(given.read_timeout_ms)));
+        }
+    }
+
+    match Proxy::start_direct(&listen, dial) {
+        Ok(proxy) => Box::into_raw(Box::new(AtlasProxy(proxy))),
+        Err(error) => {
+            fail(&format!("прокси не поднялся: {error}"));
+            core::ptr::null_mut()
+        }
+    }
+}
+
 /// Разобрать правила маршрутизации из JSON.
 ///
 /// Адрес прокси в правилах не задаётся: он всегда равен занятому
