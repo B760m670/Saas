@@ -85,10 +85,39 @@ pub enum Proxy {
     },
 }
 
+/// Что именно накрывает профиль.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coverage {
+    /// Одна сеть Wi-Fi по имени.
+    ///
+    /// Никаких прав не требует: обычный профиль, который ставится в
+    /// один тап. Сотовую связь не покрывает — поля прокси живут в
+    /// настройках сети, а у сотовой их нет.
+    Network,
+    /// Всё устройство целиком.
+    ///
+    /// Payload `com.apple.proxy.http.global`. По спецификации Apple он
+    /// **требует, чтобы устройство было supervised** — то есть заведено
+    /// через Apple Configurator. Платного аккаунта разработчика при
+    /// этом не нужно: надзор бесплатен, но требует Mac и стирания
+    /// устройства.
+    ///
+    /// Взамен даёт то, чего не даёт ни один другой путь без
+    /// entitlement: прокси на **всё**, включая мобильный интернет.
+    ///
+    /// Отдельная оговорка: такой payload на устройстве может быть
+    /// только один.
+    Everything,
+}
+
 /// Профиль конфигурации.
 #[derive(Debug, Clone)]
 pub struct Profile {
+    /// Что именно накрывает профиль.
+    pub coverage: Coverage,
     /// Имя сети Wi-Fi, к которой относится настройка.
+    ///
+    /// Осмысленно только при [`Coverage::Network`].
     pub ssid: String,
     /// Защита сети.
     pub encryption: Encryption,
@@ -116,6 +145,7 @@ impl Profile {
             return Err(Error::Key("порт прокси не число"));
         }
         Ok(Self {
+            coverage: Coverage::Network,
             ssid: ssid.into(),
             encryption: Encryption::None,
             password: None,
@@ -125,6 +155,22 @@ impl Profile {
             display_name: "ATLAS".to_owned(),
             identifier: "org.atlas.proxy".to_owned(),
         })
+    }
+
+    /// Профиль на всё устройство, включая сотовую связь.
+    ///
+    /// Требует, чтобы устройство было supervised (см. [`Coverage`]).
+    /// Проверить это из кода нельзя — отказ придёт от самой iOS при
+    /// установке, и он будет внятным.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Key`], если адрес прокси не разбирается.
+    pub fn everything(proxy_address: &str) -> Result<Self> {
+        let mut profile = Self::automatic("", proxy_address)?;
+        profile.coverage = Coverage::Everything;
+        "org.atlas.proxy.global".clone_into(&mut profile.identifier);
+        Ok(profile)
     }
 
     /// Профиль с одним адресом прокси на всё.
@@ -140,6 +186,7 @@ impl Profile {
             .parse::<u16>()
             .map_err(|_| Error::Key("порт прокси не число"))?;
         Ok(Self {
+            coverage: Coverage::Network,
             ssid: ssid.into(),
             encryption: Encryption::None,
             password: None,
@@ -177,7 +224,7 @@ impl Profile {
     ///
     /// [`Error::Key`], если имя сети пустое.
     pub fn build(&self) -> Result<String> {
-        if self.ssid.is_empty() {
+        if self.coverage == Coverage::Network && self.ssid.is_empty() {
             return Err(Error::Key("имя сети Wi-Fi пустое"));
         }
         if self.encryption != Encryption::None && self.password.is_none() {
@@ -218,19 +265,91 @@ impl Profile {
             )?;
             writeln!(
                 out,
-                "\t<key>PayloadDescription</key>\n\t<string>Прокси ATLAS для сети {}</string>",
-                escape(&self.ssid)
+                "\t<key>PayloadDescription</key>\n\t<string>{}</string>",
+                escape(&self.description())
             )?;
             // Профиль обязан сниматься пользователем. Инструмент обхода
             // цензуры, который нельзя выключить, — это не инструмент.
             writeln!(out, "\t<key>PayloadRemovalDisallowed</key>\n\t<false/>")?;
             writeln!(out, "\t<key>PayloadContent</key>\n\t<array>\n\t<dict>")?;
-            self.write_wifi_payload(&mut out, &inner_uuid)?;
+            match self.coverage {
+                Coverage::Network => self.write_wifi_payload(&mut out, &inner_uuid)?,
+                Coverage::Everything => self.write_global_payload(&mut out, &inner_uuid)?,
+            }
             out.push_str("\t</dict>\n\t</array>\n</dict>\n</plist>\n");
             Ok(())
         };
         build().map_err(|_| Error::Key("профиль не собрался"))?;
         Ok(out)
+    }
+
+    /// Описание профиля для показа пользователю.
+    fn description(&self) -> String {
+        match self.coverage {
+            Coverage::Network => format!("Прокси ATLAS для сети {}", self.ssid),
+            Coverage::Everything => "Прокси ATLAS на всё устройство".to_owned(),
+        }
+    }
+
+    /// Записать payload прокси на всё устройство.
+    ///
+    /// Требует supervised-устройства; см. [`Coverage::Everything`].
+    /// `ProxyPACFallbackAllowed` здесь так же `false`, как и в сетевом
+    /// профиле: молчаливый уход мимо туннеля означал бы, что
+    /// пользователь считает себя защищённым, не будучи защищённым.
+    ///
+    /// `ProxyCaptiveLoginAllowed` — единственное послабление, и оно
+    /// вынужденное: без него не войти в сеть отеля или кафе, где вход
+    /// идёт через страницу-перехватчик, а значит не выйти в интернет
+    /// вовсе.
+    fn write_global_payload(&self, out: &mut String, uuid: &str) -> core::fmt::Result {
+        writeln!(
+            out,
+            "\t\t<key>PayloadType</key>\n\t\t<string>com.apple.proxy.http.global</string>"
+        )?;
+        writeln!(
+            out,
+            "\t\t<key>PayloadVersion</key>\n\t\t<integer>1</integer>"
+        )?;
+        writeln!(
+            out,
+            "\t\t<key>PayloadIdentifier</key>\n\t\t<string>{}.global</string>",
+            escape(&self.identifier)
+        )?;
+        writeln!(
+            out,
+            "\t\t<key>PayloadUUID</key>\n\t\t<string>{uuid}</string>"
+        )?;
+        writeln!(
+            out,
+            "\t\t<key>PayloadDisplayName</key>\n\t\t<string>Прокси на всё устройство</string>"
+        )?;
+
+        match &self.proxy {
+            Proxy::Manual { host, port } => {
+                writeln!(out, "\t\t<key>ProxyType</key>\n\t\t<string>Manual</string>")?;
+                writeln!(
+                    out,
+                    "\t\t<key>ProxyServer</key>\n\t\t<string>{}</string>",
+                    escape(host)
+                )?;
+                writeln!(
+                    out,
+                    "\t\t<key>ProxyServerPort</key>\n\t\t<integer>{port}</integer>"
+                )?;
+            }
+            Proxy::Auto { url } => {
+                writeln!(out, "\t\t<key>ProxyType</key>\n\t\t<string>Auto</string>")?;
+                writeln!(
+                    out,
+                    "\t\t<key>ProxyPACURL</key>\n\t\t<string>{}</string>",
+                    escape(url)
+                )?;
+                writeln!(out, "\t\t<key>ProxyPACFallbackAllowed</key>\n\t\t<false/>")?;
+            }
+        }
+        writeln!(out, "\t\t<key>ProxyCaptiveLoginAllowed</key>\n\t\t<true/>")?;
+        Ok(())
     }
 
     /// Записать payload сети Wi-Fi — тот, где и живут поля прокси.
