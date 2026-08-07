@@ -139,21 +139,40 @@ final class SmokeTests: XCTestCase {
         XCTAssertTrue(parsed is [String: Any], "профиль не разбирается системой")
     }
 
-    /// Экран строится и раскладывается без падения.
+    /// Экран строится, раскладывается и рисуется без падения.
     ///
     /// Это то, чего не ловит сборка. Вызов, которого нет в целевой
     /// версии iOS, падает в момент обращения — здесь он и обратится.
+    ///
+    /// Экран обязательно помещается в настоящее окно. Первая редакция
+    /// этого не делала, и `subviews` оказался пуст: SwiftUI строит
+    /// иерархию лениво и вне окна её просто не создаёт. Проверка тогда
+    /// падала не потому, что экран сломан, а потому, что была написана
+    /// неверно.
+    ///
+    /// Настоящее доказательство — проход отрисовки: `render(in:)`
+    /// заставляет систему пройти по всему дереву, и недоступный вызов
+    /// уронил бы процесс именно здесь.
     @MainActor
-    func testTheMainScreenLaysOutWithoutCrashing() {
+    func testTheMainScreenRendersWithoutCrashing() {
+        let size = CGSize(width: 390, height: 844)
         let model = AppModel()
         let host = UIHostingController(rootView: MainScreen().environmentObject(model))
 
-        host.loadViewIfNeeded()
-        host.view.frame = CGRect(x: 0, y: 0, width: 390, height: 844)
+        let window = UIWindow(frame: CGRect(origin: .zero, size: size))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
 
-        XCTAssertFalse(host.view.subviews.isEmpty, "экран не построился")
+        let renderer = UIGraphicsImageRenderer(bounds: host.view.bounds)
+        let picture = renderer.image { context in
+            host.view.layer.render(in: context.cgContext)
+        }
+
+        XCTAssertEqual(picture.size.width, size.width, accuracy: 1, "отрисовка не прошла")
+        XCTAssertFalse(host.view.subviews.isEmpty, "иерархия представлений пуста")
     }
 
     /// Ввод ключа доводит до состояния, в котором можно включать.
