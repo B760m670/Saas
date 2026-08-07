@@ -32,9 +32,25 @@ on:
     # Только основная ветка: ветки с открытым PR проверяет событие
     # ниже, и дублировать его — значит гонять два одинаковых прогона.
     branches: [main]
-    paths: ["core/**", ".github/workflows/core.yml"]
+    paths:
+      # `clients/worker/**` — не опечатка: тест согласия
+      # `atlas-transport/tests/interop.rs` гоняет сторону края на
+      # JavaScript и сверяет байты. Правка только там обязана
+      # запускать проверку, иначе расхождение реализаций доедет
+      # до пользователя молча.
+      - "core/**"
+      - "clients/worker/**"
+      - ".github/workflows/core.yml"
   pull_request:
-    paths: ["core/**", ".github/workflows/core.yml"]
+    paths:
+      # `clients/worker/**` — не опечатка: тест согласия
+      # `atlas-transport/tests/interop.rs` гоняет сторону края на
+      # JavaScript и сверяет байты. Правка только там обязана
+      # запускать проверку, иначе расхождение реализаций доедет
+      # до пользователя молча.
+      - "core/**"
+      - "clients/worker/**"
+      - ".github/workflows/core.yml"
   workflow_dispatch:
 
 concurrency:
