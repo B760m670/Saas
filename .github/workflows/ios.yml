@@ -80,30 +80,48 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Триплеты устройства и симулятора
-        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+        run: |
+          rustup target add aarch64-apple-ios \
+                            aarch64-apple-ios-sim \
+                            x86_64-apple-ios
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
 
+      # Симулятор собирается под **обе** архитектуры: `arm64` для машин
+      # Apple Silicon и `x86_64` для Intel. Одного среза мало — Xcode
+      # линкует обе, и на недостающей падает «Undefined symbols for
+      # architecture x86_64». Отсюда третий триплет и склейка `lipo`:
+      # так проект собирается и на агенте, и на любой машине
+      # разработчика, чем бы она ни была.
       - name: Собрать ядро под устройство и симулятор
         working-directory: core
         run: |
           cargo build --release -p atlas-ffi --target aarch64-apple-ios
           cargo build --release -p atlas-ffi --target aarch64-apple-ios-sim
+          cargo build --release -p atlas-ffi --target x86_64-apple-ios
 
       # Каталоги названы так, как их складывает `$(CONFIGURATION)` вместе
-      # с `$(EFFECTIVE_PLATFORM_NAME)`. Смешивать архивы нельзя: у
-      # устройства и симулятора разные триплеты, и подстановка не того
-      # ломает компоновку.
+      # с `$(EFFECTIVE_PLATFORM_NAME)`. Смешивать устройство и симулятор
+      # нельзя: срезы несовместимы, и подстановка не того ломает
+      # компоновку.
       - name: Разложить архивы там, где их ищет проект
         run: |
+          set -euo pipefail
           mkdir -p core/target/universal-ios/Release-iphoneos
           mkdir -p core/target/universal-ios/Release-iphonesimulator
+
           cp core/target/aarch64-apple-ios/release/libatlas_ffi.a \
              core/target/universal-ios/Release-iphoneos/
-          cp core/target/aarch64-apple-ios-sim/release/libatlas_ffi.a \
-             core/target/universal-ios/Release-iphonesimulator/
+
+          lipo -create \
+             core/target/aarch64-apple-ios-sim/release/libatlas_ffi.a \
+             core/target/x86_64-apple-ios/release/libatlas_ffi.a \
+             -output core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a
+
+          echo "срезы архива для симулятора:"
+          lipo -info core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a
 
       - name: Заголовок не отстал от исходника
         run: |
