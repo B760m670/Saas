@@ -350,10 +350,27 @@ final class BrowserTests: XCTestCase {
 
         // Безобидная ссылка обязана уцелеть: вычищать всё подряд —
         // значит сломать страницы без нужды.
+        // Что именно осталось в дереве — единственный способ отличить
+        // «вычистили лишнее» от «движок сам не создал элемент».
+        // Догадываться об этом, не имея движка под рукой, бесполезно:
+        // прошлый раз причина оказалась не той, что казалась.
+        let survivors =
+            (try? await view.evaluateJavaScript(
+                "Array.from(document.querySelectorAll('link'))"
+                    + ".map(function (l) { return l.outerHTML; }).join(' | ') || 'ни одной ссылки'"
+            )) as? String ?? "опрос не удался"
+        let failures =
+            (try? await view.evaluateJavaScript(
+                "(window.__atlasSealFailures || []).join(' | ') || 'нет'"
+            )) as? String ?? "опрос не удался"
+
         let kept = try await view.evaluateJavaScript(
             "document.querySelectorAll('link[rel=stylesheet]').length"
         )
-        XCTAssertEqual(kept as? Int, 1, "вычищено лишнее")
+        XCTAssertEqual(
+            kept as? Int, 1,
+            "вычищено лишнее. Осталось: \(survivors). Неудачи затыкания: \(failures)"
+        )
     }
 
     /// Дать движку дойти до конца загрузки.
