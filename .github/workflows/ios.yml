@@ -79,22 +79,31 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Триплет устройства
-        run: rustup target add aarch64-apple-ios
+      - name: Триплеты устройства и симулятора
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
 
-      - name: Собрать ядро под iOS
+      - name: Собрать ядро под устройство и симулятор
         working-directory: core
-        run: cargo build --release -p atlas-ffi --target aarch64-apple-ios
-
-      - name: Разложить архив там, где его ищет проект
         run: |
-          mkdir -p core/target/universal-ios/Release
+          cargo build --release -p atlas-ffi --target aarch64-apple-ios
+          cargo build --release -p atlas-ffi --target aarch64-apple-ios-sim
+
+      # Каталоги названы так, как их складывает `$(CONFIGURATION)` вместе
+      # с `$(EFFECTIVE_PLATFORM_NAME)`. Смешивать архивы нельзя: у
+      # устройства и симулятора разные триплеты, и подстановка не того
+      # ломает компоновку.
+      - name: Разложить архивы там, где их ищет проект
+        run: |
+          mkdir -p core/target/universal-ios/Release-iphoneos
+          mkdir -p core/target/universal-ios/Release-iphonesimulator
           cp core/target/aarch64-apple-ios/release/libatlas_ffi.a \
-             core/target/universal-ios/Release/
+             core/target/universal-ios/Release-iphoneos/
+          cp core/target/aarch64-apple-ios-sim/release/libatlas_ffi.a \
+             core/target/universal-ios/Release-iphonesimulator/
 
       - name: Заголовок не отстал от исходника
         run: |
@@ -107,7 +116,7 @@ jobs:
       - name: Породить проект
         working-directory: clients/ios
         run: |
-          brew install xcodegen
+          brew install xcodegen xcbeautify
           xcodegen generate
 
       # Подпись не ставится намеренно: её ставит тот, кто устанавливает.
@@ -122,6 +131,43 @@ jobs:
                      -derivedDataPath build \
                      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
                      build | tail -40
+
+      # Единственный способ отличить «собирается» от «работает», не имея
+      # устройства. Набор размещён в приложении, поэтому оно
+      # по-настоящему запускается: падение при старте роняет проверку.
+      #
+      # Устройство выбирается запросом, а не угадыванием имени: состав
+      # симуляторов на агенте меняется от образа к образу, и вбитый
+      # «iPhone 15» однажды просто перестал бы находиться.
+      - name: Выбрать симулятор
+        id: simulator
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available --json \
+                 | jq -r '.devices | to_entries[] | .value[]
+                          | select(.name | startswith("iPhone")) | .udid' \
+                 | head -1)
+          if [ -z "$udid" ]; then
+            echo "на агенте нет ни одного симулятора iPhone" >&2
+            xcrun simctl list devices available >&2
+            exit 1
+          fi
+          echo "выбран $udid"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      - name: Проверка в симуляторе
+        working-directory: clients/ios
+        run: |
+          set -o pipefail
+          xcodebuild test -project Atlas.xcodeproj -scheme Atlas \
+                     -configuration Release \
+                     -destination "id=${{ steps.simulator.outputs.udid }}" \
+                     -derivedDataPath build-sim \
+                     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+                     | xcbeautify --renderer github-actions || {
+                       echo "::error::проверка в симуляторе не прошла"
+                       exit 1
+                     }
 
       - name: Упаковать IPA
         working-directory: clients/ios

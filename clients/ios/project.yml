@@ -42,9 +42,53 @@ targets:
         CODE_SIGNING_ALLOWED: "NO"
         CODE_SIGNING_REQUIRED: "NO"
         # Ядро приезжает статическим архивом под все нужные триплеты.
+        #
+        # `$(EFFECTIVE_PLATFORM_NAME)` в пути обязателен: он даёт
+        # `-iphoneos` для устройства и `-iphonesimulator` для симулятора.
+        # Архивы там разные (`aarch64-apple-ios` против
+        # `aarch64-apple-ios-sim`), и без различения сборка под симулятор
+        # молча подхватила бы архив устройства и упала на компоновке.
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
-          - "$(PROJECT_DIR)/../../core/target/universal-ios/$(CONFIGURATION)"
+          - "$(PROJECT_DIR)/../../core/target/universal-ios/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-latlas_ffi"
+
+  # Проверка в симуляторе — единственный способ отличить «собирается»
+  # от «работает», не имея устройства.
+  #
+  # Набор намеренно **размещается в приложении** (`testHost`): тогда
+  # приложение по-настоящему запускается, и падение при старте роняет
+  # проверку. Отдельный набор, живущий сам по себе, этого не поймал бы.
+  AtlasTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AtlasTests
+    dependencies:
+      - target: Atlas
+      # Набор обращается к `AtlasCore` напрямую, значит модуль обязан
+      # быть виден и ему, а не только приложению.
+      - package: AtlasCore
+        product: AtlasCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.atlas.client.tests
+        SWIFT_VERSION: "5.9"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
+        GENERATE_INFOPLIST_FILE: "YES"
+    info:
+      path: AtlasTests/Info.plist
+
+schemes:
+  Atlas:
+    build:
+      targets:
+        Atlas: all
+        AtlasTests: [test]
+    test:
+      targets:
+        - AtlasTests
+      gatherCoverageData: false
