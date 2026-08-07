@@ -122,9 +122,15 @@ enum Hardening {
                     }
                 }
 
-                // Последняя попытка: если свойство всё ещё отвечает,
-                // объявить его на самом объекте поверх прототипа.
-                if (typeof target[name] !== 'undefined') {
+                // Занять место **всегда**, даже если возможности в этом
+                // движке сейчас нет.
+                //
+                // Пустое место не защищено ничем: страница объявляет
+                // свойство сама и получает рабочую возможность. Так и
+                // случилось с `WebTransport` — его в движке не было,
+                // затыкать было нечего, и страница вернула его одной
+                // строкой. Незанятое место опаснее занятого чужим.
+                if (!Object.prototype.hasOwnProperty.call(target, name)) {
                     try {
                         Object.defineProperty(target, name, {
                             get: function () { return undefined; },
@@ -133,7 +139,7 @@ enum Hardening {
                             enumerable: false
                         });
                     } catch (error) {
-                        window.__atlasSealFailures.push(name + ' (поверх): ' + error);
+                        window.__atlasSealFailures.push(name + ' (занять место): ' + error);
                     }
                 }
 
