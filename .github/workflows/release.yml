@@ -44,6 +44,11 @@ on:
       - "core/**"
       - ".github/workflows/release.yml"
     tags: ["v*"]
+  # Сборки точки выхода прогоняются и на PR — публикация нет, см. ниже.
+  pull_request:
+    paths:
+      - "core/**"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -174,10 +179,19 @@ jobs:
           path: ${{ matrix.archive }}
           if-no-files-found: error
 
+  # На PR не идёт: выпуск публикуется с основной ветки и ниоткуда больше.
+  #
+  # Работа тяжёлая — агент Apple, Xcode, три триплета Rust, — и на PR
+  # она дублировала бы `ios.yml`, ничего не доказывая сверх него. А вот
+  # `exit` выше на PR идёт, и намеренно: `publish` теперь **ждёт** его,
+  # и упавшая сборка точки выхода остановила бы публикацию приложения
+  # тоже. Проверять такое впервые уже после слияния — значит узнавать о
+  # поломке по мёртвой ссылке.
   publish:
     name: собрать и опубликовать
     runs-on: macos-15
     needs: exit
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v5
         with:
