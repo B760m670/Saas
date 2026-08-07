@@ -317,10 +317,21 @@ final class BrowserTests: XCTestCase {
                 return typeof window.RTCPeerConnection + ',' + typeof window.WebTransport;
             })();
             """
+        // Тот же приём, что и в соседних проверках: без диагностики
+        // отказ не отличает «затыкание не сработало» от «скрипт вообще
+        // не исполнялся». Разница здесь решающая — второе означало бы,
+        // что защиты нет ни в проверке, ни у пользователя.
+        let ran =
+            (try? await view.evaluateJavaScript(
+                "typeof window.__atlasSealFailures === 'undefined' "
+                    + "? 'скрипт не исполнялся' "
+                    + ": ('исполнялся, неудачи: ' + (window.__atlasSealFailures.join(' | ') || 'нет'))"
+            )) as? String ?? "опрос не удался"
+
         let answer = try await view.evaluateJavaScript(attempt)
         XCTAssertEqual(
             answer as? String, "undefined,undefined",
-            "страница вернула себе убранную возможность"
+            "страница вернула себе убранную возможность. Скрипт: \(ran)"
         )
     }
 
