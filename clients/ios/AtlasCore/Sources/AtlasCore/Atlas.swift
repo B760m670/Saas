@@ -221,6 +221,30 @@ public final class AtlasProxy: @unchecked Sendable {
         handle = started
     }
 
+    /// Поднять прокси **без ключа** — ярус T0.
+    ///
+    /// Точки выхода нет вовсе: соединения идут напрямую к настоящим
+    /// сайтам, а обход достигается нарезкой приветствия TLS. Ни
+    /// аккаунта, ни ключа, ни узла за границей.
+    ///
+    /// Отдельный создатель, а не пустой ключ в основном: «без ключа» —
+    /// это другой замысел, а не отсутствие поля. Пустая строка на
+    /// месте ключа выглядела бы недосмотром вызывающего.
+    ///
+    /// Что этот режим **не** делает: не меняет адрес. Гео-ограничения
+    /// по стране остаются, потому что адрес остаётся тем же.
+    public init(
+        directListen listen: String = "127.0.0.1:0",
+        options: ConnectionOptions = ConnectionOptions()
+    ) throws {
+        var settings = options.asC()
+        let started = withUnsafePointer(to: &settings) { pointer in
+            atlas_proxy_start_direct(listen, pointer)
+        }
+        guard let started else { throw lastError("прокси не поднялся") }
+        handle = started
+    }
+
     deinit {
         stop()
     }

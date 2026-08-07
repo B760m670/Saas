@@ -53,6 +53,11 @@ final class AppModel: ObservableObject {
         if state.isRunning {
             controller.stop()
             stopTicking()
+        } else if described == nil {
+            // Ключа нет — включаемся ярусом T0. Это не запасной путь и
+            // не полумера: большинству ничего другого и не нужно.
+            controller.startDirect()
+            startTicking()
         } else {
             storage.save(key)
             controller.start(key: key, rules: RoutingRules(direct: directDomains))
