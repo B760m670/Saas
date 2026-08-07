@@ -66,12 +66,18 @@ targets:
     platform: iOS
     sources:
       - path: AtlasTests
+    # Зависимости от пакета здесь намеренно нет.
+    #
+    # Xcode отказывается линковать статический продукт и в приложение, и
+    # в размещённый в нём набор: «This will result in duplication of
+    # library code» — и он прав, набор исполняется внутри процесса
+    # приложения, где код уже есть.
+    #
+    # Модуль `AtlasCore` виден набору иначе: приложение переэкспортирует
+    # его (см. `AtlasApp/Sources/CoreReexport.swift`), поэтому
+    # `@testable import Atlas` приносит и его тоже.
     dependencies:
       - target: Atlas
-      # Набор обращается к `AtlasCore` напрямую, значит модуль обязан
-      # быть виден и ему, а не только приложению.
-      - package: AtlasCore
-        product: AtlasCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.atlas.client.tests
