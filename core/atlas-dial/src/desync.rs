@@ -57,11 +57,31 @@ const CLIENT_HELLO: u8 = 0x01;
 /// Номер расширения `server_name`.
 const SERVER_NAME: u16 = 0x0000;
 
-/// Сколько ждать между кусками при рассинхронизации.
+/// Границы паузы между кусками, миллисекунды.
 ///
 /// Пауза нужна, чтобы куски заведомо ушли разными пакетами: без неё
 /// система вправе слепить их обратно, и весь приём пропадёт.
-const PIECE_DELAY: std::time::Duration = std::time::Duration::from_millis(12);
+///
+/// Границы, а не одно число: постоянная задержка сама становится
+/// отпечатком. Соединение, у которого паузы всегда ровно двенадцать
+/// миллисекунд, узнаётся не хуже, чем по имени сайта.
+const DELAY_MS: (u64, u64) = (8, 24);
+
+/// Случайное число в границах включительно.
+fn between(range: (u64, u64)) -> u64 {
+    let (low, high) = range;
+    if high <= low {
+        return low;
+    }
+    let span = high - low + 1;
+    let raw = u64::from_le_bytes(atlas_crypto::rng::OsRng::bytes::<8>());
+    low + raw % span
+}
+
+/// Подождать случайную паузу между кусками.
+fn pause() {
+    std::thread::sleep(std::time::Duration::from_millis(between(DELAY_MS)));
+}
 
 /// Значение TTL для куска, которому не суждено дойти.
 ///
@@ -208,12 +228,11 @@ pub fn split_point(data: &[u8]) -> SplitPoint {
     }
 }
 
-/// Наибольший размер куска при нарезке записей.
+/// Границы длины куска при нарезке записей.
 ///
 /// Мелкие куски заметны сами по себе: обычный браузер не шлёт
-/// приветствие по сорок байт. Величина выбрана так, чтобы имя сайта
-/// заведомо не поместилось в одну запись, но записей вышло немного.
-const RECORD_PIECE: usize = 64;
+/// приветствие по сорок байт. Слишком крупные не прячут имя.
+const PIECE_LEN: (u64, u64) = (48, 96);
 
 /// Пересобрать приветствие в несколько записей TLS.
 ///
@@ -226,25 +245,51 @@ pub fn refragment(data: &[u8]) -> Option<Vec<Vec<u8>>> {
     }
     let body_len = be16(data, 3)?;
     let end = RECORD_HEADER.checked_add(body_len)?;
-    if body_len <= RECORD_PIECE || end > data.len() {
+    let shortest = usize::try_from(PIECE_LEN.0).unwrap_or(48);
+    if body_len <= shortest || end > data.len() {
         return None;
     }
     let body = data.get(RECORD_HEADER..end)?;
 
-    let mut out: Vec<Vec<u8>> = body
-        .chunks(RECORD_PIECE)
-        .map(|piece| {
-            let mut record = Vec::with_capacity(RECORD_HEADER + piece.len());
-            // Заголовок берётся от исходной записи: тип и версия обязаны
-            // остаться теми же, меняется только длина.
-            record.push(HANDSHAKE);
-            record.extend_from_slice(data.get(1..3).unwrap_or(&[0x03, 0x01]));
-            let len = u16::try_from(piece.len()).unwrap_or(0);
-            record.extend_from_slice(&len.to_be_bytes());
-            record.extend_from_slice(piece);
-            record
-        })
-        .collect();
+    // Первая граница ставится не наугад, а по имени сайта: она обязана
+    // лечь внутрь него. Случайность хороша против отпечатка, но
+    // полагаться на неё в главном нельзя — при неудачном броске имя
+    // уместилось бы в одну запись целиком.
+    let first = find_server_name(data)
+        .filter(|(_, len)| *len >= 2)
+        .map(|(at, len)| at + len / 2 - RECORD_HEADER)
+        .filter(|cut| *cut > 0 && *cut < body.len());
+
+    let mut bounds: Vec<usize> = first.into_iter().collect();
+    let mut cursor = bounds.last().copied().unwrap_or(0);
+    while cursor < body.len() {
+        let step = usize::try_from(between(PIECE_LEN)).unwrap_or(64).max(1);
+        cursor = cursor.saturating_add(step).min(body.len());
+        if cursor < body.len() {
+            bounds.push(cursor);
+        }
+    }
+
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut from = 0;
+    for edge in bounds.iter().copied().chain(core::iter::once(body.len())) {
+        let Some(piece) = body.get(from..edge) else {
+            continue;
+        };
+        if piece.is_empty() {
+            continue;
+        }
+        let mut record = Vec::with_capacity(RECORD_HEADER + piece.len());
+        // Заголовок берётся от исходной записи: тип и версия обязаны
+        // остаться теми же, меняется только длина.
+        record.push(HANDSHAKE);
+        record.extend_from_slice(data.get(1..3).unwrap_or(&[0x03, 0x01]));
+        let len = u16::try_from(piece.len()).unwrap_or(0);
+        record.extend_from_slice(&len.to_be_bytes());
+        record.extend_from_slice(piece);
+        out.push(record);
+        from = edge;
+    }
 
     // Всё, что шло за записью, уходит как есть.
     if let Some(tail) = data.get(end..) {
@@ -279,14 +324,14 @@ pub fn send_first(socket: &mut TcpStream, data: &[u8], strategy: Strategy) -> io
             for piece in pieces {
                 socket.write_all(&piece)?;
                 socket.flush()?;
-                std::thread::sleep(PIECE_DELAY);
+                pause();
             }
             Ok(())
         }
         Strategy::Split => {
             socket.write_all(head)?;
             socket.flush()?;
-            std::thread::sleep(PIECE_DELAY);
+            pause();
             socket.write_all(tail)?;
             socket.flush()
         }
@@ -297,7 +342,7 @@ pub fn send_first(socket: &mut TcpStream, data: &[u8], strategy: Strategy) -> io
             socket.set_ttl(DEAD_TTL)?;
             socket.write_all(head)?;
             socket.flush()?;
-            std::thread::sleep(PIECE_DELAY);
+            pause();
 
             // TTL возвращается **до** отправки хвоста: хвост обязан
             // дойти, иначе соединение просто не состоится.
@@ -385,6 +430,15 @@ mod tests {
     // склеенные тела обязаны дать исходное сообщение байт в байт.
     #[test]
     fn refragmentation_hides_the_name_and_loses_nothing() {
+        // Длины кусков случайны, поэтому одного броска мало: свойство
+        // обязано держаться при любом. Один удачный прогон доказывал бы
+        // только удачу.
+        for _ in 0..200 {
+            check_one_refragmentation();
+        }
+    }
+
+    fn check_one_refragmentation() {
         let wire = hello("rutracker.org");
         let pieces = refragment(&wire).expect("длинное приветствие обязано нарезаться");
         assert!(
