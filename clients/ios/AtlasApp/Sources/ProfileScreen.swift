@@ -5,7 +5,7 @@
 //  ссылке, которую откроет система. Отсюда крошечный сервер на петле —
 //  он живёт ровно столько, сколько открыт этот экран.
 //
-//  Вызовы намеренно старые: нижняя граница — iOS 14, см. `MainScreen`.
+//  Нижняя граница — iOS 16, см. `MainScreen`.
 //
 
 import SwiftUI
@@ -13,13 +13,11 @@ import UIKit
 
 struct ProfileScreen: View {
     let xml: String?
-    // `@Environment(\.dismiss)` появился в iOS 15; здесь нужен способ,
-    // работающий с iOS 14.
-    @Environment(\.presentationMode) private var presentation
+    @Environment(\.dismiss) private var dismiss
     @State private var server: ProfileServer?
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             Form {
                 if let xml {
                     Section {
@@ -32,16 +30,10 @@ struct ProfileScreen: View {
                                 + "VPN и управление устройством."
                         )
                         .font(.footnote)
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                     }
 
-                    Section(
-                        footer: Text(
-                            "Откроется Safari и предложит установить профиль. "
-                                + "Это ожидаемо: другого способа поставить "
-                                + "профиль на iOS нет."
-                        )
-                    ) {
+                    Section {
                         Button("Открыть и установить") {
                             let running = ProfileServer(xml: xml)
                             server = running
@@ -49,18 +41,25 @@ struct ProfileScreen: View {
                                 UIApplication.shared.open(url)
                             }
                         }
+                    } footer: {
+                        Text(
+                            "Откроется Safari и предложит установить профиль. "
+                                + "Это ожидаемо: другого способа поставить "
+                                + "профиль на iOS нет."
+                        )
                     }
                 } else {
                     Text("Профиль недоступен: прокси не работает.")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .navigationBarTitle("Профиль Wi-Fi", displayMode: .inline)
-            .navigationBarItems(
-                leading: Button("Закрыть") {
-                    presentation.wrappedValue.dismiss()
+            .navigationTitle("Профиль Wi-Fi")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Закрыть") { dismiss() }
                 }
-            )
+            }
         }
         .onDisappear { server?.stop() }
     }

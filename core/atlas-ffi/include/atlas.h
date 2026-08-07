@@ -180,6 +180,23 @@ char *atlas_proxy_address(const struct AtlasProxy *proxy);
 char *atlas_proxy_stats(const struct AtlasProxy *proxy);
 
 /**
+ * Собрать профиль конфигурации на **всё устройство**.
+ *
+ * В отличие от [`atlas_mobileconfig`], не привязан к сети Wi-Fi и
+ * покрывает в том числе сотовую связь — единственный способ добиться
+ * этого без entitlement, недоступного бесплатному аккаунту Apple.
+ *
+ * Цена: устройство обязано быть supervised (заведено через Apple
+ * Configurator). Проверить это из кода нельзя — отказ придёт от самой
+ * iOS при установке, и он будет внятным.
+ *
+ * # Safety
+ *
+ * `proxy_address` — годная строка C.
+ */
+char *atlas_mobileconfig_global(const char *proxy_address);
+
+/**
  * Остановить прокси и освободить дескриптор.
  *
  * Новые соединения перестают приниматься; уже открытые доживают своё.

@@ -21,7 +21,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::Command;
 
-use atlas_dial::mobileconfig::{Encryption, Profile};
+use atlas_dial::mobileconfig::{Coverage, Encryption, Profile};
 use atlas_dial::pac;
 
 /// Заготовка функций PAC, которых в обычном JavaScript нет.
@@ -39,13 +39,18 @@ function shExpMatch(str, shexp) {
                   .replace(/\*/g, '.*').replace(/\?/g, '.');
     return new RegExp('^' + re + '$').test(str);
 }
+var forcedLookups = [];
 function isInNet(host, pattern, mask) {
-    // Имя без разрешения в адрес в сеть не попадает — так же ведёт
-    // себя и настоящий разрешатель, когда имя не адрес.
+    // Настоящая реализация, получив имя, **разрешает его в адрес**.
+    // Здесь это не делается, но отмечается: вызов на имени означает
+    // запрос DNS мимо туннеля.
     var parts = host.split('.');
     if (parts.length !== 4 || !parts.every(function (p) {
         return /^\d+$/.test(p) && Number(p) <= 255;
-    })) return false;
+    })) {
+        forcedLookups.push(host);
+        return false;
+    }
     var p = pattern.split('.'), m = mask.split('.');
     for (var i = 0; i < 4; i++) {
         if ((Number(parts[i]) & Number(m[i])) !== (Number(p[i]) & Number(m[i]))) return false;
@@ -306,4 +311,154 @@ fn the_proxy_serves_the_script_at_the_address_the_profile_points_to() {
     );
 
     proxy.stop();
+}
+
+/// Профиль на всё устройство разбирается и накрывает не одну сеть.
+///
+/// Это единственный способ увести через ядро **сотовый** трафик без
+/// entitlement, недоступного бесплатному аккаунту. Взамен он требует,
+/// чтобы устройство было supervised, — проверить это из кода нельзя,
+/// отказ придёт от самой iOS.
+#[test]
+fn the_device_wide_profile_is_a_global_proxy() {
+    let profile = Profile::everything("127.0.0.1:1080").unwrap();
+    assert_eq!(profile.coverage, Coverage::Everything);
+
+    let xml = profile.build().unwrap();
+    let scratch = std::env::temp_dir().join(format!("atlas-global-{}.plist", unique()));
+    std::fs::write(&scratch, &xml).unwrap();
+
+    let code = r#"
+import plistlib, sys, json
+with open(sys.argv[1], 'rb') as handle:
+    parsed = plistlib.load(handle)
+inner = parsed['PayloadContent'][0]
+print(json.dumps({
+    'inner_type': inner['PayloadType'],
+    'proxy_type': inner['ProxyType'],
+    'pac': inner.get('ProxyPACURL'),
+    'fallback': inner.get('ProxyPACFallbackAllowed'),
+    'captive': inner.get('ProxyCaptiveLoginAllowed'),
+    'has_ssid': 'SSID_STR' in inner,
+    'description': parsed['PayloadDescription'],
+}, ensure_ascii=False))
+"#;
+    let run = Command::new("python3")
+        .arg("-c")
+        .arg(code)
+        .arg(&scratch)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&scratch);
+
+    assert!(
+        run.status.success(),
+        "профиль не разбирается как plist:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let out = String::from_utf8_lossy(&run.stdout);
+
+    assert!(
+        out.contains("\"inner_type\": \"com.apple.proxy.http.global\""),
+        "не тот payload: {out}"
+    );
+    assert!(out.contains("\"proxy_type\": \"Auto\""), "{out}");
+    assert!(
+        out.contains("http://127.0.0.1:1080/proxy.pac"),
+        "адрес скрипта не тот: {out}"
+    );
+    // Молчаливый уход мимо туннеля запрещён и здесь.
+    assert!(out.contains("\"fallback\": false"), "{out}");
+    // А вход через страницу-перехватчик разрешён: иначе не выйти в сеть
+    // отеля или кафе вовсе.
+    assert!(out.contains("\"captive\": true"), "{out}");
+    // Профиль на всё устройство ни к какой сети не привязан.
+    assert!(
+        out.contains("\"has_ssid\": false"),
+        "профиль привязан к сети: {out}"
+    );
+    assert!(out.contains("на всё устройство"), "{out}");
+}
+
+/// Профиль на всё устройство не требует имени сети.
+#[test]
+fn the_device_wide_profile_needs_no_network_name() {
+    // У сетевого профиля пустое имя — ошибка.
+    assert!(Profile::automatic("", "127.0.0.1:1080")
+        .unwrap()
+        .build()
+        .is_err());
+    // У профиля на всё устройство имени сети нет вовсе.
+    assert!(Profile::everything("127.0.0.1:1080")
+        .unwrap()
+        .build()
+        .is_ok());
+}
+
+/// Скрипт не должен вынуждать устройство разрешать имена.
+///
+/// `isInNet` по спецификации PAC **разрешает имя в адрес**. Вызванная на
+/// доменном имени, она заставляет устройство сделать запрос DNS в обход
+/// туннеля — то есть показать провайдеру каждый посещённый домен. Для
+/// инструмента обхода цензуры это утечка истории посещений, и никакое
+/// шифрование её не закрывает.
+///
+/// Первая редакция скрипта вызывала `isInNet` пять раз на каждое имя.
+/// Измерено: десять принудительных разрешений на шесть проверенных
+/// имён.
+#[test]
+fn the_script_never_forces_a_dns_lookup() {
+    let rules = pac::Rules::new("127.0.0.1:1080")
+        .with_direct(vec!["gosuslugi.ru".to_owned()])
+        .with_blocked(vec!["ads.example.com".to_owned()]);
+    let script = pac::script(&rules).unwrap();
+
+    let hosts = [
+        "www.wikipedia.org",
+        "gosuslugi.ru",
+        "ads.example.com",
+        "sub.domain.example.org",
+        "printer.local",
+        "myhost",
+    ];
+    let queries: Vec<String> = hosts
+        .iter()
+        .map(|host| format!("FindProxyForURL('https://{host}/', '{host}');"))
+        .collect();
+    let program = format!(
+        "{HELPERS}\n{script}\n{}\nconsole.log(forcedLookups.join(','));",
+        queries.join("\n")
+    );
+
+    let scratch = std::env::temp_dir().join(format!("atlas-dns-{}.js", unique()));
+    std::fs::write(&scratch, program).unwrap();
+    let run = Command::new("node").arg(&scratch).output().unwrap();
+    let _ = std::fs::remove_file(&scratch);
+
+    assert!(
+        run.status.success(),
+        "скрипт не исполняется:\n{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let forced = String::from_utf8_lossy(&run.stdout).trim().to_owned();
+    assert!(
+        forced.is_empty(),
+        "скрипт вынудил разрешить имена мимо туннеля: {forced}"
+    );
+}
+
+/// Литеральные адреса по-прежнему идут мимо туннеля.
+///
+/// Проверка нужна рядом с предыдущей: закрыть утечку, сломав
+/// маршрутизацию, было бы обменом шила на мыло.
+#[test]
+fn literal_addresses_still_go_direct() {
+    let script = pac::script(&pac::Rules::new("127.0.0.1:1080")).unwrap();
+    let decisions = decide(
+        &script,
+        &["127.0.0.1", "192.168.0.5", "10.1.2.3", "169.254.1.1"],
+    );
+    for (at, decision) in decisions.iter().enumerate() {
+        assert_eq!(decision, "DIRECT", "адрес №{at} обязан идти напрямую");
+    }
 }

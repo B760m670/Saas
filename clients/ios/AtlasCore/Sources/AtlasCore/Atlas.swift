@@ -285,6 +285,21 @@ public final class AtlasProxy: @unchecked Sendable {
         )
     }
 
+    /// Профиль конфигурации на **всё устройство**, включая сотовую связь.
+    ///
+    /// В отличие от ``mobileconfig(ssid:automatic:wifiPassword:)``, ни к
+    /// какой сети не привязан. Это единственный способ увести через ядро
+    /// мобильный трафик без entitlement, недоступного бесплатному
+    /// аккаунту Apple.
+    ///
+    /// Цена: устройство обязано быть supervised — заведено через Apple
+    /// Configurator. Узнать это заранее нельзя; отказ придёт от iOS при
+    /// установке профиля.
+    public func deviceWideMobileconfig() throws -> String {
+        let at = try address
+        return try takeString(atlas_mobileconfig_global(at), "профиль не собрался")
+    }
+
     /// Перестать принимать новые соединения.
     ///
     /// Уже открытые доживают своё: обрывать чужую загрузку на полуслове

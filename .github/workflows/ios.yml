@@ -11,6 +11,7 @@ on:
   push:
     # Только основная ветка: ветку с открытым PR проверяет событие
     # ниже, и два одинаковых прогона не говорят ничего сверх одного.
+    # Выпуск по метке живёт отдельно, в `release.yml`.
     branches: [main]
     paths:
       - "clients/ios/**"
@@ -73,28 +74,68 @@ jobs:
   # доказывающая, что приложение вообще собирается: ни Xcode, ни
   # устройства больше нигде в проекте нет.
   app:
-    name: приложение Atlas-lite (macOS)
+    name: приложение Atlas (macOS)
     runs-on: macos-15
     needs: wrapper
     steps:
       - uses: actions/checkout@v5
 
-      - name: Триплет устройства
-        run: rustup target add aarch64-apple-ios
+      - name: Триплеты устройства и симулятора
+        run: |
+          rustup target add aarch64-apple-ios \
+                            aarch64-apple-ios-sim \
+                            x86_64-apple-ios
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core
 
-      - name: Собрать ядро под iOS
+      # Симулятор собирается под **обе** архитектуры: `arm64` для машин
+      # Apple Silicon и `x86_64` для Intel. Одного среза мало — Xcode
+      # линкует обе, и на недостающей падает «Undefined symbols for
+      # architecture x86_64». Отсюда третий триплет и склейка `lipo`:
+      # так проект собирается и на агенте, и на любой машине
+      # разработчика, чем бы она ни была.
+      # `IPHONEOS_DEPLOYMENT_TARGET` здесь не украшение. Части
+      # зависимостей написаны на C (ядра blake3), и `cc-rs` без этой
+      # переменной берёт версию из SDK — то есть собирает их под
+      # iOS 18.5 при заявленной нижней границе. Компоновщик про это
+      # предупреждает, а на старом устройстве такое просто не
+      # запустилось бы.
+      - name: Собрать ядро под устройство и симулятор
         working-directory: core
-        run: cargo build --release -p atlas-ffi --target aarch64-apple-ios
-
-      - name: Разложить архив там, где его ищет проект
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         run: |
-          mkdir -p core/target/universal-ios/Release
+          cargo build --release -p atlas-ffi --target aarch64-apple-ios
+          cargo build --release -p atlas-ffi --target aarch64-apple-ios-sim
+          cargo build --release -p atlas-ffi --target x86_64-apple-ios
+
+      # Каталоги названы так, как их складывает `$(CONFIGURATION)` вместе
+      # с `$(EFFECTIVE_PLATFORM_NAME)`. Смешивать устройство и симулятор
+      # нельзя: срезы несовместимы, и подстановка не того ломает
+      # компоновку.
+      - name: Разложить архивы там, где их ищет проект
+        run: |
+          set -euo pipefail
+          mkdir -p core/target/universal-ios/Release-iphoneos
+          mkdir -p core/target/universal-ios/Release-iphonesimulator
+          # Проверка идёт в `Debug`: только там включена поддержка
+          # `@testable`, без которой набор не видит нутро приложения.
+          mkdir -p core/target/universal-ios/Debug-iphonesimulator
+
           cp core/target/aarch64-apple-ios/release/libatlas_ffi.a \
-             core/target/universal-ios/Release/
+             core/target/universal-ios/Release-iphoneos/
+
+          lipo -create \
+             core/target/aarch64-apple-ios-sim/release/libatlas_ffi.a \
+             core/target/x86_64-apple-ios/release/libatlas_ffi.a \
+             -output core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a
+          cp core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a \
+             core/target/universal-ios/Debug-iphonesimulator/
+
+          echo "срезы архива для симулятора:"
+          lipo -info core/target/universal-ios/Release-iphonesimulator/libatlas_ffi.a
 
       - name: Заголовок не отстал от исходника
         run: |
@@ -107,7 +148,7 @@ jobs:
       - name: Породить проект
         working-directory: clients/ios
         run: |
-          brew install xcodegen
+          brew install xcodegen xcbeautify
           xcodegen generate
 
       # Подпись не ставится намеренно: её ставит тот, кто устанавливает.
@@ -123,15 +164,73 @@ jobs:
                      CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
                      build | tail -40
 
+      # Единственный способ отличить «собирается» от «работает», не имея
+      # устройства. Набор размещён в приложении, поэтому оно
+      # по-настоящему запускается: падение при старте роняет проверку.
+      #
+      # Устройство выбирается запросом, а не угадыванием имени: состав
+      # симуляторов на агенте меняется от образа к образу, и вбитый
+      # «iPhone 15» однажды просто перестал бы находиться.
+      - name: Выбрать симулятор
+        id: simulator
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available --json \
+                 | jq -r '.devices | to_entries[] | .value[]
+                          | select(.name | startswith("iPhone")) | .udid' \
+                 | head -1)
+          if [ -z "$udid" ]; then
+            echo "на агенте нет ни одного симулятора iPhone" >&2
+            xcrun simctl list devices available >&2
+            exit 1
+          fi
+          echo "выбран $udid"
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      - name: Проверка в симуляторе
+        working-directory: clients/ios
+        run: |
+          set -o pipefail
+          xcodebuild test -project Atlas.xcodeproj -scheme Atlas \
+                     -configuration Debug \
+                     -destination "id=${{ steps.simulator.outputs.udid }}" \
+                     -derivedDataPath build-sim \
+                     CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+                     | xcbeautify --renderer github-actions || {
+                       echo "::error::проверка в симуляторе не прошла"
+                       exit 1
+                     }
+
       - name: Упаковать IPA
         working-directory: clients/ios
         run: |
+          set -euo pipefail
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/Atlas.app Payload/
-          zip -qry Atlas-lite.ipa Payload
-          ls -la Atlas-lite.ipa
+          zip -qry Atlas.ipa Payload
+          ls -la Atlas.ipa
+
+      # Размер артефакта однажды изменился в разы без внятной причины, и
+      # объяснять такое догадками нельзя. Здесь видно, что внутри
+      # действительно приложение: двоичный файл нужной архитектуры,
+      # непустой, с ожидаемым идентификатором.
+      - name: Проверить, что в пакете настоящее приложение
+        working-directory: clients/ios
+        run: |
+          set -euo pipefail
+          binary=Payload/Atlas.app/Atlas
+          test -f "$binary" || { echo "нет двоичного файла" >&2; exit 1; }
+          echo "размер двоичного файла: $(du -h "$binary" | cut -f1)"
+          lipo -info "$binary"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" \
+            Payload/Atlas.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion" \
+            Payload/Atlas.app/Info.plist
+          echo "состав пакета:"
+          ls -la Payload/Atlas.app/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Atlas-lite
-          path: clients/ios/Atlas-lite.ipa
+          name: Atlas
+          path: clients/ios/Atlas.ipa
+

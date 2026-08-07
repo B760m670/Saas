@@ -184,6 +184,7 @@ fn the_header_is_where_clients_look_for_it() {
         "atlas_version",
         "atlas_proxy_pac",
         "atlas_mobileconfig",
+        "atlas_mobileconfig_global",
         "atlas_last_error",
         "atlas_string_free",
         "atlas_key_describe",

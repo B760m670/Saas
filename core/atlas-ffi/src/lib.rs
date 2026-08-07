@@ -448,6 +448,35 @@ pub unsafe extern "C" fn atlas_proxy_stats(proxy: *const AtlasProxy) -> *mut c_c
     give(&described.to_string())
 }
 
+/// Собрать профиль конфигурации на **всё устройство**.
+///
+/// В отличие от [`atlas_mobileconfig`], не привязан к сети Wi-Fi и
+/// покрывает в том числе сотовую связь — единственный способ добиться
+/// этого без entitlement, недоступного бесплатному аккаунту Apple.
+///
+/// Цена: устройство обязано быть supervised (заведено через Apple
+/// Configurator). Проверить это из кода нельзя — отказ придёт от самой
+/// iOS при установке, и он будет внятным.
+///
+/// # Safety
+///
+/// `proxy_address` — годная строка C.
+#[no_mangle]
+pub unsafe extern "C" fn atlas_mobileconfig_global(proxy_address: *const c_char) -> *mut c_char {
+    // Условие: договор функции.
+    let Some(address) = (unsafe { take(proxy_address, "адрес прокси") }) else {
+        return core::ptr::null_mut();
+    };
+
+    match Profile::everything(&address).and_then(|profile| profile.build()) {
+        Ok(xml) => give(&xml),
+        Err(error) => {
+            fail(&format!("профиль не собрался: {error}"));
+            core::ptr::null_mut()
+        }
+    }
+}
+
 /// Остановить прокси и освободить дескриптор.
 ///
 /// Новые соединения перестают приниматься; уже открытые доживают своё.
