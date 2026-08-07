@@ -406,80 +406,18 @@ impl<S: Read + Write> Write for Stream<S> {
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use std::sync::mpsc::{channel, Receiver, Sender};
-
-    /// Двусторонняя труба: то, что записано с одной стороны, читается с
-    /// другой. Нужна, чтобы гонять настоящее соединение без сети.
-    #[derive(Debug)]
-    struct Pipe {
-        outgoing: Sender<Vec<u8>>,
-        incoming: Receiver<Vec<u8>>,
-        buffered: Vec<u8>,
-        taken: usize,
-    }
-
-    impl Pipe {
-        fn duplex() -> (Self, Self) {
-            let (left_tx, left_rx) = channel();
-            let (right_tx, right_rx) = channel();
-            (
-                Self {
-                    outgoing: left_tx,
-                    incoming: right_rx,
-                    buffered: Vec::new(),
-                    taken: 0,
-                },
-                Self {
-                    outgoing: right_tx,
-                    incoming: left_rx,
-                    buffered: Vec::new(),
-                    taken: 0,
-                },
-            )
-        }
-    }
-
-    impl Read for Pipe {
-        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-            if self.taken == self.buffered.len() {
-                match self.incoming.recv() {
-                    Ok(next) => {
-                        self.buffered = next;
-                        self.taken = 0;
-                    }
-                    // Другая сторона отпущена — это конец потока.
-                    Err(_) => return Ok(0),
-                }
-            }
-            let take = (self.buffered.len() - self.taken).min(out.len());
-            out[..take].copy_from_slice(&self.buffered[self.taken..self.taken + take]);
-            self.taken += take;
-            Ok(take)
-        }
-    }
-
-    impl Write for Pipe {
-        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-            self.outgoing
-                .send(data.to_vec())
-                .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "труба закрыта"))?;
-            Ok(data.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
+    use crate::testing::{duplex as pipe_duplex, Pipe};
 
     /// Пара согласованных потоков без рукопожатия — для проверок,
     /// которым важно обрамление, а не установка соединения.
     fn pair() -> (Stream<Pipe>, Stream<Pipe>) {
-        let (a, b) = Pipe::duplex();
+        let (a, b) = pipe_duplex();
         (Stream::new(a, Role::Client), Stream::new(b, Role::Server))
     }
 
     #[test]
     fn a_handshake_puts_both_sides_into_frames() {
-        let (client_pipe, server_pipe) = Pipe::duplex();
+        let (client_pipe, server_pipe) = pipe_duplex();
 
         let server = std::thread::spawn(move || {
             let (mut stream, target) = Stream::accept(server_pipe).expect("рукопожатие принято");
@@ -672,7 +610,7 @@ mod tests {
     // вправе прислать ответ и первый кадр одним куском.
     #[test]
     fn connect_does_not_drop_a_frame_glued_to_the_response() {
-        let (client_pipe, server_pipe) = Pipe::duplex();
+        let (client_pipe, server_pipe) = pipe_duplex();
 
         let server = std::thread::spawn(move || {
             let (mut stream, _) = Stream::accept(server_pipe).expect("рукопожатие");
@@ -698,7 +636,7 @@ mod tests {
                 .unwrap(),
         );
 
-        let (mut client_pipe, mut server_pipe) = Pipe::duplex();
+        let (mut client_pipe, mut server_pipe) = pipe_duplex();
         server_pipe.write_all(&wire).expect("ответ с довеском");
 
         let rest = Stream::connect_with(
@@ -719,7 +657,7 @@ mod tests {
 
     #[test]
     fn a_refused_upgrade_is_reported_as_a_handshake_error() {
-        let (client_pipe, mut server_pipe) = Pipe::duplex();
+        let (client_pipe, mut server_pipe) = pipe_duplex();
         server_pipe
             .write_all(b"HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n")
             .expect("отказ сервера");
