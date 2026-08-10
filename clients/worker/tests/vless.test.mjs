@@ -18,6 +18,7 @@ import {
     COMMAND_UDP,
     decodeEarlyData,
     frameUdp,
+    parseProxies,
     parseSecret,
     parseUuid,
     parseVless,
@@ -182,6 +183,32 @@ test("настройки проверяются на входе, а не при 
     assert.throws(() => parseUuid(undefined), /не задан/);
     assert.deepEqual(parseUuid("550e8400-e29b-41d4-a716-446655440000"), UUID);
     assert.deepEqual(parseUuid("550e8400e29b41d4a716446655440000"), UUID, "дефисы необязательны");
+});
+
+test("список посредников разбирается, а пустая настройка даёт пустой список", () => {
+    // Порт по умолчанию — порт назначения: посредник выбирает зону по
+    // имени в ClientHello, а не по адресу, поэтому 443 у него тот же.
+    assert.deepEqual(parseProxies("1.2.3.4", 443), [{ hostname: "1.2.3.4", port: 443 }]);
+    assert.deepEqual(parseProxies("1.2.3.4:8443", 443), [{ hostname: "1.2.3.4", port: 8443 }]);
+
+    // Разделители — и запятая, и пробел: человек напишет по-разному.
+    assert.deepEqual(parseProxies("a.example, b.example c.example:99", 443), [
+        { hostname: "a.example", port: 443 },
+        { hostname: "b.example", port: 443 },
+        { hostname: "c.example", port: 99 },
+    ]);
+
+    // IPv6 без скобок неотличим от «имя:порт» — отсюда скобки.
+    assert.deepEqual(parseProxies("[2606:4700::1]:443", 80), [
+        { hostname: "2606:4700::1", port: 443 },
+    ]);
+    assert.deepEqual(parseProxies("[2606:4700::1]", 80), [{ hostname: "2606:4700::1", port: 80 }]);
+
+    // Пусто — значит запасного пути нет, и это законное состояние:
+    // умолчания здесь нет намеренно.
+    assert.deepEqual(parseProxies("", 443), []);
+    assert.deepEqual(parseProxies(undefined, 443), []);
+    assert.deepEqual(parseProxies("   ", 443), []);
 });
 
 test("запрос DNS уходит как dns-message, а отказ не выдаётся за ответ", async () => {

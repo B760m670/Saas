@@ -199,6 +199,56 @@ export function parseVless(data, uuid) {
 }
 
 /**
+ * Разобрать список посредников для сайтов за самой Cloudflare.
+ *
+ * Разделители — запятая или пробел; у каждого можно указать свой порт.
+ * IPv6 берётся в скобки: `[2606:4700::1]:443`.
+ *
+ * # Почему список, а не один адрес
+ *
+ * Узлы, годные в посредники, держат не мы, и они приходят в негодность
+ * молча и по-разному: один отвечает своим просроченным сертификатом
+ * вместо пересылки байт, другой пропадает вовсе, третий разрешается в
+ * пул из полусотни адресов, где живы не все. Проверено на живом узле:
+ * `cdn.xn--b6gac.eu.org` завершает TLS сам, и соединение с назначением
+ * не состоится никогда.
+ *
+ * Один адрес в настройке означал бы, что такая поломка чинится только
+ * руками и только после того, как её заметят. Список даёт краю
+ * попробовать следующего.
+ */
+export function parseProxies(text, fallbackPort) {
+    if (typeof text !== "string") {
+        return [];
+    }
+    const out = [];
+    for (const piece of text.split(/[,\s]+/)) {
+        const value = piece.trim();
+        if (value.length === 0) {
+            continue;
+        }
+        const bracketed = value.match(/^\[(.+)\](?::(\d+))?$/);
+        if (bracketed) {
+            out.push({
+                hostname: bracketed[1],
+                port: bracketed[2] ? Number(bracketed[2]) : fallbackPort,
+            });
+            continue;
+        }
+        const at = value.lastIndexOf(":");
+        if (at > 0 && !value.slice(at + 1).includes(":")) {
+            const port = Number(value.slice(at + 1));
+            if (Number.isInteger(port) && port > 0 && port < 65536) {
+                out.push({ hostname: value.slice(0, at), port });
+                continue;
+            }
+        }
+        out.push({ hostname: value, port: fallbackPort });
+    }
+    return out;
+}
+
+/**
  * Разобрать данные, приехавшие в заголовке `Sec-WebSocket-Protocol`.
  *
  * # Что это вообще такое

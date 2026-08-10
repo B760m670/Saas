@@ -456,6 +456,56 @@ function parseVless(data, uuid) {
 }
 
 /**
+ * Разобрать список посредников для сайтов за самой Cloudflare.
+ *
+ * Разделители — запятая или пробел; у каждого можно указать свой порт.
+ * IPv6 берётся в скобки: `[2606:4700::1]:443`.
+ *
+ * # Почему список, а не один адрес
+ *
+ * Узлы, годные в посредники, держат не мы, и они приходят в негодность
+ * молча и по-разному: один отвечает своим просроченным сертификатом
+ * вместо пересылки байт, другой пропадает вовсе, третий разрешается в
+ * пул из полусотни адресов, где живы не все. Проверено на живом узле:
+ * `cdn.xn--b6gac.eu.org` завершает TLS сам, и соединение с назначением
+ * не состоится никогда.
+ *
+ * Один адрес в настройке означал бы, что такая поломка чинится только
+ * руками и только после того, как её заметят. Список даёт краю
+ * попробовать следующего.
+ */
+function parseProxies(text, fallbackPort) {
+    if (typeof text !== "string") {
+        return [];
+    }
+    const out = [];
+    for (const piece of text.split(/[,\s]+/)) {
+        const value = piece.trim();
+        if (value.length === 0) {
+            continue;
+        }
+        const bracketed = value.match(/^\[(.+)\](?::(\d+))?$/);
+        if (bracketed) {
+            out.push({
+                hostname: bracketed[1],
+                port: bracketed[2] ? Number(bracketed[2]) : fallbackPort,
+            });
+            continue;
+        }
+        const at = value.lastIndexOf(":");
+        if (at > 0 && !value.slice(at + 1).includes(":")) {
+            const port = Number(value.slice(at + 1));
+            if (Number.isInteger(port) && port > 0 && port < 65536) {
+                out.push({ hostname: value.slice(0, at), port });
+                continue;
+            }
+        }
+        out.push({ hostname: value, port: fallbackPort });
+    }
+    return out;
+}
+
+/**
  * Разобрать данные, приехавшие в заголовке `Sec-WebSocket-Protocol`.
  *
  * # Что это вообще такое
@@ -611,38 +661,7 @@ async function dial(hostname, port) {
 }
 
 /**
- * Разобрать `ATLAS_PROXY_IP`.
- *
- * Допускается `адрес` и `адрес:порт`. Без порта берётся порт самого
- * назначения — так и задумано: посредник здесь обычно другой узел
- * Cloudflare, и на 443 он раздаёт тот же сайт, что и любой другой,
- * потому что выбор зоны идёт по имени в `ClientHello`, а не по адресу.
- */
-function parseProxyIp(text, fallbackPort) {
-    if (typeof text !== "string" || text.trim().length === 0) {
-        return null;
-    }
-    const value = text.trim();
-    // IPv6 в скобках: `[2606:4700::1]:443`.
-    const bracketed = value.match(/^\[(.+)\](?::(\d+))?$/);
-    if (bracketed) {
-        return {
-            hostname: bracketed[1],
-            port: bracketed[2] ? Number(bracketed[2]) : fallbackPort,
-        };
-    }
-    const at = value.lastIndexOf(":");
-    if (at > 0 && !value.slice(at + 1).includes(":")) {
-        const port = Number(value.slice(at + 1));
-        if (Number.isInteger(port) && port > 0 && port < 65536) {
-            return { hostname: value.slice(0, at), port };
-        }
-    }
-    return { hostname: value, port: fallbackPort };
-}
-
-/**
- * Соединиться с назначением, при отказе — через посредника.
+ * Соединиться с назначением, при отказе — через посредников по очереди.
  *
  * # Зачем здесь вообще запасной путь
  *
@@ -653,27 +672,46 @@ function parseProxyIp(text, fallbackPort) {
  * быстр. Диагноз при этом не подсказывает ничего: обрыв неотличим от
  * обрыва по любой другой причине.
  *
- * Посредник — узел, до которого Worker'у ходить не запрещено. Он
- * пересылает байты как есть, поэтому TLS остаётся сквозным от
- * устройства до назначения: посреднику видно имя в `ClientHello` и
- * объём, но не содержимое.
+ * Посредник — узел, до которого Worker'у ходить не запрещено и который
+ * пересылает байты как есть. Тогда TLS остаётся сквозным от устройства
+ * до назначения: посреднику видно имя в `ClientHello` и объём, но не
+ * содержимое.
+ *
+ * # Почему их несколько и почему этого всё равно мало
+ *
+ * Годный посредник обязан быть **прозрачным**. Проверено на живом узле,
+ * что бывает иначе: `cdn.xn--b6gac.eu.org` сам завершает рукопожатие
+ * своим просроченным сертификатом, и клиент получает не сайт, а ошибку
+ * проверки имени. Соединение при этом формально устанавливается,
+ * поэтому отличить негодного посредника от годного на уровне `connect()`
+ * нельзя — отказ виден только клиенту, и только по сертификату.
+ *
+ * Отсюда список: перебор даёт шанс дойти до прозрачного узла. Но
+ * гарантии он не даёт, и обещать её здесь было бы неправдой.
  *
  * Умолчания нет и не будет. Зашитый в код чужой адрес означал бы, что
  * трафик пользователей молча идёт через узел, которого они не выбирали.
  */
-async function openUpstream(host, port, proxy) {
+async function openUpstream(host, port, proxies) {
+    let last;
     try {
         return await dial(host, port);
     } catch (error) {
-        if (!proxy) {
-            throw new Error(
-                `${host}:${port} недостижим (${error.message}). ` +
-                    "Если сайт за Cloudflare, это запрет платформы на петлю: " +
-                    "задайте ATLAS_PROXY_IP.",
-            );
-        }
-        return dial(proxy.hostname, proxy.port);
+        last = error;
     }
+
+    for (const proxy of proxies) {
+        try {
+            return await dial(proxy.hostname, proxy.port);
+        } catch (error) {
+            last = error;
+        }
+    }
+
+    const hint = proxies.length
+        ? `ни один из ${proxies.length} посредников не ответил`
+        : "если сайт за Cloudflare, это запрет платформы на петлю: задайте ATLAS_PROXY_IP";
+    throw new Error(`${host}:${port} недостижим (${last?.message ?? "?"}). ${hint}`);
 }
 
 /**
@@ -800,8 +838,8 @@ async function sendPayload(socket, session, payload) {
  * на этот счёт расходятся, и дешевле вести себя как эталонные
  * реализации, чем выяснять, какой именно клиент у пользователя.
  */
-async function relayTcp(socket, reader, session, request, greeting, proxy) {
-    const upstream = await openUpstream(request.host, request.port, proxy);
+async function relayTcp(socket, reader, session, request, greeting, proxies) {
+    const upstream = await openUpstream(request.host, request.port, proxies);
     const writer = upstream.writable.getWriter();
     if (request.rest.length > 0) {
         await writer.write(request.rest);
@@ -926,7 +964,7 @@ async function serve(socket, config, sealed, earlyData) {
         if (request.isUdp) {
             await relayDns(socket, reader, session, request, greeting, config.doh);
         } else {
-            await relayTcp(socket, reader, session, request, greeting, config.proxy);
+            await relayTcp(socket, reader, session, request, greeting, config.proxies);
         }
     } finally {
         socket.close(1000);
@@ -955,7 +993,7 @@ export default {
                 secret: parseSecret(env.ATLAS_SECRET),
                 uuid: parseUuid(env.ATLAS_UUID),
                 doh: env.ATLAS_DOH || DEFAULT_DOH,
-                proxy: parseProxyIp(env.ATLAS_PROXY_IP, 443),
+                proxies: parseProxies(env.ATLAS_PROXY_IP, 443),
             };
         } catch (error) {
             // Настройка не сошлась — это наша беда, а не гостя. Наружу
