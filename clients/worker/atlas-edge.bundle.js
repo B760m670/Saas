@@ -456,6 +456,48 @@ function parseVless(data, uuid) {
 }
 
 /**
+ * Путь, по которому край рассказывает о себе.
+ *
+ * Полный вид — `/<идентификатор>/where`.
+ */
+const WHERE_SUFFIX = "/where";
+
+/**
+ * Спрашивают ли у края, где он находится.
+ *
+ * # Почему за идентификатором, а не на открытом пути
+ *
+ * Край отвечает `404` на всё, кроме WebSocket, и это защита: посторонний
+ * с браузером не должен отличить его от пустого места. Любой путь,
+ * отвечающий чем-то осмысленным без пропуска, превращается в маяк —
+ * достаточно обойти поддомены и спросить, чтобы перечислить все наши
+ * края разом.
+ *
+ * Идентификатор пользователя тут не «пароль поверх пароля»: кто его
+ * знает, тот уже имеет полный доступ к краю. Новой поверхности не
+ * появляется, а для всех прочих не меняется ничего.
+ *
+ * # Почему сравнение постоянное по времени
+ *
+ * Та же причина, что и в заголовке запроса: посимвольное сравнение с
+ * ранним выходом даёт подбор идентификатора по времени ответа.
+ */
+function asksWhere(pathname, uuid) {
+    if (typeof pathname !== "string" || !pathname.endsWith(WHERE_SUFFIX)) {
+        return false;
+    }
+    const head = pathname.slice(0, -WHERE_SUFFIX.length).replace(/^\//, "");
+    const digits = head.replaceAll("-", "");
+    if (!/^[0-9a-fA-F]{32}$/.test(digits)) {
+        return false;
+    }
+    return sameBytes(
+        Uint8Array.from(digits.match(/../g), (b) => parseInt(b, 16)),
+        uuid,
+    );
+}
+
+/**
  * Разобрать список посредников для сайтов за самой Cloudflare.
  *
  * Разделители — запятая или пробел; у каждого можно указать свой порт.
@@ -971,21 +1013,89 @@ async function serve(socket, config, sealed, earlyData) {
     }
 }
 
+/**
+ * Узнать, каким адресом край выходит в интернет.
+ *
+ * # Почему замер идёт через `connect()`, а не через `fetch`
+ *
+ * У площадки это два разных пути наружу, и адреса у них могут не
+ * совпадать. Нас интересует тот, которым идёт трафик пользователя, а он
+ * идёт через `connect()`. Замер, сделанный удобным способом вместо
+ * верного, показывал бы чужую цифру с убедительным видом.
+ *
+ * Служба опрошена по обычному HTTP: `ip-api.com` не за Cloudflare,
+ * поэтому запрет на петлю здесь ни при чём, а TLS ради публичного факта
+ * о собственном адресе не нужен.
+ */
+async function measureExit() {
+    const socket = await dial("ip-api.com", 80);
+    const writer = socket.writable.getWriter();
+    await writer.write(
+        new TextEncoder().encode(
+            "GET /json/?fields=query,country,countryCode,city,as HTTP/1.1\r\n" +
+                "Host: ip-api.com\r\nConnection: close\r\n\r\n",
+        ),
+    );
+
+    const reader = socket.readable.getReader();
+    let text = "";
+    for (;;) {
+        const { value, done } = await reader.read();
+        if (done || text.length > 8192) {
+            break;
+        }
+        text += new TextDecoder().decode(value);
+    }
+    const body = text.split("\r\n\r\n")[1] ?? "";
+    return JSON.parse(body);
+}
+
+/**
+ * Ответить, где край находится.
+ *
+ * # Что здесь два разных факта, и путать их нельзя
+ *
+ * `colo` — дата-центр, **принявший** запрос. Он определяется тем, где
+ * находится пользователь, и меняется вместе с ним.
+ *
+ * `exit` — адрес, которым край **выходит** наружу. Именно его видит сайт
+ * назначения, и именно он решает, что показать по стране.
+ *
+ * Обычно они рядом, но совпадение не гарантировано, поэтому отдаются оба
+ * и по отдельности. Подписывать ключ страной надо по `exit`.
+ */
+async function whereAmI(request) {
+    const colo = request.cf?.colo ?? null;
+    let exit = null;
+    let failure = null;
+    try {
+        exit = await measureExit();
+    } catch (error) {
+        // Замер — сведения, а не работа края. Его отказ не повод молчать
+        // о том, что известно и так.
+        failure = error.message;
+    }
+
+    return new Response(JSON.stringify({ colo, exit, failure }, null, 2), {
+        status: 200,
+        headers: {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+        },
+    });
+}
+
 export default {
     async fetch(request, env) {
-        // Посторонний, попавший сюда браузером, обязан увидеть обычный
-        // ответ, а не признак прокси. Худшее, что можно сделать, — вернуть
-        // что-то своё и опознаваемое.
-        //
+        const path = new URL(request.url).pathname;
+
         // Значение заголовка сравнивается без учёта регистра: по RFC 6455
         // оно нечувствительно к нему, и клиенты этим пользуются
         // по-разному. Строгое сравнение отсекало бы часть из них с
         // ответом «404», то есть выглядело бы как «ключ не работает
         // именно в этом приложении».
         const upgrade = request.headers.get("Upgrade");
-        if (upgrade?.toLowerCase() !== "websocket") {
-            return new Response("Not Found", { status: 404 });
-        }
+        const wants_websocket = upgrade?.toLowerCase() === "websocket";
 
         let config;
         try {
@@ -998,13 +1108,33 @@ export default {
         } catch (error) {
             // Настройка не сошлась — это наша беда, а не гостя. Наружу
             // всё равно уходит обычная ошибка сервера без подробностей.
+            //
+            // Постороннему при этом по-прежнему полагается `404`: иначе
+            // сломанная настройка отвечала бы `500` там, где исправная
+            // отвечает `404`, и одно это отличало бы наш край от пустого
+            // места.
             console.error(error.message);
-            return new Response("Internal Server Error", { status: 500 });
+            return wants_websocket
+                ? new Response("Internal Server Error", { status: 500 })
+                : new Response("Not Found", { status: 404 });
+        }
+
+        // Где край находится. Путь несёт идентификатор, поэтому для
+        // постороннего он неотличим от любого другого несуществующего.
+        if (!wants_websocket && asksWhere(path, config.uuid)) {
+            return whereAmI(request);
+        }
+
+        // Посторонний, попавший сюда браузером, обязан увидеть обычный
+        // ответ, а не признак прокси. Худшее, что можно сделать, — вернуть
+        // что-то своё и опознаваемое.
+        if (!wants_websocket) {
+            return new Response("Not Found", { status: 404 });
         }
 
         // Путь решает, каким протоколом говорить. `/e` — наш сквозной
         // канал, всё остальное — обычный VLESS для чужих клиентов.
-        const sealed = new URL(request.url).pathname.endsWith("/e");
+        const sealed = path.endsWith("/e");
 
         // Клиент с `?ed=…` в пути кладёт первые байты потока прямо в
         // заголовок рукопожатия, экономя оборот до края.

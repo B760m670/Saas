@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+    asksWhere,
     COMMAND_TCP,
     COMMAND_UDP,
     decodeEarlyData,
@@ -183,6 +184,34 @@ test("настройки проверяются на входе, а не при 
     assert.throws(() => parseUuid(undefined), /не задан/);
     assert.deepEqual(parseUuid("550e8400-e29b-41d4-a716-446655440000"), UUID);
     assert.deepEqual(parseUuid("550e8400e29b41d4a716446655440000"), UUID, "дефисы необязательны");
+});
+
+// Путь «где ты» обязан открываться только по идентификатору. Иначе он
+// становится маяком: достаточно обойти поддомены и спросить, чтобы
+// перечислить все края разом.
+test("о расположении рассказывают только по идентификатору", () => {
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+    assert.equal(asksWhere(`/${uuid}/where`, UUID), true);
+    assert.equal(asksWhere(`/${uuid.replaceAll("-", "")}/where`, UUID), true, "дефисы необязательны");
+    assert.equal(asksWhere(`/${uuid.toUpperCase()}/where`, UUID), true, "регистр hex не важен");
+
+    // Всё, что не предъявило идентификатор, обязано выглядеть как
+    // обычный несуществующий путь.
+    for (const bad of [
+        "/where",
+        "/",
+        "/e",
+        "/00000000-0000-0000-0000-000000000000/where",
+        `/${uuid}`,
+        `/${uuid}/`,
+        `/${uuid}/whereabouts`,
+        `/prefix/${uuid}/where`,
+        "",
+        null,
+    ]) {
+        assert.equal(asksWhere(bad, UUID), false, `путь ${JSON.stringify(bad)} не должен отвечать`);
+    }
 });
 
 test("список посредников разбирается, а пустая настройка даёт пустой список", () => {
