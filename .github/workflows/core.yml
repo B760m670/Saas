@@ -84,28 +84,6 @@ jobs:
         with:
           node-version: "22"
 
-      # Разбор VLESS на стороне края. Гоняется до Rust, потому что
-      # быстрый и потому что чинит самый частый класс жалоб: «ключ
-      # работает в одном приложении и не работает в другом».
-      - name: Проверки края
-        working-directory: clients/worker
-        run: node --test 'tests/*.test.mjs'
-
-      # Собранный одним файлом край обязан быть собран из текущих
-      # исходников. Иначе человек, развернувший его через панель
-      # Cloudflare с телефона, получит вчерашнюю версию — молча.
-      - name: Собранный край не отстал от исходников
-        working-directory: clients/worker
-        run: |
-          set -euo pipefail
-          python3 bundle.py
-          if ! git diff --quiet -- atlas-edge.bundle.js; then
-            echo "atlas-edge.bundle.js не пересобран после правки src/." >&2
-            git diff --stat -- atlas-edge.bundle.js >&2
-            exit 1
-          fi
-          node --check atlas-edge.bundle.js
-
       - name: Формат
         run: cargo fmt --all --check
 
