@@ -30,6 +30,15 @@ pub const PADDING: u16 = 0x0015;
 pub const EXTENDED_MASTER_SECRET: u16 = 0x0017;
 /// `compress_certificate`.
 pub const COMPRESS_CERTIFICATE: u16 = 0x001b;
+/// `record_size_limit` (RFC 8449).
+///
+/// Шлёт Firefox; Chrome не шлёт вовсе. Одно из двух расширений, по
+/// которым эти два браузера различаются структурно, а не порядком.
+pub const RECORD_SIZE_LIMIT: u16 = 0x001c;
+/// `delegated_credentials` (RFC 9345).
+///
+/// Второе такое расширение: есть у Firefox, отсутствует у Chrome.
+pub const DELEGATED_CREDENTIALS: u16 = 0x0022;
 /// `session_ticket`.
 pub const SESSION_TICKET: u16 = 0x0023;
 /// `supported_versions`.
@@ -99,6 +108,23 @@ pub fn signature_algorithms(algorithms: &[u16]) -> Extension {
     Extension::raw(SIGNATURE_ALGORITHMS, w.finish())
 }
 
+/// `delegated_credentials` со списком алгоритмов подписи.
+///
+/// Тело устроено так же, как у [`signature_algorithms`], но список свой
+/// и короче: Firefox объявляет здесь только алгоритмы ECDSA.
+#[must_use]
+pub fn delegated_credentials(algorithms: &[u16]) -> Extension {
+    let mut w = Writer::new();
+    let _ = w.nested_u16(|list| list.list_u16(algorithms));
+    Extension::raw(DELEGATED_CREDENTIALS, w.finish())
+}
+
+/// `record_size_limit` — предел длины записи, которую клиент готов принять.
+#[must_use]
+pub fn record_size_limit(limit: u16) -> Extension {
+    Extension::raw(RECORD_SIZE_LIMIT, limit.to_be_bytes().to_vec())
+}
+
 /// ALPN со списком имён протоколов.
 #[must_use]
 pub fn alpn(protocols: &[&str]) -> Extension {
@@ -135,8 +161,24 @@ pub fn trust_anchors() -> Extension {
 /// байта: они наблюдаемы, и отличие в них было бы заметно.
 #[must_use]
 pub fn ech_grease() -> Extension {
+    ech_grease_with(CHROME_ECH_PAYLOAD)
+}
+
+/// Длина полезной нагрузки ECH у Chrome.
+pub const CHROME_ECH_PAYLOAD: usize = 144;
+
+/// Длина полезной нагрузки ECH у Firefox.
+///
+/// Отличается от [`CHROME_ECH_PAYLOAD`], и это не мелочь: длина видна
+/// снаружи целиком, поэтому расширение с чужой длиной выдало бы, что
+/// перед наблюдателем не тот браузер, чей отпечаток заявлен всем
+/// остальным приветствием.
+pub const FIREFOX_ECH_PAYLOAD: usize = 239;
+
+/// ECH в режиме GREASE с заданной длиной полезной нагрузки.
+#[must_use]
+pub fn ech_grease_with(payload_len: usize) -> Extension {
     const ENC_LEN: usize = 32;
-    const PAYLOAD_LEN: usize = 144;
 
     let mut w = Writer::new();
     w.u8(0x00); // ECHClientHelloType::outer
@@ -146,7 +188,7 @@ pub fn ech_grease() -> Extension {
     let _ = w.nested_u16(|body| body.bytes(&OsRng::bytes::<ENC_LEN>()));
     let _ = w.nested_u16(|body| {
         // Полезная нагрузка при GREASE — просто случайные байты.
-        let mut chunk = [0_u8; PAYLOAD_LEN];
+        let mut chunk = vec![0_u8; payload_len];
         OsRng::fill(&mut chunk);
         body.bytes(&chunk);
     });

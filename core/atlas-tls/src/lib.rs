@@ -81,7 +81,7 @@ pub use error::{Error, Result};
 pub use fingerprint::{Ja3, Ja4, Transport};
 pub use hello::{ClientHello, Extension};
 pub use keyexchange::{Group, KeyExchange, KeyShares};
-pub use profile::{Chrome, Generation, HelloParams};
+pub use profile::{Chrome, Firefox, Generation, HelloParams, Profile};
 pub use server::{
     CertificateSource, Credentials, Pending, Ready, RecordReader, RecordWriter, ServerConfig,
     ServerConnection,

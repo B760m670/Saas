@@ -96,6 +96,228 @@ impl HelloParams {
     }
 }
 
+/// Группа `secp521r1`.
+pub const SECP521R1: u16 = 0x0019;
+/// Группа `ffdhe2048` — конечное поле, объявляет Firefox.
+pub const FFDHE2048: u16 = 0x0100;
+/// Группа `ffdhe3072`.
+pub const FFDHE3072: u16 = 0x0101;
+
+/// Шифронаборы Firefox в порядке отправки.
+///
+/// Отличается от [`CHROME_CIPHERS`] и составом, и порядком. Самое
+/// заметное — второе место: Firefox ставит туда `ChaCha20` (`0x1303`), а
+/// Chrome — AES-256 (`0x1302`). Один этот обмен местами уже разводит
+/// два браузера в JA3 и JA4.
+const FIREFOX_CIPHERS: [u16; 17] = [
+    0x1301, 0x1303, 0x1302, 0xc02b, 0xc02f, 0xcca9, 0xcca8, 0xc02c, 0xc030, 0xc00a, 0xc009, 0xc013,
+    0xc014, 0x009c, 0x009d, 0x002f, 0x0035,
+];
+
+/// Алгоритмы подписи Firefox. Длиннее списка Chrome и в другом порядке.
+const FIREFOX_SIGNATURE_ALGORITHMS: [u16; 11] = [
+    0x0403, 0x0503, 0x0603, 0x0804, 0x0805, 0x0806, 0x0401, 0x0501, 0x0601, 0x0203, 0x0201,
+];
+
+/// Алгоритмы в `delegated_credentials` — только ECDSA.
+const FIREFOX_DELEGATED_CREDENTIALS: [u16; 4] = [0x0403, 0x0503, 0x0603, 0x0203];
+
+/// Предел длины записи, который объявляет Firefox.
+const FIREFOX_RECORD_SIZE_LIMIT: u16 = 0x4001;
+
+/// Алгоритмы сжатия сертификата у Firefox: zlib, brotli, zstd.
+///
+/// Chrome объявляет только brotli — ещё одно различие в теле расширения,
+/// а не в его наличии.
+const FIREFOX_CERT_COMPRESSION: [u16; 3] = [0x0001, 0x0002, 0x0003];
+
+/// Профиль Firefox.
+///
+/// # Чем он отличается от Chrome и почему это важно
+///
+/// Различие не косметическое. Три вещи отличают Firefox структурно:
+///
+/// 1. **GREASE нет нигде.** Ни в шифрах, ни в расширениях, ни в группах,
+///    ни в `supported_versions`. У Chrome он в четырёх местах сразу.
+/// 2. **Порядок расширений постоянный.** Firefox не перемешивает их, и
+///    поэтому его JA3 стабилен — тогда как у Chrome он обязан плавать.
+///    Перемешивание здесь было бы такой же ошибкой, как его отсутствие
+///    у Chrome.
+/// 3. **Свои расширения:** `record_size_limit` и `delegated_credentials`
+///    есть у Firefox и отсутствуют у Chrome; ALPS и `trust_anchors`,
+///    наоборот, чисто хромовские. Ещё Firefox не шлёт ни
+///    `session_ticket`, ни `psk_key_exchange_modes`, ни `padding` —
+///    последнее означает, что приветствие **не добивается** до 512 байт.
+///
+/// # Зачем он нам
+///
+/// По измерениям схемы фильтрации, действующей с июня 2026, отпечатки
+/// Chrome, Safari и iOS попадают в подозрительное ведро, а Firefox,
+/// Android и Edge проходят. Профиль Chrome ставил нас в это ведро по
+/// построению.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Firefox {
+    /// Слать ли `encrypted_client_hello`.
+    ///
+    /// Смысл тот же, что у [`Chrome::ech`], но длина полезной нагрузки
+    /// своя — см. [`ext::FIREFOX_ECH_PAYLOAD`].
+    pub ech: bool,
+}
+
+impl Default for Firefox {
+    fn default() -> Self {
+        Self::v148()
+    }
+}
+
+impl Firefox {
+    /// Профиль Firefox 148.
+    #[must_use]
+    pub const fn v148() -> Self {
+        Self { ech: true }
+    }
+
+    /// Тот же профиль без `encrypted_client_hello`.
+    #[must_use]
+    pub const fn without_ech(mut self) -> Self {
+        self.ech = false;
+        self
+    }
+
+    /// Группы, для которых профиль обязан приложить долю в `key_share`.
+    ///
+    /// Firefox шлёт три доли, Chrome — две. Список отдаётся отсюда, а не
+    /// задаётся рядом с профилем, потому что разойтись им нельзя:
+    /// приветствие с семью объявленными группами и двумя долями не
+    /// принадлежит ни одному браузеру.
+    #[must_use]
+    pub fn key_share_groups() -> [u16; 3] {
+        [X25519_MLKEM768, X25519, SECP256R1]
+    }
+
+    /// Собрать `ClientHello`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::TooLong`], если какое-либо поле не помещается в свою
+    /// длину — на практике недостижимо для разумных входных данных.
+    pub fn client_hello(&self, params: &HelloParams) -> Result<ClientHello> {
+        let groups = [
+            X25519_MLKEM768,
+            X25519,
+            SECP256R1,
+            SECP384R1,
+            SECP521R1,
+            FFDHE2048,
+            FFDHE3072,
+        ];
+
+        let alpn: Vec<&str> = params.alpn.iter().map(String::as_str).collect();
+
+        // Порядок фиксирован и повторяет живой Firefox. Ни перемешивания,
+        // ни обрамляющих GREASE: и то, и другое — приметы Chrome.
+        let mut extensions = vec![
+            ext::server_name(&params.server_name),
+            Extension::empty(ext::EXTENDED_MASTER_SECRET),
+            ext::renegotiation_info(),
+            ext::supported_groups(&groups),
+            ext::ec_point_formats(&[0]),
+            ext::alpn(&alpn),
+            ext::status_request(),
+            ext::delegated_credentials(&FIREFOX_DELEGATED_CREDENTIALS),
+            Extension::empty(ext::SIGNED_CERTIFICATE_TIMESTAMP),
+            ext::key_share(&params.key_shares),
+            ext::supported_versions(&[0x0304, 0x0303]),
+            ext::signature_algorithms(&FIREFOX_SIGNATURE_ALGORITHMS),
+            ext::record_size_limit(FIREFOX_RECORD_SIZE_LIMIT),
+            ext::compress_certificate(&FIREFOX_CERT_COMPRESSION),
+        ];
+
+        if self.ech {
+            extensions.push(ext::ech_grease_with(ext::FIREFOX_ECH_PAYLOAD));
+        }
+
+        // Padding нет намеренно: Firefox не добивает приветствие до
+        // круглой длины, и добивка сама стала бы отличием.
+        Ok(ClientHello {
+            legacy_version: LEGACY_VERSION,
+            random: OsRng::bytes::<32>(),
+            session_id: params.session_id.clone(),
+            cipher_suites: FIREFOX_CIPHERS.to_vec(),
+            compression_methods: vec![0],
+            extensions,
+        })
+    }
+}
+
+/// Профиль отпечатка: какой браузер имитируется.
+///
+/// Обёртка нужна, чтобы выбор браузера доходил до места сборки
+/// приветствия целиком — вместе со списком групп, который у браузеров
+/// разный и не имеет права разойтись с профилем.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    /// Chrome.
+    Chrome(Chrome),
+    /// Firefox.
+    Firefox(Firefox),
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self::Firefox(Firefox::v148())
+    }
+}
+
+impl From<Chrome> for Profile {
+    fn from(profile: Chrome) -> Self {
+        Self::Chrome(profile)
+    }
+}
+
+impl From<Firefox> for Profile {
+    fn from(profile: Firefox) -> Self {
+        Self::Firefox(profile)
+    }
+}
+
+impl Profile {
+    /// Собрать `ClientHello`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::TooLong`] при переполнении поля длины.
+    pub fn client_hello(&self, params: &HelloParams) -> Result<ClientHello> {
+        match self {
+            Self::Chrome(profile) => profile.client_hello(params),
+            Self::Firefox(profile) => profile.client_hello(params),
+        }
+    }
+
+    /// Тот же профиль без `encrypted_client_hello`.
+    #[must_use]
+    pub const fn without_ech(self) -> Self {
+        match self {
+            Self::Chrome(profile) => Self::Chrome(profile.without_ech()),
+            Self::Firefox(profile) => Self::Firefox(profile.without_ech()),
+        }
+    }
+
+    /// Коды групп, для которых профиль обязан приложить долю в `key_share`.
+    ///
+    /// Число долей — часть отпечатка, и оно у браузеров разное: Chrome
+    /// шлёт две, Firefox три. Поэтому список берётся у профиля, а не
+    /// настраивается рядом с ним: разойдясь, они дали бы приветствие,
+    /// которого не бывает ни у одного браузера.
+    #[must_use]
+    pub fn key_share_group_codes(&self) -> Vec<u16> {
+        match self {
+            Self::Chrome(_) => vec![X25519_MLKEM768, X25519],
+            Self::Firefox(_) => Firefox::key_share_groups().to_vec(),
+        }
+    }
+}
+
 /// Поколение Chrome, которое имитирует профиль.
 ///
 /// Набор расширений у Chrome меняется каждые несколько релизов, и каждое
@@ -511,5 +733,197 @@ mod tests {
         let hello = Chrome::v141().client_hello(&params()).unwrap();
         let parsed = ClientHello::parse(&hello.to_handshake().unwrap()).unwrap();
         assert_eq!(hello, parsed);
+    }
+
+    /// Параметры с тремя долями — столько прикладывает Firefox.
+    fn firefox_params() -> HelloParams {
+        HelloParams::new("www.microsoft.com")
+            .with_key_shares(vec![
+                (X25519_MLKEM768, vec![0x33; 1216]),
+                (X25519, vec![0x11; 32]),
+                (SECP256R1, vec![0x44; 65]),
+            ])
+            .with_session_id(vec![0x22; 32])
+    }
+
+    #[test]
+    fn firefox_sends_no_grease_anywhere() {
+        let hello = Firefox::v148().client_hello(&firefox_params()).unwrap();
+
+        assert!(
+            !hello.cipher_suites.iter().copied().any(grease::is_grease),
+            "GREASE в шифрах — примета Chrome"
+        );
+        assert!(
+            !hello
+                .extensions
+                .iter()
+                .any(|e| grease::is_grease(e.ext_type)),
+            "GREASE среди расширений — примета Chrome"
+        );
+
+        let groups = hello
+            .extensions
+            .iter()
+            .find(|e| e.ext_type == ext::SUPPORTED_GROUPS)
+            .unwrap();
+        let list = crate::bytes::Reader::new(&groups.body).list_u16().unwrap();
+        assert!(!list.iter().copied().any(grease::is_grease));
+
+        let versions = hello
+            .extensions
+            .iter()
+            .find(|e| e.ext_type == ext::SUPPORTED_VERSIONS)
+            .unwrap();
+        assert_eq!(versions.body, vec![0x04, 0x03, 0x04, 0x03, 0x03]);
+    }
+
+    #[test]
+    fn firefox_order_is_fixed_so_ja3_is_stable() {
+        // Обратное к `shuffling_makes_ja3_unstable_just_like_chrome`:
+        // у Firefox порядок расширений постоянный, и плавающий JA3 выдал
+        // бы нас ровно так же, как постоянный выдал бы Chrome.
+        let profile = Firefox::v148();
+        let hashes: std::collections::HashSet<String> = (0..32)
+            .map(|_| ja3(&profile.client_hello(&firefox_params()).unwrap()).hash)
+            .collect();
+        assert_eq!(hashes.len(), 1, "порядок у Firefox не плавает");
+    }
+
+    #[test]
+    fn firefox_carries_its_own_extensions_and_none_of_chromes() {
+        let hello = Firefox::v148().client_hello(&firefox_params()).unwrap();
+        let has = |t: u16| hello.extensions.iter().any(|e| e.ext_type == t);
+
+        // Свои.
+        assert!(has(ext::RECORD_SIZE_LIMIT));
+        assert!(has(ext::DELEGATED_CREDENTIALS));
+
+        // Чужие: ALPS и trust_anchors шлёт только Chrome.
+        assert!(!has(ext::APPLICATION_SETTINGS));
+        assert!(!has(ext::APPLICATION_SETTINGS_V2));
+        assert!(!has(ext::TRUST_ANCHORS));
+
+        // Этих Firefox не шлёт вовсе, а Chrome шлёт все три.
+        assert!(!has(ext::SESSION_TICKET));
+        assert!(!has(ext::PSK_KEY_EXCHANGE_MODES));
+        assert!(!has(ext::PADDING), "Firefox не добивает приветствие");
+    }
+
+    #[test]
+    fn firefox_is_not_padded_to_chromes_target() {
+        let hello = Firefox::v148().client_hello(&firefox_params()).unwrap();
+        assert_ne!(
+            hello.to_handshake().unwrap().len(),
+            PADDING_TARGET,
+            "совпадение с длиной Chrome означало бы, что добивка вернулась"
+        );
+    }
+
+    #[test]
+    fn firefox_and_chrome_are_different_browsers_to_an_observer() {
+        let firefox = Firefox::v148().client_hello(&firefox_params()).unwrap();
+        let chrome = Chrome::v141().client_hello(&params()).unwrap();
+
+        assert_ne!(ja3(&firefox).hash, ja3(&chrome).hash);
+
+        let ff = ja4(&firefox, Transport::Tcp);
+        let cr = ja4(&chrome, Transport::Tcp);
+        assert_ne!(ff.to_string_full(), cr.to_string_full());
+        // Различаются и списком шифров, и набором расширений — то есть не
+        // порядком, а существом.
+        assert_ne!(ff.b, cr.b, "списки шифров обязаны различаться");
+        assert_ne!(ff.c, cr.c, "наборы расширений обязаны различаться");
+    }
+
+    #[test]
+    fn firefox_cipher_list_matches_the_reference() {
+        let hello = Firefox::v148().client_hello(&firefox_params()).unwrap();
+        // Без ведущего GREASE, поэтому длина ровно как в эталоне.
+        assert_eq!(hello.cipher_suites, FIREFOX_CIPHERS.to_vec());
+        // Второй шифронабор — ChaCha20, и это главное отличие от Chrome,
+        // у которого там AES-256.
+        assert_eq!(hello.cipher_suites.get(1).copied().unwrap(), 0x1303);
+        assert_eq!(CHROME_CIPHERS.get(1).copied().unwrap(), 0x1302);
+    }
+
+    #[test]
+    fn firefox_ech_payload_differs_from_chromes() {
+        let firefox = Firefox::v148().client_hello(&firefox_params()).unwrap();
+        let chrome = Chrome::v141().client_hello(&params()).unwrap();
+
+        let body = |h: &ClientHello| {
+            h.extensions
+                .iter()
+                .find(|e| e.ext_type == ext::ENCRYPTED_CLIENT_HELLO)
+                .map(|e| e.body.len())
+        };
+
+        let ff = body(&firefox).unwrap();
+        let cr = body(&chrome).unwrap();
+        assert_ne!(ff, cr, "длина ECH наблюдаема и обязана различаться");
+        assert_eq!(ff - cr, ext::FIREFOX_ECH_PAYLOAD - ext::CHROME_ECH_PAYLOAD);
+    }
+
+    #[test]
+    fn disabling_ech_removes_it_from_firefox_too() {
+        let without = Firefox::v148()
+            .without_ech()
+            .client_hello(&firefox_params())
+            .unwrap();
+        assert!(!without
+            .extensions
+            .iter()
+            .any(|e| e.ext_type == ext::ENCRYPTED_CLIENT_HELLO));
+        // Последним тогда остаётся сжатие сертификата, а не что попало.
+        assert_eq!(
+            without.extensions.last().unwrap().ext_type,
+            ext::COMPRESS_CERTIFICATE
+        );
+    }
+
+    #[test]
+    fn firefox_hello_survives_round_trip() {
+        let hello = Firefox::v148().client_hello(&firefox_params()).unwrap();
+        let parsed = ClientHello::parse(&hello.to_handshake().unwrap()).unwrap();
+        assert_eq!(hello, parsed);
+    }
+
+    #[test]
+    fn profile_reports_the_shares_its_hello_needs() {
+        // Число долей — часть отпечатка. Если список групп разойдётся с
+        // профилем, приветствие перестанет принадлежать браузеру, и
+        // заметить это по одному лишь `client_hello` уже нельзя.
+        assert_eq!(
+            Profile::from(Firefox::v148()).key_share_group_codes().len(),
+            3
+        );
+        assert_eq!(
+            Profile::from(Chrome::v141()).key_share_group_codes().len(),
+            2
+        );
+
+        let hello = Firefox::v148().client_hello(&firefox_params()).unwrap();
+        let key_share = hello
+            .extensions
+            .iter()
+            .find(|e| e.ext_type == ext::KEY_SHARE)
+            .unwrap();
+        let mut outer = crate::bytes::Reader::new(&key_share.body);
+        let mut list = crate::bytes::Reader::new(outer.vec_u16().unwrap());
+        let mut seen = Vec::new();
+        while let Ok(group) = list.u16() {
+            let _ = list.vec_u16().unwrap();
+            seen.push(group);
+        }
+        assert_eq!(seen, Firefox::key_share_groups().to_vec());
+    }
+
+    #[test]
+    fn default_profile_is_firefox() {
+        // Значение по умолчанию — это то, что уйдёт в сеть у всех, кто не
+        // выбирал профиль осознанно. Chrome здесь означал бы, что мы сами
+        // ставим себя в подозрительное ведро фильтра.
+        assert!(matches!(Profile::default(), Profile::Firefox(_)));
     }
 }

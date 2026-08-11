@@ -48,7 +48,7 @@ use crate::handshake::{
 use crate::hello::ClientHello;
 use crate::keyexchange::{Group, KeyShares};
 use crate::keyschedule::{expand_label, traffic_keys, verify_data, Hash, KeySchedule};
-use crate::profile::{Chrome, HelloParams};
+use crate::profile::{HelloParams, Profile};
 use crate::record::{Aead, ContentType, Protection, HEADER_LEN, MAX_PLAINTEXT};
 
 /// Наибольшее число байт, которое мы готовы накопить, не увидев целой
@@ -170,7 +170,7 @@ pub struct ClientConfig {
     /// Предлагаемые протоколы прикладного уровня.
     pub alpn: Vec<String>,
     /// Профиль отпечатка.
-    pub profile: Chrome,
+    pub profile: Profile,
     /// Группы обмена ключами в порядке предпочтения.
     pub groups: Vec<Group>,
     /// Кто решает, доверять ли серверу.
@@ -189,8 +189,16 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    /// Настройки по умолчанию: профиль Chrome 141, обе группы, случайный
-    /// `session_id`, приём любого сервера.
+    /// Настройки по умолчанию: профиль Firefox 148, его группы,
+    /// случайный `session_id`, приём любого сервера.
+    ///
+    /// # Почему Firefox, а не Chrome
+    ///
+    /// По измерениям схемы фильтрации, действующей в России с июня
+    /// 2026, отпечатки Chrome, Safari и iOS относятся к подозрительным,
+    /// а Firefox, Android и Edge проходят. Прежний выбор Chrome ставил
+    /// нас в подозрительное ведро без всякой пользы: сайту прикрытия
+    /// безразлично, каким браузером к нему пришли.
     ///
     /// Проверку сервера обязан задать вызывающий — значение по умолчанию
     /// здесь небезопасно и годится только для разведки.
@@ -199,8 +207,8 @@ impl ClientConfig {
         Self {
             server_name: server_name.into(),
             alpn: vec!["h2".to_owned(), "http/1.1".to_owned()],
-            profile: Chrome::v141(),
-            groups: vec![Group::X25519MlKem768, Group::X25519],
+            profile: Profile::default(),
+            groups: vec![Group::X25519MlKem768, Group::X25519, Group::Secp256r1],
             verifier: Box::new(AcceptAnyServer),
             session_id: Box::new(RandomSessionId),
             sealer: None,
@@ -230,9 +238,21 @@ impl ClientConfig {
     }
 
     /// Задать профиль отпечатка.
+    ///
+    /// Вместе с профилем меняется и список групп обмена ключами: число
+    /// долей в `key_share` — часть отпечатка, и у Chrome с Firefox оно
+    /// разное. Оставить прежний список значило бы собрать приветствие,
+    /// которого не бывает ни у одного браузера. Явный [`Self::groups`]
+    /// после этого вызова по-прежнему имеет приоритет.
     #[must_use]
-    pub const fn with_profile(mut self, profile: Chrome) -> Self {
-        self.profile = profile;
+    pub fn with_profile(mut self, profile: impl Into<Profile>) -> Self {
+        self.profile = profile.into();
+        self.groups = self
+            .profile
+            .key_share_group_codes()
+            .into_iter()
+            .filter_map(Group::from_code)
+            .collect();
         self
     }
 
