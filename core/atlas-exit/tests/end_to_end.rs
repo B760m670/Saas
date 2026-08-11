@@ -432,3 +432,122 @@ fn the_policy_recognises_what_is_inside() {
         "2606:4700:4700::1111".parse::<Ipv6Addr>().unwrap()
     )));
 }
+
+/// Сайт прикрытия, отдающий много байт сразу.
+///
+/// Нужен именно объём: ограничение полосы на коротком ответе не видно,
+/// а проверять надо именно длинную выкачку — ту, ради которой предел и
+/// заводится.
+fn spawn_bulk_responder(bytes: usize) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+
+    std::thread::spawn(move || {
+        for incoming in listener.incoming() {
+            let Ok(mut socket) = incoming else { break };
+            std::thread::spawn(move || {
+                let mut buf = [0_u8; 4096];
+                let _ = socket.read(&mut buf);
+                let _ = socket.write_all(&vec![0x5a_u8; bytes]);
+                let _ = socket.flush();
+            });
+        }
+    });
+    address
+}
+
+/// Поднять точку выхода с ограничением полосы до сайта прикрытия.
+fn spawn_limited_exit(cover: &str, limit: atlas_exit::throttle::Limit) -> String {
+    let reality = Server::generate().with_short_id(&[0xde, 0xad]).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+
+    let point = Arc::new(ExitPoint::new(
+        ExitConfig::new(reality, cover.to_owned())
+            .with_common_name(SNI)
+            .with_cover_limit(limit)
+            .with_policy(atlas_exit::Policy {
+                allow_private: true,
+                ..atlas_exit::Policy::default()
+            }),
+    ));
+    std::thread::spawn(move || {
+        let _ = point.serve(&listener);
+    });
+    address
+}
+
+/// Сходить на точку выхода посторонним и выкачать всё, что дадут.
+fn drain_as_stranger(exit: &str) -> (usize, Duration) {
+    let mut socket = TcpStream::connect(exit).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+
+    let mut browser = atlas_tls::client::Connection::new(
+        atlas_tls::client::ClientConfig::new(SNI)
+            .with_profile(atlas_tls::Chrome::v141().without_ech()),
+    )
+    .unwrap();
+    socket.write_all(&browser.take_output()).unwrap();
+    socket.flush().unwrap();
+
+    let started = std::time::Instant::now();
+    let mut answer = Vec::new();
+    let _ = socket.read_to_end(&mut answer);
+    (answer.len(), started.elapsed())
+}
+
+#[test]
+fn the_cover_limit_actually_slows_a_stranger_down() {
+    // Ведро проверено само по себе в модуле throttle. Здесь проверяется
+    // другое: что точка выхода его в самом деле применяет. Правильный
+    // ограничитель, никуда не подключённый, выглядит в тестах точно так
+    // же, как подключённый.
+    const PAYLOAD: usize = 256 * 1024;
+
+    let cover = spawn_bulk_responder(PAYLOAD);
+    // 64 КБ/с без всплеска: 256 КБ обязаны занять около четырёх секунд.
+    let exit = spawn_limited_exit(
+        &cover,
+        atlas_exit::throttle::Limit::per_second(64 * 1024).with_burst(0),
+    );
+
+    let (got, took) = drain_as_stranger(&exit);
+
+    assert_eq!(got, PAYLOAD, "ограничение задерживает, но не теряет байты");
+    assert!(
+        took >= Duration::from_secs(3),
+        "выкачка заняла {took:?} — ограничение не применилось"
+    );
+    // Верхняя граница не менее важна нижней. Без неё незамеченным
+    // остаётся другой отказ: соединение доходит до конца, но пишущая
+    // сторона не закрывается, и посторонний висит до своего таймаута.
+    // Ровно это и было при первом подключении ограничения — четыре
+    // секунды передачи и тридцать секунд ожидания сверху.
+    assert!(
+        took < Duration::from_secs(10),
+        "выкачка заняла {took:?} при ожидаемых четырёх — \
+         похоже, пишущая сторона не закрывается"
+    );
+}
+
+#[test]
+fn without_a_limit_the_same_payload_flies_through() {
+    // Отрицательный контроль к предыдущему тесту. Без него медленная
+    // выкачка ничего не доказывала бы: она могла бы объясняться самим
+    // стендом, а не ограничением.
+    const PAYLOAD: usize = 256 * 1024;
+
+    let cover = spawn_bulk_responder(PAYLOAD);
+    let (exit, _) = spawn_exit(&cover);
+
+    let (got, took) = drain_as_stranger(&exit);
+
+    assert_eq!(got, PAYLOAD);
+    assert!(
+        took < Duration::from_secs(1),
+        "без ограничения выкачка заняла {took:?} — стенд сам по себе медленный, \
+         и проверка ограничения ничего не значит"
+    );
+}

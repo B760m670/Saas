@@ -47,6 +47,7 @@ use atlas_vless::{Address, Endpoint};
 
 pub mod cover;
 pub mod link;
+pub mod throttle;
 
 /// Сколько байт читать за раз.
 const CHUNK: usize = 16 * 1024;
@@ -73,6 +74,12 @@ pub struct ExitConfig {
     pub alpn: Vec<String>,
     /// Куда точке выхода позволено соединяться.
     pub policy: Policy,
+    /// Предел полосы для трафика, уходящего на сайт прикрытия.
+    ///
+    /// `None` — без предела, как было. Значение обязан выбрать тот, кто
+    /// знает свой тариф: см. [`crate::throttle`], где написано, почему
+    /// умолчания здесь быть не может.
+    pub cover_limit: Option<throttle::Limit>,
 }
 
 /// Ограничения на адрес назначения.
@@ -153,7 +160,15 @@ impl ExitConfig {
             common_name,
             alpn: vec!["h2".to_owned(), "http/1.1".to_owned()],
             policy: Policy::default(),
+            cover_limit: None,
         }
+    }
+
+    /// Ограничить полосу до сайта прикрытия.
+    #[must_use]
+    pub const fn with_cover_limit(mut self, limit: throttle::Limit) -> Self {
+        self.cover_limit = Some(limit);
+        self
     }
 
     /// Задать ограничения на адрес назначения.
@@ -186,6 +201,7 @@ pub struct ExitPoint {
     cover: String,
     alpn: Vec<String>,
     policy: Policy,
+    cover_limit: Option<throttle::Limit>,
     log: Option<Log>,
 }
 
@@ -205,6 +221,7 @@ impl ExitPoint {
             cover: config.cover,
             alpn: config.alpn,
             policy: config.policy,
+            cover_limit: config.cover_limit,
             log: None,
         }
     }
@@ -349,7 +366,15 @@ impl ExitPoint {
         cover.set_nodelay(true)?;
         cover.write_all(already_read)?;
         cover.flush()?;
-        splice(socket, cover)
+
+        match self.cover_limit {
+            // Ограничивается то, что уходит **постороннему**: платим мы
+            // за отданное. Приветствие выше через ведро не идёт — за
+            // него уже заплачено, и задерживать его значило бы добавить
+            // сайту прикрытия задержку на ровном месте.
+            Some(limit) => splice_limited(socket, cover, limit),
+            None => splice(socket, cover),
+        }
     }
 }
 
@@ -683,6 +708,30 @@ fn splice(a: TcpStream, b: TcpStream) -> io::Result<()> {
     });
     let _ = io::copy(&mut b_read, &mut a_write);
     let _ = a_write.shutdown(std::net::Shutdown::Write);
+    let _ = forward.join();
+    Ok(())
+}
+
+/// То же, что [`splice`], но отдаваемое первой стороне ограничено.
+///
+/// Ограничение стоит ровно на одном направлении — на том, где сайт
+/// прикрытия отвечает постороннему. Обратное направление это запрос, он
+/// мал, и держать его незачем.
+fn splice_limited(a: TcpStream, b: TcpStream, limit: throttle::Limit) -> io::Result<()> {
+    let (mut a_read, a_write) = (a.try_clone()?, a);
+    let (mut b_read, mut b_write) = (b.try_clone()?, b);
+    let mut a_write = throttle::Limited::new(a_write, limit);
+
+    let forward = std::thread::spawn(move || {
+        let _ = io::copy(&mut a_read, &mut b_write);
+        let _ = b_write.shutdown(std::net::Shutdown::Write);
+    });
+    let _ = io::copy(&mut b_read, &mut a_write);
+    // Закрыть пишущую сторону обязательно: без этого посторонний ждёт
+    // конца передачи до своего таймаута чтения, а у нас висят сокет и
+    // поток. Обёртка ограничителя этого сама не делает — она про
+    // скорость, а не про жизненный цикл.
+    let _ = a_write.get_ref().shutdown(std::net::Shutdown::Write);
     let _ = forward.join();
     Ok(())
 }

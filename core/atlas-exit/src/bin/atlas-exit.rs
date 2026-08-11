@@ -49,6 +49,8 @@ fn main() {
         println!("  --cover   чужой сайт, которым прикидываемся для посторонних");
         println!("  --check-cover  проверить сайт прикрытия и выйти");
         println!("  --skip-check   не проверять сайт прикрытия при запуске");
+        println!("  --cover-limit  предел отдачи постороннему, КБ/с — защита");
+        println!("                 от выкачки вашей квоты через сайт прикрытия");
         return;
     }
 
@@ -130,6 +132,18 @@ fn main() {
     );
     println!();
 
+    // Посторонний получает сайт прикрытия целиком — и вправе качать его
+    // через нас сколько угодно, за наш трафик. Предел задаёт хозяин: он
+    // один знает свой тариф, а угаданное значение само стало бы
+    // отличием (см. atlas_exit::throttle).
+    let cover_limit = value("--cover-limit").map(|text| {
+        let kb: u64 = text.parse().unwrap_or_else(|_| {
+            eprintln!("--cover-limit: ожидается число килобайт в секунду");
+            std::process::exit(1);
+        });
+        atlas_exit::throttle::Limit::per_second(kb.saturating_mul(1024))
+    });
+
     let policy = Policy {
         allow_private: flag("--allow-private"),
         ..Policy::default()
@@ -142,13 +156,18 @@ fn main() {
 
     let verbose = flag("--verbose");
     let point = Arc::new(
-        ExitPoint::new(ExitConfig::new(reality, cover).with_policy(policy)).with_log(Arc::new(
-            move |message: &str| {
-                if verbose {
-                    eprintln!("[exit] {message}");
-                }
-            },
-        )),
+        ExitPoint::new({
+            let config = ExitConfig::new(reality, cover).with_policy(policy);
+            match cover_limit {
+                Some(limit) => config.with_cover_limit(limit),
+                None => config,
+            }
+        })
+        .with_log(Arc::new(move |message: &str| {
+            if verbose {
+                eprintln!("[exit] {message}");
+            }
+        })),
     );
     if let Err(error) = point.serve(&listener) {
         eprintln!("точка выхода остановлена: {error}");
