@@ -236,7 +236,7 @@ mod tests {
         // Иначе порция крупнее ёмкости не прошла бы никогда, и
         // соединение вставало бы намертво.
         let mut bucket = bucket();
-        assert_eq!(bucket.delay(5000, 0), Duration::from_millis(4000));
+        assert_eq!(bucket.delay(5000, 0), Duration::from_secs(4));
         // Долг отработан авансом, дальше идём по расписанию.
         assert_eq!(bucket.delay(1000, 5_000_000_000), Duration::ZERO);
     }
