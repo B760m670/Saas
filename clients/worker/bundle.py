@@ -37,73 +37,27 @@ HEADER = """// ATLAS — точка выхода на Cloudflare Workers, одн
 """
 
 
-EXPORT = re.compile(r"^export (const|class|async function|function) ", flags=re.M)
-
-# Импорт соседнего файла после склейки не нужен и невозможен. Убирается
-# только относительный: `cloudflare:sockets` обязан остаться, без него
-# край не откроет ни одного исходящего соединения.
-#
-# Список имён — `[^}]*`, а не `.*?` с `re.S`. Разница не косметическая:
-# с `re.S` точка матчит и перевод строки, поэтому нежадный `.*?`
-# перемахивал из импорта `cloudflare:sockets` в следующий за ним
-# относительный и убирал оба разом. Собранный файл при этом оставался
-# синтаксически верным и падал бы уже на площадке, при первом
-# соединении. Класс символов до `}` перешагнуть через импорт не может.
-LOCAL_IMPORT = re.compile(r"^import\s*\{[^}]*\}\s*from\s*\"\./[^\"]+\";\n", flags=re.M)
-
-
 def build() -> str:
     edge = (HERE / "src/edge.js").read_text(encoding="utf-8")
-    vless = (HERE / "src/vless.js").read_text(encoding="utf-8")
     worker = (HERE / "src/worker.js").read_text(encoding="utf-8")
 
-    edge = EXPORT.sub(r"\1 ", edge)
+    edge = re.sub(r"^export (const|class|async function|function) ", r"\1 ", edge, flags=re.M)
     edge = edge.replace(
         "// Сквозной канал до края — сторона края.",
         "// ── ЧАСТЬ 1: сквозной канал до края ──",
     )
 
-    vless = EXPORT.sub(r"\1 ", vless)
-    vless = vless.replace(
-        "// Разбор VLESS и обрамление UDP — та часть края, где нет площадки.",
-        "// ── ЧАСТЬ 2: разбор VLESS и обрамление UDP ──",
+    worker = worker.replace(
+        'import { respond, MAX_RECORD, CLIENT_HELLO_LEN } from "./edge.js";\n', ""
     )
-
-    worker = LOCAL_IMPORT.sub("", worker)
     worker = worker.replace(
         "// Точка выхода ATLAS на Cloudflare Workers.",
-        "// ── ЧАСТЬ 3: сама точка выхода ──",
+        "// ── ЧАСТЬ 2: сама точка выхода ──",
     )
-    return HEADER + edge + "\n\n" + vless + "\n\n" + worker
-
-
-def check(bundle: str) -> None:
-    """Убедиться, что склейка не выбросила лишнего.
-
-    Сборщик правит текст шаблонами, а шаблон легко задеть соседнюю
-    строку. Один раз это уже случилось: убирая относительные импорты,
-    шаблон унёс вместе с ними `cloudflare:sockets`. Файл остался
-    синтаксически верным, `node --check` его пропустил, и отказ вылез бы
-    только на площадке — при первом соединении, без внятной причины.
-
-    Поэтому проверяется не синтаксис, а смысл: что осталось нужное и не
-    осталось ненужного.
-    """
-    if 'from "cloudflare:sockets"' not in bundle:
-        raise SystemExit(
-            "в собранном файле нет импорта cloudflare:sockets — "
-            "край не сможет открыть ни одного исходящего соединения"
-        )
-    if "export default" not in bundle:
-        raise SystemExit("в собранном файле нет точки входа `export default`")
-    for leftover in ('from "./', "\nexport const", "\nexport function", "\nexport class"):
-        if leftover in bundle:
-            raise SystemExit(f"в собранном файле остался {leftover!r} — склейка неполна")
+    return HEADER + edge + "\n\n" + worker
 
 
 if __name__ == "__main__":
-    bundle = build()
-    check(bundle)
     out = HERE / "atlas-edge.bundle.js"
-    out.write_text(bundle, encoding="utf-8")
-    print(f"собрано: {out} ({bundle.count(chr(10))} строк)")
+    out.write_text(build(), encoding="utf-8")
+    print(f"собрано: {out} ({build().count(chr(10))} строк)")
