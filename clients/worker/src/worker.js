@@ -34,13 +34,6 @@
 import { connect } from "cloudflare:sockets";
 
 import { respond, MAX_RECORD, CLIENT_HELLO_LEN } from "./edge.js";
-import {
-    Datagrams,
-    DEFAULT_DOH,
-    DNS_PORT,
-    frameDatagram,
-    resolveOverHttps,
-} from "./udp.js";
 
 /// Сколько ждать соединения с адресом назначения.
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -89,20 +82,13 @@ function parseVless(data, uuid) {
 
     const command = data[at];
     at += 1;
-    // 1 — TCP, 2 — UDP. Датаграммы наружу край послать не может —
-    // `connect()` даёт только TCP, — но для DNS этого и не нужно:
-    // запрос уходит по HTTPS. Поэтому UDP принимается, а порт
-    // проверяется ниже, когда он уже прочитан.
-    if (command !== 1 && command !== 2) {
+    // 1 — TCP. UDP через этот край не идёт: `connect()` даёт только TCP.
+    if (command !== 1) {
         throw new Error(`команда ${command} не поддерживается`);
     }
 
     const port = view.getUint16(at, false);
     at += 2;
-
-    if (command === 2 && port !== DNS_PORT) {
-        throw new Error(`UDP через край доступен только для DNS, а порт ${port}`);
-    }
 
     const kind = data[at];
     at += 1;
@@ -126,51 +112,7 @@ function parseVless(data, uuid) {
         throw new Error(`тип адреса ${kind} неизвестен`);
     }
 
-    return { version, host, port, isUdp: command === 2, rest: data.slice(at) };
-}
-
-/**
- * Отвечать на запросы DNS, пришедшие в туннель.
- *
- * Живёт отдельно от перекачки TCP, потому что это другой протокол: там
- * поток, здесь датаграммы с длиной впереди. Смешивать их в одном цикле
- * значило бы получить разбор, который верен ровно наполовину.
- *
- * Цикл завершается сам, когда клиент закрывает соединение: `readRecord`
- * бросает, и это штатный конец, а не отказ.
- */
-async function relayDns(socket, reader, session, request, greeting, dohUrl) {
-    const datagrams = new Datagrams();
-    let header = greeting;
-
-    const answer = async (packet) => {
-        const reply = await resolveOverHttps(packet, dohUrl);
-        const framed = frameDatagram(reply);
-        // Заголовок ответа VLESS уходит вместе с первой датаграммой.
-        const payload = header ? merge2(header, framed) : framed;
-        header = null;
-        socket.send(session ? await session.seal(payload) : payload);
-    };
-
-    datagrams.push(request.rest);
-    for (const packet of datagrams.drain()) {
-        await answer(packet);
-    }
-
-    for (;;) {
-        datagrams.push(await readRecord(reader, session));
-        for (const packet of datagrams.drain()) {
-            await answer(packet);
-        }
-    }
-}
-
-/** Склеить два куска. */
-function merge2(left, right) {
-    const out = new Uint8Array(left.length + right.length);
-    out.set(left, 0);
-    out.set(right, left.length);
-    return out;
+    return { version, host, port, rest: data.slice(at) };
 }
 
 /**
@@ -290,7 +232,7 @@ async function readRecord(reader, session) {
  * Выбор делается по пути, а не угадыванием: угадывать по первым байтам
  * значит однажды принять чужое приветствие за своё.
  */
-async function serve(socket, secret, uuid, sealed, doh) {
+async function serve(socket, secret, uuid, sealed) {
     socket.accept();
     const reader = new Reader(socket);
 
@@ -305,19 +247,7 @@ async function serve(socket, secret, uuid, sealed, doh) {
 
     // Первая запись несёт заголовок VLESS и, как правило, начало данных.
     const first = await readRecord(reader, session);
-    const request = parseVless(first, uuid);
-    const { version, host, port, rest } = request;
-
-    // Запрос имени идёт другим путём: датаграммы наружу отправить нечем,
-    // но по HTTPS их разрешить можно.
-    if (request.isUdp) {
-        try {
-            await relayDns(socket, reader, session, request, new Uint8Array([version, 0]), doh);
-        } finally {
-            socket.close(1000);
-        }
-        return;
-    }
+    const { version, host, port, rest } = parseVless(first, uuid);
 
     const upstream = await Promise.race([
         connect({ hostname: host, port }),
@@ -407,7 +337,7 @@ export default {
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
 
-        serve(server, secret, uuid, sealed, env.ATLAS_DOH || DEFAULT_DOH).catch((error) => {
+        serve(server, secret, uuid, sealed).catch((error) => {
             console.error(error.message);
             try {
                 server.close(1011);
