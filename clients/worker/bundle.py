@@ -37,59 +37,27 @@ HEADER = """// ATLAS — точка выхода на Cloudflare Workers, одн
 """
 
 
-EXPORT = re.compile(r"^export (const|class|async function|function) ", flags=re.M)
-
-# Убирается только относительный импорт: `cloudflare:sockets` обязан
-# остаться, без него край не откроет ни одного исходящего соединения.
-# Список имён — `[^}]*`, а не `.*?` с `re.S`: с `re.S` точка матчит
-# перевод строки, и нежадный шаблон перемахнул бы из одного импорта в
-# другой, унеся оба.
-LOCAL_IMPORT = re.compile(r"^import\s*\{[^}]*\}\s*from\s*\"\./[^\"]+\";\n", flags=re.M)
-
-
 def build() -> str:
     edge = (HERE / "src/edge.js").read_text(encoding="utf-8")
-    udp = (HERE / "src/udp.js").read_text(encoding="utf-8")
     worker = (HERE / "src/worker.js").read_text(encoding="utf-8")
 
-    edge = EXPORT.sub(r"\1 ", edge)
+    edge = re.sub(r"^export (const|class|async function|function) ", r"\1 ", edge, flags=re.M)
     edge = edge.replace(
         "// Сквозной канал до края — сторона края.",
         "// ── ЧАСТЬ 1: сквозной канал до края ──",
     )
 
-    udp = EXPORT.sub(r"\1 ", udp)
-    udp = udp.replace(
-        "// Датаграммы DNS внутри потока VLESS.",
-        "// ── ЧАСТЬ 2: датаграммы DNS ──",
+    worker = worker.replace(
+        'import { respond, MAX_RECORD, CLIENT_HELLO_LEN } from "./edge.js";\n', ""
     )
-
-    worker = LOCAL_IMPORT.sub("", worker)
     worker = worker.replace(
         "// Точка выхода ATLAS на Cloudflare Workers.",
-        "// ── ЧАСТЬ 3: сама точка выхода ──",
+        "// ── ЧАСТЬ 2: сама точка выхода ──",
     )
-    return HEADER + edge + "\n\n" + udp + "\n\n" + worker
-
-
-def check(bundle: str) -> None:
-    """Убедиться, что склейка не выбросила лишнего.
-
-    Один раз шаблон уже унёс `cloudflare:sockets` вместе с соседним
-    импортом. Файл остался синтаксически верным, `node --check` его
-    пропустил, и отказ вылез бы только на площадке.
-    """
-    if 'from "cloudflare:sockets"' not in bundle:
-        raise SystemExit("нет импорта cloudflare:sockets — край не откроет соединений")
-    if "export default" not in bundle:
-        raise SystemExit("нет точки входа `export default`")
-    if 'from "./' in bundle:
-        raise SystemExit("остался относительный импорт — склейка неполна")
+    return HEADER + edge + "\n\n" + worker
 
 
 if __name__ == "__main__":
-    bundle = build()
-    check(bundle)
     out = HERE / "atlas-edge.bundle.js"
-    out.write_text(bundle, encoding="utf-8")
-    print(f"собрано: {out} ({bundle.count(chr(10))} строк)")
+    out.write_text(build(), encoding="utf-8")
+    print(f"собрано: {out} ({build().count(chr(10))} строк)")

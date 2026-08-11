@@ -255,121 +255,7 @@ async function respond(secret, hello, now) {
 }
 
 
-// ── ЧАСТЬ 2: датаграммы DNS ──
-//
-// # Зачем это понадобилось
-//
-// Клиент в режиме системного VPN забирает весь трафик, включая запросы
-// имён, и отправляет их на край **командой 2** — «доставь как UDP».
-// Край отвечал на неё отказом и рвал соединение, а в журнале оставалась
-// строка `команда 2 не поддерживается`. Снято с живого края, на трафике
-// пользователя: такая ошибка приходится на каждый запрос имени.
-//
-// Снаружи это выглядит как «подключился, но ничего не грузится»: без
-// разрешения имён не открывается ничего, даже когда сам туннель цел.
-//
-// # Почему только порт 53
-//
-// Отправить датаграмму наружу край не может вовсе — `connect()` даёт
-// только TCP. Но для DNS это и не нужно: запрос уходит по HTTPS, а
-// `fetch` под запрет на соединение с адресами самой Cloudflare не
-// подпадает. Для всех прочих портов отказ остаётся, и это не упущение:
-// отправить такой пакет нечем.
-//
-// # Почему отдельный файл
-//
-// `worker.js` начинается с `import { connect } from "cloudflare:sockets"`,
-// а этого модуля нет нигде, кроме самой площадки, — файл невозможно
-// даже загрузить обычным узлом. Здесь нет ничего, кроме арифметики над
-// байтами, поэтому проверки гоняются `node --test`, без Cloudflare и без
-// сети.
-//
-// Имена верхнего уровня во всех файлах края обязаны быть разными:
-// `bundle.py` склеивает их в один файл, и два одинаковых объявления
-// дали бы синтаксическую ошибку прямо при развёртывании.
-
-/** Порт DNS — единственный, для которого принимается UDP. */
-const DNS_PORT = 53;
-
-/** Куда уходят запросы DNS, пришедшие в туннель. */
-const DEFAULT_DOH = "https://cloudflare-dns.com/dns-query";
-
-/** Наибольшая длина датаграммы, помещающаяся в двухбайтовый префикс. */
-const MAX_DATAGRAM = 0xffff;
-
-/** Склеить куски в один массив. */
-function merge(left, right) {
-    const out = new Uint8Array(left.length + right.length);
-    out.set(left, 0);
-    out.set(right, left.length);
-    return out;
-}
-
-/**
- * Сборщик датаграмм из потока.
- *
- * UDP внутри VLESS едет по потоку, и каждая датаграмма несёт свою длину
- * двумя байтами впереди. Границы сообщений WebSocket с этими границами
- * не совпадают никак, поэтому нужен именно сборщик, а не разбор
- * «одно сообщение — одна датаграмма»: на первом же длинном ответе такой
- * разбор развалился бы.
- */
-class Datagrams {
-    constructor() {
-        this.pending = new Uint8Array(0);
-    }
-
-    /** Добавить пришедший кусок. */
-    push(chunk) {
-        this.pending = merge(this.pending, chunk);
-    }
-
-    /** Забрать все датаграммы, пришедшие целиком. */
-    drain() {
-        const out = [];
-        for (;;) {
-            if (this.pending.length < 2) {
-                break;
-            }
-            const len = (this.pending[0] << 8) | this.pending[1];
-            if (this.pending.length < 2 + len) {
-                break;
-            }
-            out.push(this.pending.slice(2, 2 + len));
-            this.pending = this.pending.slice(2 + len);
-        }
-        return out;
-    }
-}
-
-/** Обрамить датаграмму длиной для отправки в поток. */
-function frameDatagram(packet) {
-    if (packet.length > MAX_DATAGRAM) {
-        throw new Error("датаграмма длиннее 65535 байт");
-    }
-    return merge(new Uint8Array([packet.length >> 8, packet.length & 0xff]), packet);
-}
-
-/**
- * Разрешить имя, отправив запрос DNS по HTTPS.
- *
- * `fetchImpl` подставляется в проверках: настоящий `fetch` тянул бы за
- * собой сеть, а проверять надо разбор и обрамление.
- */
-async function resolveOverHttps(packet, dohUrl = DEFAULT_DOH, fetchImpl = fetch) {
-    const answer = await fetchImpl(dohUrl, {
-        method: "POST",
-        headers: { "content-type": "application/dns-message" },
-        body: packet,
-    });
-    if (!answer.ok) {
-        throw new Error(`DoH ответил ${answer.status}`);
-    }
-    return new Uint8Array(await answer.arrayBuffer());
-}
-
-
-// ── ЧАСТЬ 3: сама точка выхода ──
+// ── ЧАСТЬ 2: сама точка выхода ──
 //
 // # Зачем
 //
@@ -452,20 +338,13 @@ function parseVless(data, uuid) {
 
     const command = data[at];
     at += 1;
-    // 1 — TCP, 2 — UDP. Датаграммы наружу край послать не может —
-    // `connect()` даёт только TCP, — но для DNS этого и не нужно:
-    // запрос уходит по HTTPS. Поэтому UDP принимается, а порт
-    // проверяется ниже, когда он уже прочитан.
-    if (command !== 1 && command !== 2) {
+    // 1 — TCP. UDP через этот край не идёт: `connect()` даёт только TCP.
+    if (command !== 1) {
         throw new Error(`команда ${command} не поддерживается`);
     }
 
     const port = view.getUint16(at, false);
     at += 2;
-
-    if (command === 2 && port !== DNS_PORT) {
-        throw new Error(`UDP через край доступен только для DNS, а порт ${port}`);
-    }
 
     const kind = data[at];
     at += 1;
@@ -489,51 +368,7 @@ function parseVless(data, uuid) {
         throw new Error(`тип адреса ${kind} неизвестен`);
     }
 
-    return { version, host, port, isUdp: command === 2, rest: data.slice(at) };
-}
-
-/**
- * Отвечать на запросы DNS, пришедшие в туннель.
- *
- * Живёт отдельно от перекачки TCP, потому что это другой протокол: там
- * поток, здесь датаграммы с длиной впереди. Смешивать их в одном цикле
- * значило бы получить разбор, который верен ровно наполовину.
- *
- * Цикл завершается сам, когда клиент закрывает соединение: `readRecord`
- * бросает, и это штатный конец, а не отказ.
- */
-async function relayDns(socket, reader, session, request, greeting, dohUrl) {
-    const datagrams = new Datagrams();
-    let header = greeting;
-
-    const answer = async (packet) => {
-        const reply = await resolveOverHttps(packet, dohUrl);
-        const framed = frameDatagram(reply);
-        // Заголовок ответа VLESS уходит вместе с первой датаграммой.
-        const payload = header ? merge2(header, framed) : framed;
-        header = null;
-        socket.send(session ? await session.seal(payload) : payload);
-    };
-
-    datagrams.push(request.rest);
-    for (const packet of datagrams.drain()) {
-        await answer(packet);
-    }
-
-    for (;;) {
-        datagrams.push(await readRecord(reader, session));
-        for (const packet of datagrams.drain()) {
-            await answer(packet);
-        }
-    }
-}
-
-/** Склеить два куска. */
-function merge2(left, right) {
-    const out = new Uint8Array(left.length + right.length);
-    out.set(left, 0);
-    out.set(right, left.length);
-    return out;
+    return { version, host, port, rest: data.slice(at) };
 }
 
 /**
@@ -653,7 +488,7 @@ async function readRecord(reader, session) {
  * Выбор делается по пути, а не угадыванием: угадывать по первым байтам
  * значит однажды принять чужое приветствие за своё.
  */
-async function serve(socket, secret, uuid, sealed, doh) {
+async function serve(socket, secret, uuid, sealed) {
     socket.accept();
     const reader = new Reader(socket);
 
@@ -668,19 +503,7 @@ async function serve(socket, secret, uuid, sealed, doh) {
 
     // Первая запись несёт заголовок VLESS и, как правило, начало данных.
     const first = await readRecord(reader, session);
-    const request = parseVless(first, uuid);
-    const { version, host, port, rest } = request;
-
-    // Запрос имени идёт другим путём: датаграммы наружу отправить нечем,
-    // но по HTTPS их разрешить можно.
-    if (request.isUdp) {
-        try {
-            await relayDns(socket, reader, session, request, new Uint8Array([version, 0]), doh);
-        } finally {
-            socket.close(1000);
-        }
-        return;
-    }
+    const { version, host, port, rest } = parseVless(first, uuid);
 
     const upstream = await Promise.race([
         connect({ hostname: host, port }),
@@ -770,7 +593,7 @@ export default {
         const pair = new WebSocketPair();
         const [client, server] = Object.values(pair);
 
-        serve(server, secret, uuid, sealed, env.ATLAS_DOH || DEFAULT_DOH).catch((error) => {
+        serve(server, secret, uuid, sealed).catch((error) => {
             console.error(error.message);
             try {
                 server.close(1011);
