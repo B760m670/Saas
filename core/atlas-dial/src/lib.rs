@@ -201,6 +201,8 @@ struct Plan {
     reality_public: [u8; 32],
     short_id: Vec<u8>,
     profile: Profile,
+    /// Открытый ключ ML-DSA-65 из `pqv`, если он в ключе есть.
+    post_quantum: Option<Vec<u8>>,
 }
 
 impl Plan {
@@ -237,6 +239,17 @@ impl Plan {
         let reality_public = decode_public_key(&reality.public_key)?;
         let short_id = decode_short_id(&reality.short_id)?;
 
+        // Ключ без `pqv` — обычное дело, и это не ошибка: постквантовая
+        // проверка необязательна с обеих сторон. А вот `pqv`, который не
+        // разбирается, — ошибка: молча выключить проверку значило бы
+        // выдать за проверенное то, что не проверялось.
+        let post_quantum = match reality.post_quantum_verify.as_deref() {
+            None => None,
+            Some(text) => Some(
+                decode_base64_url(text).ok_or(Error::Key("pqv не разбирается как base64url"))?,
+            ),
+        };
+
         let alpn = if key.security.alpn.is_empty() {
             vec!["h2".to_owned(), "http/1.1".to_owned()]
         } else {
@@ -254,6 +267,7 @@ impl Plan {
             reality_public,
             short_id,
             profile: profile_for(key.security.fingerprint),
+            post_quantum,
         })
     }
 
@@ -282,6 +296,10 @@ impl Plan {
         )
         .map_err(|_| Error::Key("shortId длиннее восьми байт"))?;
         let verifier = atlas_reality::Verifier::new(sealer.auth_key());
+        let verifier = match self.post_quantum.clone() {
+            Some(key) => verifier.with_post_quantum(key),
+            None => verifier,
+        };
 
         let config = ClientConfig::new(self.server_name.clone())
             .with_profile(self.effective_profile(options))
@@ -361,6 +379,20 @@ fn decode_public_key(text: &str) -> Result<[u8; 32]> {
         .map_err(|_| Error::Key("публичный ключ REALITY не разбирается"))?;
     raw.try_into()
         .map_err(|_| Error::Key("публичный ключ REALITY не 32 байта"))
+}
+
+/// Разобрать открытый ключ ML-DSA-65 из `pqv`.
+///
+/// Длина не проверяется здесь: она известна библиотеке подписи, и
+/// проверять её в двух местах значит однажды разойтись. Неверная длина
+/// станет отказом при первой же проверке подписи.
+fn decode_base64_url(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(text))
+        .ok()
 }
 
 /// Разобрать `shortId` из шестнадцатеричной записи.

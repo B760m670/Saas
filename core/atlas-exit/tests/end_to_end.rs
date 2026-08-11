@@ -551,3 +551,125 @@ fn without_a_limit_the_same_payload_flies_through() {
          и проверка ограничения ничего не значит"
     );
 }
+
+/// Поднять точку выхода с постквантовой подписью.
+///
+/// Возвращает адрес, публичный ключ REALITY и `pqv` — открытый ключ
+/// ML-DSA-65 в том виде, в каком он попадает в ссылку.
+fn spawn_pq_exit(cover: &str, seed: &[u8; 32]) -> (String, String, String) {
+    let reality = Server::generate().with_short_id(&[0xde, 0xad]).unwrap();
+    let public_key = base64_url(&reality.public_key());
+
+    let signing = Arc::new(atlas_crypto::sign::SigningKey::from_seed(seed));
+    let pqv = base64_url(&signing.post_quantum_public_key());
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+
+    let point = Arc::new(ExitPoint::new(
+        ExitConfig::new(reality, cover.to_owned())
+            .with_common_name(SNI)
+            .with_post_quantum(signing)
+            .with_policy(atlas_exit::Policy {
+                allow_private: true,
+                ..atlas_exit::Policy::default()
+            }),
+    ));
+    std::thread::spawn(move || {
+        let _ = point.serve(&listener);
+    });
+    (address, public_key, pqv)
+}
+
+/// Ключ доступа с постквантовой проверкой.
+fn pq_key_for(exit: &str, public_key: &str, pqv: &str) -> ProxyKey {
+    let uri = format!(
+        "vless://{UUID}@{exit}?type=tcp&security=reality&sni={SNI}\
+         &pbk={public_key}&sid={SHORT_ID}&pqv={pqv}&fp=firefox\
+         &flow=xtls-rprx-vision#test"
+    );
+    ProxyKey::parse(&uri).unwrap()
+}
+
+#[test]
+fn a_post_quantum_key_reaches_the_destination() {
+    let target = spawn_responder("НАЗНАЧЕНИЕ");
+    let cover = spawn_responder("ПРИКРЫТИЕ");
+    let (exit, public_key, pqv) = spawn_pq_exit(&cover, &[0x11; 32]);
+
+    let key = pq_key_for(&exit, &public_key, &pqv);
+    let (host, port) = target.rsplit_once(':').unwrap();
+    let mut tunnel = dial_with(
+        &key,
+        &Target::domain(host, port.parse().unwrap()),
+        &DialOptions {
+            ech: false,
+            ..DialOptions::default()
+        },
+    )
+    .unwrap();
+
+    tunnel.write_all(b"go").unwrap();
+    let mut answer = Vec::new();
+    let _ = tunnel.read_to_end(&mut answer);
+    assert_eq!(String::from_utf8_lossy(&answer), "НАЗНАЧЕНИЕ");
+}
+
+#[test]
+fn a_forged_post_quantum_key_is_refused() {
+    // Главное здесь. Проверка, которая пропускает чужую подпись,
+    // выглядит в тестах точно так же, как работающая: соединение
+    // встаёт, данные ходят. Отличить их можно только подсунув чужой
+    // ключ и убедившись, что он **не** проходит.
+    let target = spawn_responder("НАЗНАЧЕНИЕ");
+    let cover = spawn_responder("ПРИКРЫТИЕ");
+    let (exit, public_key, _) = spawn_pq_exit(&cover, &[0x11; 32]);
+
+    // Тот же REALITY, но постквантовый ключ от другого семени.
+    let stranger = atlas_crypto::sign::SigningKey::from_seed(&[0x22; 32]);
+    let wrong = base64_url(&stranger.post_quantum_public_key());
+
+    let key = pq_key_for(&exit, &public_key, &wrong);
+    let (host, port) = target.rsplit_once(':').unwrap();
+    let outcome = dial_with(
+        &key,
+        &Target::domain(host, port.parse().unwrap()),
+        &DialOptions {
+            ech: false,
+            ..DialOptions::default()
+        },
+    );
+
+    assert!(
+        outcome.is_err(),
+        "точка выхода принята с чужим ключом ML-DSA-65 — проверки нет"
+    );
+}
+
+#[test]
+fn a_key_without_pqv_still_works_against_a_post_quantum_exit() {
+    // Совместимость сверху вниз, ради которой всё и устроено так:
+    // подпись лежит в расширении сертификата, и клиент, который про неё
+    // не знает, её просто не смотрит. Иначе включение проверки
+    // отсекло бы всех, кому ключи уже розданы.
+    let target = spawn_responder("НАЗНАЧЕНИЕ");
+    let cover = spawn_responder("ПРИКРЫТИЕ");
+    let (exit, public_key, _) = spawn_pq_exit(&cover, &[0x11; 32]);
+
+    let key = key_for(&exit, &public_key, "&flow=xtls-rprx-vision");
+    let (host, port) = target.rsplit_once(':').unwrap();
+    let mut tunnel = dial_with(
+        &key,
+        &Target::domain(host, port.parse().unwrap()),
+        &DialOptions {
+            ech: false,
+            ..DialOptions::default()
+        },
+    )
+    .unwrap();
+
+    tunnel.write_all(b"go").unwrap();
+    let mut answer = Vec::new();
+    let _ = tunnel.read_to_end(&mut answer);
+    assert_eq!(String::from_utf8_lossy(&answer), "НАЗНАЧЕНИЕ");
+}

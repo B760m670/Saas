@@ -42,6 +42,33 @@ impl SigningKey {
         }
     }
 
+    /// Вывести пару ключей из семени — воспроизводимо.
+    ///
+    /// # Зачем это нужно
+    ///
+    /// Точка выхода REALITY публикует свой постквантовый открытый ключ в
+    /// ключе доступа (`pqv`). Если при перезапуске родится новая пара,
+    /// все розданные ключи перестанут проходить проверку — и не «иногда»,
+    /// а сразу и у всех. То же соображение, по которому у X25519 есть
+    /// `--secret`.
+    ///
+    /// # Почему из одного семени выводятся два разных
+    ///
+    /// Одно и то же значение, поданное и в Ed25519, и в ML-DSA, связало
+    /// бы два ключа: слабость или утечка в одном рассуждении о секретном
+    /// материале перестала бы быть независимой от другого, а весь смысл
+    /// гибрида — в независимости допущений. Поэтому семя разводится по
+    /// разным контекстам.
+    #[must_use]
+    pub fn from_seed(seed: &[u8; 32]) -> Self {
+        let ed_seed = hash::derive_key("atlas hybrid signature ed25519 v1", &[seed]);
+        let pq_seed = hash::derive_key("atlas hybrid signature ml-dsa-65 v1", &[seed]);
+        Self {
+            ed: ed25519_dalek::SigningKey::from_bytes(&ed_seed),
+            pq: ml_dsa::SigningKey::<MlDsa65>::from_seed(&pq_seed.into()),
+        }
+    }
+
     /// Открытая часть ключа.
     #[must_use]
     pub fn verifying_key(&self) -> VerifyingKey {
@@ -315,6 +342,61 @@ impl Signature {
 /// от размера сообщения.
 fn domain_digest(context: &'static str, message: &[u8]) -> [u8; hash::LEN] {
     hash::derive_key(context, &[message])
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod seed_tests {
+    use super::*;
+
+    #[test]
+    fn the_same_seed_gives_the_same_keys() {
+        // Ради этого всё и затевалось: перезапуск точки выхода не должен
+        // обесценивать розданные ключи.
+        let seed = [0x5a_u8; 32];
+        let first = SigningKey::from_seed(&seed);
+        let second = SigningKey::from_seed(&seed);
+        assert_eq!(
+            first.post_quantum_public_key(),
+            second.post_quantum_public_key()
+        );
+        assert_eq!(
+            first.verifying_key().to_bytes(),
+            second.verifying_key().to_bytes()
+        );
+    }
+
+    #[test]
+    fn a_different_seed_gives_different_keys() {
+        let one = SigningKey::from_seed(&[1_u8; 32]);
+        let two = SigningKey::from_seed(&[2_u8; 32]);
+        assert_ne!(one.post_quantum_public_key(), two.post_quantum_public_key());
+    }
+
+    #[test]
+    fn the_two_halves_are_not_derived_from_the_same_value() {
+        // Если бы семя подавалось в оба алгоритма как есть, ключ Ed25519
+        // совпал бы с семенем — и гибрид перестал бы держаться на двух
+        // независимых допущениях.
+        let seed = [0x77_u8; 32];
+        let key = SigningKey::from_seed(&seed);
+        let ed = ed25519_dalek::SigningKey::from_bytes(&seed);
+        assert_ne!(
+            key.verifying_key().ed.to_bytes(),
+            ed.verifying_key().to_bytes()
+        );
+    }
+
+    #[test]
+    fn a_seeded_key_signs_what_a_seeded_key_verifies() {
+        let key = SigningKey::from_seed(&[9_u8; 32]);
+        let message = "точка выхода".as_bytes();
+        let signature = key.sign_post_quantum(message);
+
+        let public = PostQuantumKey::from_bytes(&key.post_quantum_public_key()).unwrap();
+        assert!(public.verify(message, &signature));
+        assert!(!public.verify("другое".as_bytes(), &signature));
+    }
 }
 
 #[cfg(test)]

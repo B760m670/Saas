@@ -65,6 +65,10 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// не выдаётся.
 const FOREIGN_NAME: &str = "example.com";
 
+/// Наименьшая длина чужой цепочки, при которой постквантовая подпись не
+/// выделяет наш сертификат размером.
+pub const MIN_CHAIN_FOR_POST_QUANTUM: usize = 3500;
+
 /// Что выяснилось про сайт прикрытия.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -90,6 +94,14 @@ pub struct Report {
     pub alpn: Option<String>,
     /// Сколько заняло рукопожатие.
     pub handshake: Duration,
+    /// Длина цепочки сертификатов сайта в байтах.
+    ///
+    /// Важна только при постквантовой подписи: она добавляет во
+    /// временный сертификат 3309 байт, и если настоящий сайт отдаёт
+    /// цепочку заметно короче, наш сертификат выделяется размером.
+    /// Эталон требует цепочку от 3500 байт, то есть сайт с сертификатом
+    /// RSA, а не ECDSA.
+    pub chain_bytes: usize,
     /// Отдаёт ли адрес разные сертификаты разным именам.
     ///
     /// Названо по измерению, а не по выводу: «выбирает сертификат по
@@ -109,6 +121,24 @@ impl Report {
         // ничего не узнали. Отказывать по незнанию — значит наказывать
         // за моргнувшую сеть.
         !self.reachable || self.tls13
+    }
+
+    /// Годится ли сайт для постквантовой подписи.
+    ///
+    /// Отдельно от [`Self::warnings`], потому что вопрос возникает
+    /// только у того, кто включил `--pq-seed`. Предупреждать остальных
+    /// про размер чужой цепочки — шум.
+    #[must_use]
+    pub fn post_quantum_note(&self) -> Option<String> {
+        (self.reachable && self.chain_bytes < MIN_CHAIN_FOR_POST_QUANTUM).then(|| {
+            format!(
+                "цепочка сертификатов {} — {} байт, а постквантовая подпись \
+                 добавляет к нашему сертификату 3309. Рядом с настоящим он \
+                 будет заметно толще. Нужен сайт с сертификатом RSA и \
+                 цепочкой от {} байт",
+                self.name, self.chain_bytes, MIN_CHAIN_FOR_POST_QUANTUM
+            )
+        })
     }
 
     /// Замечания к выбору, от важных к второстепенным.
@@ -198,6 +228,7 @@ pub fn inspect(cover: &str) -> io::Result<Report> {
         addresses,
         probed,
         reachable,
+        chain_bytes: own.as_ref().map_or(0, |o| o.chain_bytes),
         tls13: own.is_ok(),
         alpn: own.as_ref().ok().and_then(|o| o.alpn.clone()),
         handshake: handshake_took,
@@ -213,6 +244,8 @@ struct Handshake {
     /// нужен. Разбор X.509 — отдельная работа со своими ошибками, и
     /// заводить её ради сравнения «то же или не то же» незачем.
     certificate: Vec<u8>,
+    /// Длина всей цепочки в байтах.
+    chain_bytes: usize,
     /// Согласованный протокол прикладного уровня.
     alpn: Option<String>,
 }
@@ -223,12 +256,20 @@ struct Handshake {
 /// доверяем собеседнику. Подлинность сайта прикрытия нам не нужна и
 /// ничего бы не дала — мы к нему не подключаемся за данными.
 #[derive(Debug, Default, Clone)]
-struct Recording(Arc<Mutex<Vec<u8>>>);
+struct Recording(Arc<Mutex<(Vec<u8>, usize)>>);
 
 impl ServerVerifier for Recording {
     fn verify(&self, peer: &PeerIdentity<'_>) -> atlas_tls::Result<()> {
-        if let (Ok(mut slot), Some(leaf)) = (self.0.lock(), peer.certificate.entries.first()) {
-            slot.clone_from(&leaf.data);
+        if let Ok(mut slot) = self.0.lock() {
+            if let Some(leaf) = peer.certificate.entries.first() {
+                slot.0.clone_from(&leaf.data);
+            }
+            slot.1 = peer
+                .certificate
+                .entries
+                .iter()
+                .map(|entry| entry.data.len())
+                .sum();
         }
         Ok(())
     }
@@ -250,9 +291,10 @@ fn handshake(address: SocketAddr, name: &str) -> io::Result<Handshake> {
         .with_alpn(vec!["h2".to_owned(), "http/1.1".to_owned()]);
 
     let stream = TlsStream::connect(socket, config)?;
-    let certificate = seen.0.lock().map(|slot| slot.clone()).unwrap_or_default();
+    let (certificate, chain_bytes) = seen.0.lock().map(|slot| slot.clone()).unwrap_or_default();
     Ok(Handshake {
         certificate,
+        chain_bytes,
         alpn: stream.alpn().map(str::to_owned),
     })
 }
@@ -268,6 +310,7 @@ mod tests {
             addresses: vec![([203, 0, 113, 7], 443).into()],
             probed: ([203, 0, 113, 7], 443).into(),
             reachable: true,
+            chain_bytes: 4096,
             tls13: true,
             alpn: Some("h2".to_owned()),
             handshake: Duration::from_millis(20),
@@ -366,6 +409,36 @@ mod tests {
         };
         assert!(!report.usable());
         assert!(report.warnings().iter().any(|w| w.contains("TLS 1.3")));
+    }
+
+    #[test]
+    fn a_short_chain_matters_only_for_the_post_quantum_signature() {
+        // Обычному развёртыванию длина чужой цепочки безразлична, и
+        // предупреждать о ней всех значило бы приучить не читать
+        // предупреждения.
+        let report = Report {
+            chain_bytes: 1200,
+            ..report()
+        };
+        assert!(report.warnings().is_empty(), "в общий список это не идёт");
+        assert!(report.post_quantum_note().is_some());
+        assert!(report.post_quantum_note().unwrap().contains("3309"));
+    }
+
+    #[test]
+    fn a_long_enough_chain_raises_nothing() {
+        assert!(report().post_quantum_note().is_none());
+    }
+
+    #[test]
+    fn an_unreachable_site_says_nothing_about_its_chain() {
+        // Нулевая длина здесь означает «не измеряли», а не «коротко».
+        let report = Report {
+            reachable: false,
+            chain_bytes: 0,
+            ..report()
+        };
+        assert!(report.post_quantum_note().is_none());
     }
 
     #[test]

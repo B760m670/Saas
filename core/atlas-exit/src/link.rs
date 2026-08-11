@@ -227,15 +227,25 @@ pub struct AccessKey<'a> {
     pub public_key: &'a str,
     /// Короткий идентификатор, hex.
     pub short_id: &'a str,
+    /// Открытый ключ ML-DSA-65, base64url, если проверка включена.
+    pub post_quantum: Option<&'a str>,
 }
 
 impl AccessKey<'_> {
     /// Собрать строку `vless://`.
     #[must_use]
     pub fn to_link(&self) -> String {
+        // `fp=firefox`, а не `chrome`: отпечаток Chrome по измерениям
+        // относится к подозрительным, Firefox проходит. Значение стоит в
+        // ссылке явно, потому что читают её и чужие клиенты — Happ,
+        // Hiddify, INCY, — и у Xray отсутствующий `fp` означает Chrome.
+        let pqv = self
+            .post_quantum
+            .map(|key| format!("&pqv={key}"))
+            .unwrap_or_default();
         format!(
             "vless://{uuid}@{endpoint}?type=tcp&security=reality&sni={sni}\
-             &pbk={pbk}&sid={sid}&fp=chrome&flow=xtls-rprx-vision#atlas",
+             &pbk={pbk}&sid={sid}{pqv}&fp=firefox&flow=xtls-rprx-vision#atlas",
             uuid = self.uuid,
             endpoint = self.endpoint,
             sni = self.sni,
@@ -336,6 +346,38 @@ mod tests {
         assert_eq!(chosen.to_string(), "[2606:4700::1]:443");
     }
 
+    /// Ключ доступа с постквантовой проверкой.
+    fn link_with(post_quantum: Option<&str>) -> String {
+        let endpoint = Endpoint {
+            host: "93.184.216.34".to_owned(),
+            port: 443,
+        };
+        AccessKey {
+            endpoint: &endpoint,
+            uuid: "5c1f0e4e-0000-4000-8000-000000000001",
+            sni: "www.microsoft.com",
+            public_key: "AbCd_-01",
+            short_id: "dead",
+            post_quantum,
+        }
+        .to_link()
+    }
+
+    #[test]
+    fn the_post_quantum_key_appears_only_when_there_is_one() {
+        assert!(!link_with(None).contains("pqv="));
+        assert!(link_with(Some("MlDsaKey")).contains("&pqv=MlDsaKey&"));
+    }
+
+    #[test]
+    fn the_link_asks_for_firefox_explicitly() {
+        // Молчание здесь не нейтрально: у Xray отсутствующий `fp`
+        // означает Chrome, а он по измерениям в подозрительном ведре.
+        // Ссылку читают чужие клиенты, и решает она, а не наши умолчания.
+        assert!(link_with(None).contains("fp=firefox"));
+        assert!(!link_with(None).contains("fp=chrome"));
+    }
+
     #[test]
     fn the_link_carries_everything_the_client_needs() {
         let endpoint = Endpoint {
@@ -348,6 +390,7 @@ mod tests {
             sni: "www.microsoft.com",
             public_key: "AbCd_-01",
             short_id: "dead",
+            post_quantum: None,
         }
         .to_link();
 
@@ -357,6 +400,7 @@ mod tests {
             "sni=www.microsoft.com",
             "pbk=AbCd_-01",
             "sid=dead",
+            "fp=firefox",
             "flow=xtls-rprx-vision",
         ] {
             assert!(link.contains(part), "в ключе нет {part}: {link}");

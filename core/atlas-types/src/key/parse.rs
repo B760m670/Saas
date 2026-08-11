@@ -39,6 +39,8 @@ const KNOWN_PARAMS: &[&str] = &[
     "shortid",
     "spx",
     "spiderx",
+    "pqv",
+    "mldsa65verify",
     "flow",
     "allowinsecure",
     "insecure",
@@ -214,6 +216,9 @@ fn parse_security(uri: &RawUri, protocol: Protocol) -> SecurityConfig {
                 .to_owned(),
             spider_x: uri
                 .param_any(&["spx", "spiderX", "spiderx"])
+                .map(str::to_owned),
+            post_quantum_verify: uri
+                .param_any(&["pqv", "mldsa65Verify", "mldsa65verify"])
                 .map(str::to_owned),
         })
     } else {

@@ -51,6 +51,9 @@ fn main() {
         println!("  --skip-check   не проверять сайт прикрытия при запуске");
         println!("  --cover-limit  предел отдачи постороннему, КБ/с — защита");
         println!("                 от выкачки вашей квоты через сайт прикрытия");
+        println!("  --pq-seed BASE64  семя ML-DSA-65: включает постквантовую");
+        println!("                 проверку сертификата. Обязано пережить");
+        println!("                 перезапуск, иначе выданные ключи отвалятся");
         return;
     }
 
@@ -62,7 +65,7 @@ fn main() {
     // Проверка идёт до всего остального: собирать ключи и занимать порт
     // ради сайта прикрытия, на котором REALITY не заработает, незачем.
     if !flag("--skip-check") {
-        check_cover(&cover, flag("--check-cover"));
+        check_cover(&cover, flag("--check-cover"), flag("--pq-seed"));
     }
     if flag("--check-cover") {
         return;
@@ -79,6 +82,21 @@ fn main() {
         eprintln!("--sid: не разбирается как hex");
         std::process::exit(1);
     });
+
+    // Постквантовая проверка. Семя, а не готовый ключ: при перезапуске
+    // из того же семени рождается та же пара, и розданные ключи
+    // продолжают подходить. Без флага всё работает как раньше — проверка
+    // необязательна с обеих сторон.
+    let post_quantum = value("--pq-seed").map(|text| {
+        let seed = decode_key(&text).unwrap_or_else(|| {
+            eprintln!("--pq-seed: не разбирается как 32 байта в base64url");
+            std::process::exit(1);
+        });
+        std::sync::Arc::new(atlas_crypto::sign::SigningKey::from_seed(&seed))
+    });
+    let pq_verify = post_quantum
+        .as_ref()
+        .map(|key| base64_url(&key.post_quantum_public_key()));
 
     let reality = match secret {
         Some(bytes) => Server::from_secret(bytes),
@@ -127,6 +145,7 @@ fn main() {
             sni: &sni,
             public_key: &public_key,
             short_id: &short_id,
+            post_quantum: pq_verify.as_deref(),
         }
         .to_link()
     );
@@ -158,8 +177,12 @@ fn main() {
     let point = Arc::new(
         ExitPoint::new({
             let config = ExitConfig::new(reality, cover).with_policy(policy);
-            match cover_limit {
+            let config = match cover_limit {
                 Some(limit) => config.with_cover_limit(limit),
+                None => config,
+            };
+            match post_quantum {
+                Some(key) => config.with_post_quantum(key),
                 None => config,
             }
         })
@@ -216,7 +239,7 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
 /// Недоступность сайта отказом не считается: сеть могла моргнуть, а
 /// точка выхода, не встающая из-за чужой недоступности, хуже точки
 /// выхода с сомнительным прикрытием.
-fn check_cover(cover: &str, verbose: bool) {
+fn check_cover(cover: &str, verbose: bool, post_quantum: bool) {
     match atlas_exit::cover::inspect(cover) {
         Ok(report) => {
             if verbose {
@@ -237,6 +260,14 @@ fn check_cover(cover: &str, verbose: bool) {
             }
             for warning in report.warnings() {
                 eprintln!("внимание: {warning}");
+            }
+            if post_quantum {
+                if verbose {
+                    println!("цепочка          {} байт", report.chain_bytes);
+                }
+                if let Some(note) = report.post_quantum_note() {
+                    eprintln!("внимание: {note}");
+                }
             }
             if !report.usable() {
                 eprintln!();

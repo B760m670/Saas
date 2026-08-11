@@ -80,6 +80,12 @@ pub struct ExitConfig {
     /// знает свой тариф: см. [`crate::throttle`], где написано, почему
     /// умолчания здесь быть не может.
     pub cover_limit: Option<throttle::Limit>,
+    /// Ключ ML-DSA-65 для постквантовой подписи сертификата.
+    ///
+    /// `None` — проверки нет, как было. Клиенты, не знающие про неё,
+    /// подключаются одинаково в обоих случаях: подпись лежит в
+    /// расширении сертификата, и кто её не смотрит, тот её не замечает.
+    pub post_quantum: Option<Arc<atlas_crypto::sign::SigningKey>>,
 }
 
 /// Ограничения на адрес назначения.
@@ -161,7 +167,15 @@ impl ExitConfig {
             alpn: vec!["h2".to_owned(), "http/1.1".to_owned()],
             policy: Policy::default(),
             cover_limit: None,
+            post_quantum: None,
         }
+    }
+
+    /// Включить постквантовую подпись сертификата.
+    #[must_use]
+    pub fn with_post_quantum(mut self, key: Arc<atlas_crypto::sign::SigningKey>) -> Self {
+        self.post_quantum = Some(key);
+        self
     }
 
     /// Ограничить полосу до сайта прикрытия.
@@ -215,7 +229,11 @@ impl ExitPoint {
     /// Собрать точку выхода из настроек.
     #[must_use]
     pub fn new(config: ExitConfig) -> Self {
-        let certificates = Arc::new(Certificates::new(config.reality, config.common_name));
+        let certificates = Certificates::new(config.reality, config.common_name);
+        let certificates = Arc::new(match config.post_quantum {
+            Some(key) => certificates.with_post_quantum(key),
+            None => certificates,
+        });
         Self {
             certificates,
             cover: config.cover,
