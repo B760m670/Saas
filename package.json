@@ -1,0 +1,8 @@
+{
+  "name": "atlas-edge",
+  "private": true,
+  "description": "Закрепление версии wrangler для Cloudflare Builds. Подробности — в wrangler.toml.",
+  "devDependencies": {
+    "wrangler": "4.120.1"
+  }
+}

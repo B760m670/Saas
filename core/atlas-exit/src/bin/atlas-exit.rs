@@ -47,6 +47,13 @@ fn main() {
         println!("  --host    как до этой машины достучится клиент — внешний адрес");
         println!("            или имя. Обязателен, если --listen на всех картах");
         println!("  --cover   чужой сайт, которым прикидываемся для посторонних");
+        println!("  --check-cover  проверить сайт прикрытия и выйти");
+        println!("  --skip-check   не проверять сайт прикрытия при запуске");
+        println!("  --cover-limit  предел отдачи постороннему, КБ/с — защита");
+        println!("                 от выкачки вашей квоты через сайт прикрытия");
+        println!("  --pq-seed BASE64  семя ML-DSA-65: включает постквантовую");
+        println!("                 проверку сертификата. Обязано пережить");
+        println!("                 перезапуск, иначе выданные ключи отвалятся");
         return;
     }
 
@@ -54,6 +61,15 @@ fn main() {
     let cover = value("--cover").unwrap_or_else(|| "www.microsoft.com:443".to_owned());
     let short_id = value("--sid").unwrap_or_else(|| "dead".to_owned());
     let uuid = value("--uuid").unwrap_or_else(atlas_crypto::credentials::generate_uuid);
+
+    // Проверка идёт до всего остального: собирать ключи и занимать порт
+    // ради сайта прикрытия, на котором REALITY не заработает, незачем.
+    if !flag("--skip-check") {
+        check_cover(&cover, flag("--check-cover"), flag("--pq-seed"));
+    }
+    if flag("--check-cover") {
+        return;
+    }
 
     let secret = value("--secret").map(|text| {
         decode_key(&text).unwrap_or_else(|| {
@@ -66,6 +82,21 @@ fn main() {
         eprintln!("--sid: не разбирается как hex");
         std::process::exit(1);
     });
+
+    // Постквантовая проверка. Семя, а не готовый ключ: при перезапуске
+    // из того же семени рождается та же пара, и розданные ключи
+    // продолжают подходить. Без флага всё работает как раньше — проверка
+    // необязательна с обеих сторон.
+    let post_quantum = value("--pq-seed").map(|text| {
+        let seed = decode_key(&text).unwrap_or_else(|| {
+            eprintln!("--pq-seed: не разбирается как 32 байта в base64url");
+            std::process::exit(1);
+        });
+        std::sync::Arc::new(atlas_crypto::sign::SigningKey::from_seed(&seed))
+    });
+    let pq_verify = post_quantum
+        .as_ref()
+        .map(|key| base64_url(&key.post_quantum_public_key()));
 
     let reality = match secret {
         Some(bytes) => Server::from_secret(bytes),
@@ -114,10 +145,23 @@ fn main() {
             sni: &sni,
             public_key: &public_key,
             short_id: &short_id,
+            post_quantum: pq_verify.as_deref(),
         }
         .to_link()
     );
     println!();
+
+    // Посторонний получает сайт прикрытия целиком — и вправе качать его
+    // через нас сколько угодно, за наш трафик. Предел задаёт хозяин: он
+    // один знает свой тариф, а угаданное значение само стало бы
+    // отличием (см. atlas_exit::throttle).
+    let cover_limit = value("--cover-limit").map(|text| {
+        let kb: u64 = text.parse().unwrap_or_else(|_| {
+            eprintln!("--cover-limit: ожидается число килобайт в секунду");
+            std::process::exit(1);
+        });
+        atlas_exit::throttle::Limit::per_second(kb.saturating_mul(1024))
+    });
 
     let policy = Policy {
         allow_private: flag("--allow-private"),
@@ -131,13 +175,22 @@ fn main() {
 
     let verbose = flag("--verbose");
     let point = Arc::new(
-        ExitPoint::new(ExitConfig::new(reality, cover).with_policy(policy)).with_log(Arc::new(
-            move |message: &str| {
-                if verbose {
-                    eprintln!("[exit] {message}");
-                }
-            },
-        )),
+        ExitPoint::new({
+            let config = ExitConfig::new(reality, cover).with_policy(policy);
+            let config = match cover_limit {
+                Some(limit) => config.with_cover_limit(limit),
+                None => config,
+            };
+            match post_quantum {
+                Some(key) => config.with_post_quantum(key),
+                None => config,
+            }
+        })
+        .with_log(Arc::new(move |message: &str| {
+            if verbose {
+                eprintln!("[exit] {message}");
+            }
+        })),
     );
     if let Err(error) = point.serve(&listener) {
         eprintln!("точка выхода остановлена: {error}");
@@ -171,4 +224,62 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
                 .and_then(|text| u8::from_str_radix(text, 16).ok())
         })
         .collect()
+}
+
+/// Проверить сайт прикрытия и рассказать, что вышло.
+///
+/// # Почему непригодность — отказ, а не предупреждение
+///
+/// Без TLS 1.3 у сайта прикрытия REALITY не работает: общий секрет
+/// выводится из доли `key_share`, а до TLS 1.3 её не существует. Точка
+/// выхода при этом поднимется и напечатает ключ, ключ вставится в
+/// клиент, и человек будет искать причину в туннеле — там, где её нет.
+/// Дешевле отказать здесь.
+///
+/// Недоступность сайта отказом не считается: сеть могла моргнуть, а
+/// точка выхода, не встающая из-за чужой недоступности, хуже точки
+/// выхода с сомнительным прикрытием.
+fn check_cover(cover: &str, verbose: bool, post_quantum: bool) {
+    match atlas_exit::cover::inspect(cover) {
+        Ok(report) => {
+            if verbose {
+                println!("сайт прикрытия   {}", report.name);
+                println!("адрес            {}", report.probed);
+                println!("всего адресов    {}", report.addresses.len());
+                println!("TLS 1.3          {}", report.tls13);
+                println!("ALPN             {}", report.alpn.as_deref().unwrap_or("—"));
+                println!("рукопожатие      {} мс", report.handshake.as_millis());
+                println!(
+                    "сертификат       {}",
+                    match report.selects_certificate_by_name {
+                        Some(true) => "разный для разных имён — возможно, CDN",
+                        Some(false) => "один и тот же для любого имени",
+                        None => "чужие имена не обслуживаются",
+                    }
+                );
+            }
+            for warning in report.warnings() {
+                eprintln!("внимание: {warning}");
+            }
+            if post_quantum {
+                if verbose {
+                    println!("цепочка          {} байт", report.chain_bytes);
+                }
+                if let Some(note) = report.post_quantum_note() {
+                    eprintln!("внимание: {note}");
+                }
+            }
+            if !report.usable() {
+                eprintln!();
+                eprintln!("Сайт прикрытия не годится. Возьмите другой через --cover");
+                eprintln!("или, если уверены, обойдите проверку через --skip-check.");
+                std::process::exit(1);
+            }
+        }
+        Err(error) => {
+            // Не отказ: сеть могла моргнуть, а сайт прикрытия нужен не
+            // при запуске, а при первом постороннем.
+            eprintln!("внимание: сайт прикрытия {cover} не проверить: {error}");
+        }
+    }
 }

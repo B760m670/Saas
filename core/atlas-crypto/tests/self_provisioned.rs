@@ -37,6 +37,7 @@ fn build_key(host: &str, port: u16, dest: &str) -> ProxyKey {
                 public_key: creds.reality.public_base64(),
                 short_id: creds.short_ids.first().cloned().unwrap_or_default(),
                 spider_x: Some("/".to_owned()),
+                post_quantum_verify: None,
             }),
         },
         flow: Flow::XtlsRprxVision,

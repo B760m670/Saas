@@ -62,8 +62,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use atlas_tls::client::{ClientConfig, HelloSealer, ServerVerifier};
 use atlas_tls::stream::{TlsReader, TlsWriter};
-use atlas_tls::{Chrome, TlsStream};
-use atlas_types::{Credentials, Flow as KeyFlow, Protocol, ProxyKey, SecurityKind};
+use atlas_tls::{Chrome, Firefox, Profile, TlsStream};
+use atlas_types::{
+    Credentials, Fingerprint as KeyFingerprint, Flow as KeyFlow, Protocol, ProxyKey, SecurityKind,
+};
 use atlas_vless::session::{Flow, Session, SessionReader, SessionWriter};
 use atlas_vless::{Address, Endpoint};
 
@@ -148,8 +150,8 @@ pub struct DialOptions {
     pub now: u32,
     /// Слать ли `encrypted_client_hello`.
     ///
-    /// По умолчанию да — так делает Chrome. Отключается там, где
-    /// промежуточный узел рвёт соединение при виде этого расширения
+    /// По умолчанию да — его шлют и Chrome, и Firefox. Отключается там,
+    /// где промежуточный узел рвёт соединение при виде этого расширения
     /// (см. `docs/09-lab.md`).
     pub ech: bool,
 }
@@ -198,6 +200,9 @@ struct Plan {
     alpn: Vec<String>,
     reality_public: [u8; 32],
     short_id: Vec<u8>,
+    profile: Profile,
+    /// Открытый ключ ML-DSA-65 из `pqv`, если он в ключе есть.
+    post_quantum: Option<Vec<u8>>,
 }
 
 impl Plan {
@@ -234,6 +239,17 @@ impl Plan {
         let reality_public = decode_public_key(&reality.public_key)?;
         let short_id = decode_short_id(&reality.short_id)?;
 
+        // Ключ без `pqv` — обычное дело, и это не ошибка: постквантовая
+        // проверка необязательна с обеих сторон. А вот `pqv`, который не
+        // разбирается, — ошибка: молча выключить проверку значило бы
+        // выдать за проверенное то, что не проверялось.
+        let post_quantum = match reality.post_quantum_verify.as_deref() {
+            None => None,
+            Some(text) => Some(
+                decode_base64_url(text).ok_or(Error::Key("pqv не разбирается как base64url"))?,
+            ),
+        };
+
         let alpn = if key.security.alpn.is_empty() {
             vec!["h2".to_owned(), "http/1.1".to_owned()]
         } else {
@@ -250,7 +266,24 @@ impl Plan {
             alpn,
             reality_public,
             short_id,
+            profile: profile_for(key.security.fingerprint),
+            post_quantum,
         })
+    }
+
+    /// Профиль, который уйдёт в сеть при этих настройках.
+    ///
+    /// Вынесено из [`Self::wrap_tls`] отдельно ровно затем, чтобы это
+    /// можно было проверить без сокета. Пока выбор жил внутри `wrap_tls`,
+    /// он был непроверяем: разбор ключа мог класть в план верный
+    /// профиль, а рукопожатие — брать другой, и оба теста оставались бы
+    /// зелёными.
+    const fn effective_profile(&self, options: &DialOptions) -> Profile {
+        if options.ech {
+            self.profile
+        } else {
+            self.profile.without_ech()
+        }
     }
 
     /// Поднять TLS с меткой REALITY поверх сокета.
@@ -263,20 +296,51 @@ impl Plan {
         )
         .map_err(|_| Error::Key("shortId длиннее восьми байт"))?;
         let verifier = atlas_reality::Verifier::new(sealer.auth_key());
-
-        let profile = if options.ech {
-            Chrome::v141()
-        } else {
-            Chrome::v141().without_ech()
+        let verifier = match self.post_quantum.clone() {
+            Some(key) => verifier.with_post_quantum(key),
+            None => verifier,
         };
 
         let config = ClientConfig::new(self.server_name.clone())
-            .with_profile(profile)
+            .with_profile(self.effective_profile(options))
             .with_alpn(self.alpn.clone())
             .with_sealer(Box::new(sealer) as Box<dyn HelloSealer>)
             .with_verifier(Box::new(verifier) as Box<dyn ServerVerifier>);
 
         TlsStream::connect(socket, config).map_err(Error::Io)
+    }
+}
+
+/// Выбрать профиль отпечатка по полю `fp` из ключа.
+///
+/// # Что реализовано, а что нет
+///
+/// Собранных профилей у нас два — Chrome и Firefox. Остальные значения
+/// `fp` разбираются, но профиля за ними не стоит, и подменять один
+/// браузер другим молча нельзя: приветствие Chrome, выданное за Safari,
+/// — это не Safari, а уникальное сочетание, которого не бывает ни у
+/// кого. Поэтому всё нереализованное сводится к Firefox **явно**, и вот
+/// почему именно к нему:
+///
+/// - `Safari` и `Ios` по измерениям попадают в то же подозрительное
+///   ведро фильтра, что и Chrome. Выдавать их профилем Chrome значило бы
+///   сохранить недостаток и потерять точность.
+/// - `Edge` построен на Chromium, но фильтр его пропускает; своего
+///   профиля у нас нет, а гадать по родству — тот же уникальный
+///   отпечаток.
+/// - `Random` внешне привлекателен, но редкий и плавающий JA4 сам по
+///   себе аномалия — об этом уже сказано в [`atlas_types::Fingerprint`].
+///
+/// Firefox выбран запасным вариантом не по вкусу, а потому, что он
+/// единственный из собранных проходит фильтр.
+fn profile_for(fingerprint: KeyFingerprint) -> Profile {
+    match fingerprint {
+        KeyFingerprint::Chrome => Profile::Chrome(Chrome::v141()),
+        KeyFingerprint::Firefox
+        | KeyFingerprint::Safari
+        | KeyFingerprint::Ios
+        | KeyFingerprint::Edge
+        | KeyFingerprint::Random => Profile::Firefox(Firefox::v148()),
     }
 }
 
@@ -315,6 +379,20 @@ fn decode_public_key(text: &str) -> Result<[u8; 32]> {
         .map_err(|_| Error::Key("публичный ключ REALITY не разбирается"))?;
     raw.try_into()
         .map_err(|_| Error::Key("публичный ключ REALITY не 32 байта"))
+}
+
+/// Разобрать открытый ключ ML-DSA-65 из `pqv`.
+///
+/// Длина не проверяется здесь: она известна библиотеке подписи, и
+/// проверять её в двух местах значит однажды разойтись. Неверная длина
+/// станет отказом при первой же проверке подписи.
+fn decode_base64_url(text: &str) -> Option<Vec<u8>> {
+    use base64::Engine as _;
+
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .or_else(|_| base64::engine::general_purpose::STANDARD_NO_PAD.decode(text))
+        .ok()
 }
 
 /// Разобрать `shortId` из шестнадцатеричной записи.
@@ -360,6 +438,75 @@ mod tests {
         assert_eq!(plan.short_id, vec![0xde, 0xad]);
         assert_eq!(plan.reality_public.len(), 32);
         assert_eq!(plan.alpn, vec!["h2".to_owned(), "http/1.1".to_owned()]);
+    }
+
+    /// Отпечаток из ключа обязан доходить до провода.
+    ///
+    /// Проверка идёт по собранному приветствию, а не по полю структуры:
+    /// поле можно выставить верно и не использовать, и разбор ключа
+    /// останется зелёным при том, что в сеть уходит чужой браузер.
+    /// Именно так этот код и был устроен до правки — `fp` разбирался и
+    /// молча игнорировался.
+    fn hello_for(uri: &str) -> atlas_tls::ClientHello {
+        let key = ProxyKey::parse(uri).unwrap();
+        let plan = Plan::from_key(&key).unwrap();
+        let params = atlas_tls::HelloParams::new(plan.server_name.clone());
+        // Через `effective_profile`, а не через поле: проверять надо то,
+        // что берёт рукопожатие, а не то, что положил разбор ключа.
+        plan.effective_profile(&DialOptions::default())
+            .client_hello(&params)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_key_decides_which_browser_goes_on_the_wire() {
+        use atlas_tls::ext;
+
+        // `record_size_limit` шлёт Firefox и не шлёт Chrome — по нему и
+        // видно, какой профиль собрал приветствие.
+        let firefox = hello_for(&KEY.replace("&fp=chrome", "&fp=firefox"));
+        assert!(firefox
+            .extensions
+            .iter()
+            .any(|e| e.ext_type == ext::RECORD_SIZE_LIMIT));
+
+        let chrome = hello_for(KEY);
+        assert!(!chrome
+            .extensions
+            .iter()
+            .any(|e| e.ext_type == ext::RECORD_SIZE_LIMIT));
+    }
+
+    #[test]
+    fn a_key_without_fp_falls_back_to_firefox() {
+        // Ключ без `fp` — обычное дело: его выдаёт почти любая панель.
+        // Такой человек не выбирал Chrome, и ставить его в подозрительное
+        // ведро фильтра за него мы не вправе.
+        use atlas_tls::ext;
+
+        let hello = hello_for(&KEY.replace("&fp=chrome", ""));
+        assert!(hello
+            .extensions
+            .iter()
+            .any(|e| e.ext_type == ext::RECORD_SIZE_LIMIT));
+    }
+
+    #[test]
+    fn unbuilt_profiles_fall_back_to_firefox_rather_than_to_chrome() {
+        // Профилей Safari и iOS у нас нет. Подменять их профилем Chrome
+        // значило бы сохранить его недостаток — оба в том же
+        // подозрительном ведре.
+        for fp in ["safari", "ios", "edge", "random"] {
+            let uri = KEY.replace("&fp=chrome", &format!("&fp={fp}"));
+            let hello = hello_for(&uri);
+            assert!(
+                hello
+                    .extensions
+                    .iter()
+                    .any(|e| e.ext_type == atlas_tls::ext::RECORD_SIZE_LIMIT),
+                "{fp} обязан сводиться к Firefox"
+            );
+        }
     }
 
     #[test]
