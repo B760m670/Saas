@@ -22,8 +22,8 @@ pub trait Provider {
     /// Достать ссылку на оплату из ответа сервиса.
     ///
     /// Вызывается только если [`Provider::checkout`] вернул
-    /// [`Checkout::Request`](crate::http::Checkout::Request); остальным
-    /// сервисам достаточно реализации по умолчанию.
+    /// [`Checkout::Request`]; остальным сервисам достаточно реализации
+    /// по умолчанию.
     fn checkout_page(&self, _response: &[u8]) -> Result<String, Error> {
         Err(Error::Unsupported)
     }
