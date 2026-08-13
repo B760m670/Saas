@@ -9,6 +9,7 @@ members = [
     "atlas-dial",
     "atlas-ffi",
     "atlas-exit",
+    "atlas-billing",
 ]
 
 [workspace.package]

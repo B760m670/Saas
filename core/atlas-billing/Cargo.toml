@@ -1,0 +1,19 @@
+[package]
+name = "atlas-billing"
+description = "Приём оплаты: единый интерфейс поверх взаимозаменяемых платёжных сервисов"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hmac = "0.12"
+md-5 = { version = "0.10", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.10", default-features = false }
+subtle.workspace = true
+
+[lints]
+workspace = true
