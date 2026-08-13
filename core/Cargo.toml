@@ -6,7 +6,6 @@ members = [
     "atlas-tls",
     "atlas-vless",
     "atlas-reality",
-    "atlas-transport",
     "atlas-dial",
     "atlas-ffi",
     "atlas-exit",
