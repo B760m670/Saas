@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gloria VPN — быстрый доступ без ограничений</title>
+<meta name="description" content="Подписка на VPN: безлимитный трафик, до 4 устройств, 3 дня бесплатно. Подключение за минуту через Telegram.">
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --card: #f5f6f8;
+  --line: #e3e5ea;
+  --text: #14161a;
+  --muted: #5f6672;
+  --accent: #1f6feb;
+  --accent-text: #ffffff;
+  --best: #0f8a4a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1014;
+    --card: #171a20;
+    --line: #262b34;
+    --text: #eceef2;
+    --muted: #9aa2b1;
+    --accent: #3b82f6;
+    --accent-text: #ffffff;
+    --best: #34d399;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 760px; margin: 0 auto; padding: 0 20px; }
+header { padding: 56px 0 40px; text-align: center; }
+.logo { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.2; margin: 28px 0 12px; letter-spacing: -0.6px; }
+.lead { color: var(--muted); font-size: 18px; margin: 0 auto; max-width: 520px; }
+.cta {
+  display: inline-block; margin-top: 28px; padding: 14px 32px;
+  background: var(--accent); color: var(--accent-text);
+  border-radius: 10px; text-decoration: none; font-weight: 600;
+}
+.cta:hover { opacity: .9; }
+.note { color: var(--muted); font-size: 14px; margin-top: 12px; }
+section { padding: 40px 0; border-top: 1px solid var(--line); }
+h2 { font-size: 20px; margin: 0 0 20px; letter-spacing: -0.2px; }
+.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.plan {
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 18px 20px;
+}
+.plan .term { color: var(--muted); font-size: 14px; }
+.plan .price { font-size: 26px; font-weight: 700; margin: 6px 0 2px; }
+.plan .per { color: var(--muted); font-size: 14px; }
+.plan .save { color: var(--best); font-size: 14px; font-weight: 600; margin-top: 8px; }
+ul.features { list-style: none; padding: 0; margin: 0; }
+ul.features li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+ul.features li:last-child { border-bottom: 0; }
+ol.steps { padding-left: 20px; margin: 0; }
+ol.steps li { margin-bottom: 12px; }
+.faq dt { font-weight: 600; margin-top: 18px; }
+.faq dd { margin: 6px 0 0; color: var(--muted); }
+footer { padding: 32px 0 56px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+footer a { color: var(--muted); }
+a { color: var(--accent); }
+.legal { font-size: 13px; line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <div class="logo">Gloria&nbsp;VPN</div>
+  <h1>Интернет без ограничений — за минуту</h1>
+  <p class="lead">
+    Безлимитный трафик, до четырёх устройств, работает на телефоне
+    и компьютере. Подключение и оплата — прямо в Telegram.
+  </p>
+  <a class="cta" href="https://t.me/GloriaVPN_Bot">Попробовать 3 дня бесплатно</a>
+  <p class="note">Без привязки карты. Пробный период включается сразу.</p>
+</header>
+
+<section>
+  <h2>Тарифы</h2>
+  <div class="grid">
+    <div class="plan">
+      <div class="term">1 месяц</div>
+      <div class="price">199 ₽</div>
+      <div class="per">199 ₽ в месяц</div>
+    </div>
+    <div class="plan">
+      <div class="term">3 месяца</div>
+      <div class="price">499 ₽</div>
+      <div class="per">166 ₽ в месяц</div>
+      <div class="save">−16 %</div>
+    </div>
+    <div class="plan">
+      <div class="term">6 месяцев</div>
+      <div class="price">790 ₽</div>
+      <div class="per">132 ₽ в месяц</div>
+      <div class="save">−34 %</div>
+    </div>
+    <div class="plan">
+      <div class="term">12 месяцев</div>
+      <div class="price">1290 ₽</div>
+      <div class="per">106 ₽ в месяц</div>
+      <div class="save">−46 %</div>
+    </div>
+  </div>
+  <p class="note">
+    Во всех тарифах одно и то же — отличается только срок.
+    Оплата картой или через СБП.
+  </p>
+</section>
+
+<section>
+  <h2>Что входит</h2>
+  <ul class="features">
+    <li><strong>Безлимитный трафик</strong> — без ограничений по объёму и скорости</li>
+    <li><strong>До 4 устройств</strong> одновременно на одну подписку</li>
+    <li><strong>Телефон и компьютер</strong> — iPhone, Android, Windows, macOS</li>
+    <li><strong>Одна ссылка навсегда</strong> — настраивается один раз, дальше обновляется сама</li>
+    <li><strong>Поддержка в Telegram</strong> — отвечаем на вопросы по подключению</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Как начать</h2>
+  <ol class="steps">
+    <li>Откройте <a href="https://t.me/GloriaVPN_Bot">@GloriaVPN_Bot</a> в Telegram и нажмите «Старт».</li>
+    <li>Получите 3 дня бесплатно — сразу, без карты и без оплаты.</li>
+    <li>Установите приложение по инструкции из бота и вставьте ссылку.</li>
+    <li>Понравилось — выберите тариф прямо в боте.</li>
+  </ol>
+</section>
+
+<section class="faq">
+  <h2>Вопросы</h2>
+  <dl>
+    <dt>Нужно ли платить, чтобы попробовать?</dt>
+    <dd>Нет. Три дня даются сразу при запуске бота, карту привязывать не надо.</dd>
+
+    <dt>Что значит «4 устройства»?</dt>
+    <dd>Одной подпиской можно пользоваться одновременно на четырёх устройствах —
+        например, на двух телефонах, планшете и ноутбуке.</dd>
+
+    <dt>Как оплатить?</dt>
+    <dd>Картой любого российского банка или через СБП — счёт выставляется
+        прямо в приложении вашего банка.</dd>
+
+    <dt>Что будет видно в выписке банка?</dt>
+    <dd>Платёж проходит через платёжного партнёра, поэтому в приложении банка
+        отображается наименование партнёра, а не «Gloria VPN». Точное
+        наименование бот показывает на экране оплаты до подтверждения.</dd>
+
+    <dt>Что происходит, когда подписка кончается?</dt>
+    <dd>Доступ прекращается, но ссылка сохраняется. Продлите в любой момент —
+        заново настраивать ничего не нужно.</dd>
+
+    <dt>Продление сбрасывает оставшиеся дни?</dt>
+    <dd>Нет. Оплаченный срок прибавляется к тому, что уже есть.</dd>
+  </dl>
+</section>
+
+<section class="legal">
+  <h2>Условия</h2>
+  <p>
+    Услуга — предоставление доступа к сервису передачи данных на выбранный
+    срок. Оплата разовая, автоматическое списание не подключается: подписка
+    не продлевается сама, продление происходит только по вашему действию.
+  </p>
+  <p>
+    <strong>Возврат.</strong> Если сервис не заработал и мы не смогли помочь,
+    деньги возвращаются в полном объёме в течение 7 дней с момента оплаты.
+    Напишите в поддержку — вопрос решается без споров.
+    Именно для этого и даются 3 бесплатных дня: проверьте, что всё работает,
+    до того как платить.
+  </p>
+  <p>
+    <strong>Ограничения.</strong> Сервис предназначен для личного использования.
+    Перепродажа доступа, рассылка спама и любые действия, нарушающие закон,
+    запрещены и ведут к прекращению обслуживания без возврата средств.
+  </p>
+  <p>
+    <strong>Данные.</strong> Мы храним только то, что нужно для работы подписки:
+    идентификатор Telegram, срок действия и историю оплат. История посещённых
+    сайтов не собирается и не хранится.
+  </p>
+</section>
+
+<footer>
+  <p>
+    Поддержка: <a href="https://t.me/GloriaVPN_Bot">@GloriaVPN_Bot</a>
+  </p>
+  <p>Gloria VPN — сервис доступа к сети. Работаем с 2026 года.</p>
+</footer>
+
+</div>
+
+</body>
+</html>
