@@ -2,208 +2,160 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gloria VPN — быстрый доступ без ограничений</title>
-<meta name="description" content="Подписка на VPN: безлимитный трафик, до 4 устройств, 3 дня бесплатно. Подключение за минуту через Telegram.">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gloria</title>
+<meta name="robots" content="noindex, nofollow">
+<!-- defer обязателен. Скрипт лежит на telegram.org, а он из России достаётся
+     не всегда; блокирующий тег в <head> подвесил бы отрисовку до таймаута —
+     ровно так чёрный экран показывала панель из-за скрипта на unpkg. -->
+<script defer src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
+/* Цвета берутся из темы клиента, если страница открыта внутри него.
+   Значения после запятой — запасные, для обычного браузера. */
 :root {
   color-scheme: light dark;
-  --bg: #ffffff;
-  --card: #f5f6f8;
-  --line: #e3e5ea;
-  --text: #14161a;
-  --muted: #5f6672;
-  --accent: #1f6feb;
-  --accent-text: #ffffff;
-  --best: #0f8a4a;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0e1014;
-    --card: #171a20;
-    --line: #262b34;
-    --text: #eceef2;
-    --muted: #9aa2b1;
-    --accent: #3b82f6;
-    --accent-text: #ffffff;
-    --best: #34d399;
-  }
+  --bg:     var(--tg-theme-bg-color, #0e1014);
+  --card:   var(--tg-theme-secondary-bg-color, #171a20);
+  --text:   var(--tg-theme-text-color, #eceef2);
+  --muted:  var(--tg-theme-hint-color, #8b93a1);
+  --accent: var(--tg-theme-button-color, #3b82f6);
+  --on-accent: var(--tg-theme-button-text-color, #ffffff);
+  --line: color-mix(in srgb, var(--text) 12%, transparent);
+  --best: #34d399;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
 }
-.wrap { max-width: 760px; margin: 0 auto; padding: 0 20px; }
-header { padding: 56px 0 40px; text-align: center; }
-.logo { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
-h1 { font-size: clamp(28px, 6vw, 40px); line-height: 1.2; margin: 28px 0 12px; letter-spacing: -0.6px; }
-.lead { color: var(--muted); font-size: 18px; margin: 0 auto; max-width: 520px; }
+.wrap { max-width: 560px; margin: 0 auto; padding: 0 18px 40px; }
+header { padding: 36px 0 28px; text-align: center; }
+.logo { font-size: 15px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+h1 { font-size: clamp(26px, 7vw, 34px); line-height: 1.15; margin: 16px 0 10px; letter-spacing: -0.5px; }
+.lead { color: var(--muted); font-size: 16px; margin: 0; }
 .cta {
-  display: inline-block; margin-top: 28px; padding: 14px 32px;
-  background: var(--accent); color: var(--accent-text);
-  border-radius: 10px; text-decoration: none; font-weight: 600;
+  display: block; width: 100%; margin-top: 24px; padding: 15px 24px;
+  background: var(--accent); color: var(--on-accent);
+  border: 0; border-radius: 12px; font: inherit; font-weight: 600; font-size: 17px;
+  cursor: pointer; text-align: center; text-decoration: none;
 }
-.cta:hover { opacity: .9; }
-.note { color: var(--muted); font-size: 14px; margin-top: 12px; }
-section { padding: 40px 0; border-top: 1px solid var(--line); }
-h2 { font-size: 20px; margin: 0 0 20px; letter-spacing: -0.2px; }
-.grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.cta:active { opacity: .85; }
+.under { color: var(--muted); font-size: 13px; margin-top: 10px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 34px 0 12px; font-weight: 600; }
 .plan {
+  display: flex; align-items: baseline; gap: 12px;
+  width: 100%; text-align: left;
   background: var(--card); border: 1px solid var(--line);
-  border-radius: 12px; padding: 18px 20px;
+  border-radius: 12px; padding: 14px 16px; margin-bottom: 8px;
+  color: inherit; font: inherit; cursor: pointer;
 }
-.plan .term { color: var(--muted); font-size: 14px; }
-.plan .price { font-size: 26px; font-weight: 700; margin: 6px 0 2px; }
-.plan .per { color: var(--muted); font-size: 14px; }
-.plan .save { color: var(--best); font-size: 14px; font-weight: 600; margin-top: 8px; }
-ul.features { list-style: none; padding: 0; margin: 0; }
-ul.features li { padding: 10px 0; border-bottom: 1px solid var(--line); }
-ul.features li:last-child { border-bottom: 0; }
-ol.steps { padding-left: 20px; margin: 0; }
-ol.steps li { margin-bottom: 12px; }
-.faq dt { font-weight: 600; margin-top: 18px; }
-.faq dd { margin: 6px 0 0; color: var(--muted); }
-footer { padding: 32px 0 56px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
-footer a { color: var(--muted); }
-a { color: var(--accent); }
-.legal { font-size: 13px; line-height: 1.7; }
+.plan:active { opacity: .85; }
+.plan .term { flex: 1; font-weight: 500; }
+.plan .price { font-size: 19px; font-weight: 700; white-space: nowrap; }
+.plan .per { display: block; color: var(--muted); font-size: 12px; font-weight: 400; text-align: right; }
+.plan .save { color: var(--best); font-size: 12px; font-weight: 600; }
+ul { list-style: none; padding: 0; margin: 0; }
+ul li { padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+ul li:last-child { border-bottom: 0; }
+footer { margin-top: 34px; color: var(--muted); font-size: 13px; text-align: center; }
 </style>
 </head>
 <body>
-
 <div class="wrap">
 
 <header>
-  <div class="logo">Gloria&nbsp;VPN</div>
-  <h1>Интернет без ограничений — за минуту</h1>
-  <p class="lead">
-    Безлимитный трафик, до четырёх устройств, работает на телефоне
-    и компьютере. Подключение и оплата — прямо в Telegram.
-  </p>
-  <a class="cta" href="https://t.me/GloriaVPN_Bot">Попробовать 3 дня бесплатно</a>
-  <p class="note">Без привязки карты. Пробный период включается сразу.</p>
+  <div class="logo">Gloria</div>
+  <h1>Быстрый доступ<br>без ограничений</h1>
+  <p class="lead">Безлимитный трафик, до четырёх устройств, телефон и компьютер.</p>
+  <button class="cta" data-action="trial">Попробовать 3 дня бесплатно</button>
+  <p class="under">Без привязки карты</p>
 </header>
 
-<section>
-  <h2>Тарифы</h2>
-  <div class="grid">
-    <div class="plan">
-      <div class="term">1 месяц</div>
-      <div class="price">199 ₽</div>
-      <div class="per">199 ₽ в месяц</div>
-    </div>
-    <div class="plan">
-      <div class="term">3 месяца</div>
-      <div class="price">499 ₽</div>
-      <div class="per">166 ₽ в месяц</div>
-      <div class="save">−16 %</div>
-    </div>
-    <div class="plan">
-      <div class="term">6 месяцев</div>
-      <div class="price">790 ₽</div>
-      <div class="per">132 ₽ в месяц</div>
-      <div class="save">−34 %</div>
-    </div>
-    <div class="plan">
-      <div class="term">12 месяцев</div>
-      <div class="price">1290 ₽</div>
-      <div class="per">106 ₽ в месяц</div>
-      <div class="save">−46 %</div>
-    </div>
-  </div>
-  <p class="note">
-    Во всех тарифах одно и то же — отличается только срок.
-    Оплата картой или через СБП.
-  </p>
-</section>
+<h2>Тарифы</h2>
 
-<section>
-  <h2>Что входит</h2>
-  <ul class="features">
-    <li><strong>Безлимитный трафик</strong> — без ограничений по объёму и скорости</li>
-    <li><strong>До 4 устройств</strong> одновременно на одну подписку</li>
-    <li><strong>Телефон и компьютер</strong> — iPhone, Android, Windows, macOS</li>
-    <li><strong>Одна ссылка навсегда</strong> — настраивается один раз, дальше обновляется сама</li>
-    <li><strong>Поддержка в Telegram</strong> — отвечаем на вопросы по подключению</li>
-  </ul>
-</section>
+<button class="plan" data-action="buy" data-plan="1m">
+  <span class="term">1 месяц</span>
+  <span class="price">199 ₽<span class="per">199 ₽ / мес</span></span>
+</button>
 
-<section>
-  <h2>Как начать</h2>
-  <ol class="steps">
-    <li>Откройте <a href="https://t.me/GloriaVPN_Bot">@GloriaVPN_Bot</a> в Telegram и нажмите «Старт».</li>
-    <li>Получите 3 дня бесплатно — сразу, без карты и без оплаты.</li>
-    <li>Установите приложение по инструкции из бота и вставьте ссылку.</li>
-    <li>Понравилось — выберите тариф прямо в боте.</li>
-  </ol>
-</section>
+<button class="plan" data-action="buy" data-plan="3m">
+  <span class="term">3 месяца <span class="save">−16 %</span></span>
+  <span class="price">499 ₽<span class="per">166 ₽ / мес</span></span>
+</button>
 
-<section class="faq">
-  <h2>Вопросы</h2>
-  <dl>
-    <dt>Нужно ли платить, чтобы попробовать?</dt>
-    <dd>Нет. Три дня даются сразу при запуске бота, карту привязывать не надо.</dd>
+<button class="plan" data-action="buy" data-plan="6m">
+  <span class="term">6 месяцев <span class="save">−34 %</span></span>
+  <span class="price">790 ₽<span class="per">132 ₽ / мес</span></span>
+</button>
 
-    <dt>Что значит «4 устройства»?</dt>
-    <dd>Одной подпиской можно пользоваться одновременно на четырёх устройствах —
-        например, на двух телефонах, планшете и ноутбуке.</dd>
+<button class="plan" data-action="buy" data-plan="12m">
+  <span class="term">12 месяцев <span class="save">−46 %</span></span>
+  <span class="price">1290 ₽<span class="per">106 ₽ / мес</span></span>
+</button>
 
-    <dt>Как оплатить?</dt>
-    <dd>Картой любого российского банка или через СБП — счёт выставляется
-        прямо в приложении вашего банка.</dd>
+<h2>Что входит</h2>
+<ul>
+  <li>Безлимитный трафик, без ограничения скорости</li>
+  <li>До 4 устройств одновременно</li>
+  <li>iPhone, Android, Windows, macOS</li>
+  <li>Настраивается один раз, дальше обновляется само</li>
+</ul>
 
-    <dt>Что будет видно в выписке банка?</dt>
-    <dd>Платёж проходит через платёжного партнёра, поэтому в приложении банка
-        отображается наименование партнёра, а не «Gloria VPN». Точное
-        наименование бот показывает на экране оплаты до подтверждения.</dd>
+<h2>Условия</h2>
+<ul>
+  <li>Оплата разовая, автосписания нет</li>
+  <li>Возврат в течение 7 дней, если не заработало</li>
+  <li>Продление прибавляется к оставшемуся сроку</li>
+  <li>История посещённых сайтов не собирается</li>
+</ul>
 
-    <dt>Что происходит, когда подписка кончается?</dt>
-    <dd>Доступ прекращается, но ссылка сохраняется. Продлите в любой момент —
-        заново настраивать ничего не нужно.</dd>
-
-    <dt>Продление сбрасывает оставшиеся дни?</dt>
-    <dd>Нет. Оплаченный срок прибавляется к тому, что уже есть.</dd>
-  </dl>
-</section>
-
-<section class="legal">
-  <h2>Условия</h2>
-  <p>
-    Услуга — предоставление доступа к сервису передачи данных на выбранный
-    срок. Оплата разовая, автоматическое списание не подключается: подписка
-    не продлевается сама, продление происходит только по вашему действию.
-  </p>
-  <p>
-    <strong>Возврат.</strong> Если сервис не заработал и мы не смогли помочь,
-    деньги возвращаются в полном объёме в течение 7 дней с момента оплаты.
-    Напишите в поддержку — вопрос решается без споров.
-    Именно для этого и даются 3 бесплатных дня: проверьте, что всё работает,
-    до того как платить.
-  </p>
-  <p>
-    <strong>Ограничения.</strong> Сервис предназначен для личного использования.
-    Перепродажа доступа, рассылка спама и любые действия, нарушающие закон,
-    запрещены и ведут к прекращению обслуживания без возврата средств.
-  </p>
-  <p>
-    <strong>Данные.</strong> Мы храним только то, что нужно для работы подписки:
-    идентификатор Telegram, срок действия и историю оплат. История посещённых
-    сайтов не собирается и не хранится.
-  </p>
-</section>
-
-<footer>
-  <p>
-    Поддержка: <a href="https://t.me/GloriaVPN_Bot">@GloriaVPN_Bot</a>
-  </p>
-  <p>Gloria VPN — сервис доступа к сети. Работаем с 2026 года.</p>
-</footer>
+<footer>© 2026 Gloria</footer>
 
 </div>
+
+<script>
+// DOMContentLoaded, а не немедленный запуск: отложенный скрипт клиента
+// выполняется до этого события, и к нашему коду window.Telegram уже готов.
+// Если скрипт не загрузился вовсе, страница всё равно работает как обычная.
+document.addEventListener('DOMContentLoaded', function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+
+  if (tg) {
+    // Развернуть на всю высоту и сообщить клиенту, что страница готова:
+    // без этого он держит её в половину экрана и показывает заглушку.
+    tg.ready();
+    tg.expand();
+  }
+
+  document.addEventListener('click', function (event) {
+    var button = event.target.closest('[data-action]');
+    if (!button) return;
+
+    var payload = {
+      action: button.dataset.action,
+      plan: button.dataset.plan || null
+    };
+
+    if (!tg) {
+      // Страница открыта в обычном браузере — отправлять некому.
+      // Заглушка до появления покупки на сайте.
+      return;
+    }
+
+    if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('light');
+
+    // sendData доставляет выбор боту и закрывает окно. Работает только
+    // когда приложение запущено кнопкой клавиатуры; из кнопки меню
+    // клиент этот вызов игнорирует — тогда нужен обычный HTTP-запрос
+    // к нашему серверу с initData для проверки подлинности.
+    if (typeof tg.sendData === 'function') tg.sendData(JSON.stringify(payload));
+  });
+});
+</script>
 
 </body>
 </html>
