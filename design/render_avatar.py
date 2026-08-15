@@ -30,7 +30,7 @@ LIGHT_DIST = 1.16           # ядро уходит за край: видно т
 # Знак строится плоскостями на своей сетке, а не шрифтом.
 GRID = 1000
 T = 88                     # толщина плоскости
-CUT = 54                    # зазор там, где плоскости перекрываются
+CUT = 42                    # зазор там, где плоскости перекрываются
 SHEAR = 0.10                # наклон: верх уходит вправо
 
 
@@ -86,12 +86,25 @@ def place(mask, rects, value):
         draw.polygon(poly, fill=value)
 
 
+MARK = 0.78                 # общий масштаб знака относительно кадра
+
+
+def scaled(rects):
+    """Сжатие к центру сетки: знак меняет размер целиком, пропорции
+    и зазоры сохраняются сами собой."""
+    m = GRID / 2
+    return [
+        tuple(m + (v - m) * MARK for v in (x0, y0, x1, y1))
+        for x0, y0, x1, y1 in rects
+    ]
+
+
 def letter_l():
     """L: вертикаль и подошва, положенные поверх кольца."""
-    return [
+    return scaled([
         (372, 296, 372 + T, 664),
         (372, 664 - T, 664, 664),
-    ]
+    ])
 
 
 def monogram():
@@ -104,8 +117,8 @@ def monogram():
     mask = Image.new("L", (S, S), 0)
     draw = ImageDraw.Draw(mask)
 
-    r = 300 * SS
-    w = 84 * SS
+    r = int(300 * MARK) * SS
+    w = int(84 * MARK) * SS
     draw.arc(
         [C - r, C - r, C + r, C + r],
         start=20, end=360 + GAP_DIR - 4,
