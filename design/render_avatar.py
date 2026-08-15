@@ -24,8 +24,14 @@ MID = (238, 152, 46)
 DEEP = (36, 13, 5)
 BLACK = (4, 4, 6)
 
-GAP_DIR = -26               # куда смотрит разрыв кольца, градусы
+GAP_DIR = -26               # куда смотрит разрыв буквы, градусы
 LIGHT_DIST = 1.16           # ядро уходит за край: видно только затухание
+
+# Знак строится плоскостями на своей сетке, а не шрифтом.
+GRID = 1000
+T = 88                     # толщина плоскости
+CUT = 54                    # зазор там, где плоскости перекрываются
+SHEAR = 0.10                # наклон: верх уходит вправо
 
 
 def lerp(a, b, t):
@@ -68,31 +74,46 @@ def light_field():
     return field.resize((S, S), Image.BICUBIC)
 
 
+def place(mask, rects, value):
+    """Прямоугольники с сетки построения переносятся на холст с наклоном."""
+    draw = ImageDraw.Draw(mask)
+    k = S / GRID
+    for x0, y0, x1, y1 in rects:
+        poly = []
+        for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+            # Чем выше точка, тем сильнее уходит вправо.
+            poly.append(((x + SHEAR * (GRID / 2 - y)) * k, y * k))
+        draw.polygon(poly, fill=value)
+
+
+def letter_l():
+    """L: вертикаль и подошва, положенные поверх кольца."""
+    return [
+        (372, 296, 372 + T, 664),
+        (372, 664 - T, 664, 664),
+    ]
+
+
 def monogram():
-    """G — дуга с разрывом, L — вертикаль внутри. Горизонталь общая:
-    она же перекладина G, она же подошва L. Срезы прямые, без скруглений —
-    так фигура читается как архитектура, а не как надпись."""
+    """Кольцо с разрывом читается как G, поверх лежит L. В месте
+    перекрытия прорезан зазор: без него две фигуры слипаются в силуэт,
+    с ним читаются как две плоскости, одна поверх другой.
+
+    Толщина выбрана крупной намеренно — тонкая линия на аватаре
+    размером с ноготь исчезает, а разбирать её никто не станет."""
     mask = Image.new("L", (S, S), 0)
     draw = ImageDraw.Draw(mask)
 
-    r = 286 * SS
-    w = 64 * SS
-
-    bar_y = C + int(r * 0.30)
-    end_deg = math.degrees(math.asin(0.30))     # где дуга приходит к горизонтали
-
+    r = 300 * SS
+    w = 84 * SS
     draw.arc(
         [C - r, C - r, C + r, C + r],
-        start=end_deg, end=360 + GAP_DIR - 6,
+        start=20, end=360 + GAP_DIR - 4,
         fill=255, width=w,
     )
 
-    right = C + int(r * math.cos(math.radians(end_deg))) + w // 2
-    left = C - int(r * 0.36)
-
-    draw.rectangle([left - w // 2, bar_y - w // 2, right, bar_y + w // 2], fill=255)
-    draw.rectangle([left - w // 2, C - int(r * 0.58), left + w // 2, bar_y + w // 2], fill=255)
-
+    place(mask, [(a - CUT, b - CUT, c + CUT, d + CUT) for a, b, c, d in letter_l()], 0)
+    place(mask, letter_l(), 255)
     return mask
 
 
