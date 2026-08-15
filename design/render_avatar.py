@@ -1,122 +1,107 @@
-"""Аватар бота: монограмма GL по философии «Гало».
+"""Аватар бота: монограмма GL.
 
-Рисуется с четырёхкратным превышением и уменьшается по Ланцошу — PIL сам
-сглаживает дуги плохо, а на краю толстой окружности ступенька видна всем.
+Композиция строится на одном правиле: свет принадлежит фону, знак — плоский.
+Никакого свечения и градиента на самой фигуре; белое остаётся белым, и от
+этого читается уверенно даже размером с ноготь.
+
+Источник света стоит не произвольно, а точно в разрыве кольца: буква
+разомкнута ровно в ту сторону, откуда бьёт свет, будто он оттуда и вышел.
 """
 
-from PIL import Image, ImageDraw, ImageFilter
+import math
 
-SS = 4                      # коэффициент превышения
-SIZE = 1024                 # итоговая сторона
-S = SIZE * SS               # сторона холста при отрисовке
-C = S // 2                  # центр
+from PIL import Image, ImageDraw
 
-# Две температуры и ничего больше: холодная основа, тёплый знак.
-INK_EDGE = (8, 10, 22)
-INK_CORE = (23, 27, 52)
-GOLD = (244, 199, 107)
-ROSE = (232, 160, 158)
+SS = 4                      # превышение: PIL плохо сглаживает дуги
+SIZE = 1024
+S = SIZE * SS
+C = S // 2
+
+# Три остановки от ядра к темноте. Тёплая гамма выбрана как отличие от
+# бирюзы и синевы, которыми занят весь ряд соседей.
+CORE = (255, 236, 190)
+MID = (238, 152, 46)
+DEEP = (36, 13, 5)
+BLACK = (4, 4, 6)
+
+GAP_DIR = -26               # куда смотрит разрыв кольца, градусы
+LIGHT_DIST = 1.16           # ядро уходит за край: видно только затухание
 
 
 def lerp(a, b, t):
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
-def ground(img):
-    """Основа с подъёмом яркости к центру — свет пробивается снизу."""
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([0, 0, S, S], fill=INK_EDGE)
-    steps = 220
-    for i in range(steps, 0, -1):
-        t = i / steps
-        r = int(S * 0.78 * t)
-        # Квадратичное затухание: линейное даёт видимый ореол-кольцо.
-        colour = lerp(INK_CORE, INK_EDGE, 1 - (1 - t) ** 2)
-        draw.ellipse([C - r, C - r, C + r, C + r], fill=colour)
+def ramp(t):
+    """Ядро → тёплая середина → глубокая тень → чёрный."""
+    if t <= 0:
+        return BLACK
+    if t >= 1:
+        return CORE
+    if t > 0.72:
+        return lerp(MID, CORE, (t - 0.72) / 0.28)
+    if t > 0.30:
+        return lerp(DEEP, MID, (t - 0.30) / 0.42)
+    return lerp(BLACK, DEEP, t / 0.30)
 
 
-def rings(img):
-    """Тонкие кольца с возрастающим шагом — затухание, а не сетка."""
-    layer = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
-    radius = 342 * SS
-    gap = 26 * SS
-    alpha = 30
-    while radius < S * 0.47 and alpha > 2:
-        draw.ellipse(
-            [C - radius, C - radius, C + radius, C + radius],
-            outline=GOLD + (alpha,),
-            width=max(1, SS // 2),
-        )
-        radius += gap
-        gap = int(gap * 1.34)     # шаг растёт — глаз читает как удаление
-        alpha = int(alpha * 0.62)
-    img.alpha_composite(layer)
+def light_field():
+    """Радиальный источник. Считается мелко и растягивается — так гладко
+    и без полос, а построчный проход по 16 миллионам точек не нужен."""
+    n = 360
+    field = Image.new("RGB", (n, n))
+    px = field.load()
 
+    angle = math.radians(GAP_DIR)
+    lx = 0.5 + math.cos(angle) * LIGHT_DIST / 2
+    ly = 0.5 + math.sin(angle) * LIGHT_DIST / 2
+    reach = 1.12
 
-def warm(width, height):
-    """Вертикальный градиент золото → роза для заливки знака."""
-    grad = Image.new("RGB", (1, height))
-    px = grad.load()
-    for y in range(height):
-        px[0, y] = lerp(GOLD, ROSE, (y / (height - 1)) ** 1.15)
-    return grad.resize((width, height), Image.BICUBIC)
+    for y in range(n):
+        fy = y / (n - 1)
+        for x in range(n):
+            fx = x / (n - 1)
+            d = math.hypot(fx - lx, fy - ly) / reach
+            # Квадратичное затухание: линейное оставляет видимую границу.
+            px[x, y] = ramp(max(0.0, 1.0 - d) ** 2.6)
+
+    return field.resize((S, S), Image.BICUBIC)
 
 
 def monogram():
-    """Маска знака: одна горизонталь служит и перекладиной G, и подошвой L.
-
-    Совмещение намеренное. Пока это были две разные линии на почти одной
-    высоте, глаз читал промах, а не замысел; сведённые в одну — читаются
-    как связка двух букв.
-    """
-    import math
-
+    """G — дуга с разрывом, L — вертикаль внутри. Горизонталь общая:
+    она же перекладина G, она же подошва L. Срезы прямые, без скруглений —
+    так фигура читается как архитектура, а не как надпись."""
     mask = Image.new("L", (S, S), 0)
     draw = ImageDraw.Draw(mask)
 
-    r = 284 * SS              # радиус средней линии кольца
-    w = 62 * SS               # толщина
-    box = [C - r, C - r, C + r, C + r]
+    r = 286 * SS
+    w = 64 * SS
 
-    bar_y = C + int(r * 0.30)                 # общая горизонталь
-    end_deg = math.degrees(math.asin(0.30))   # где дуга приходит на эту высоту
+    bar_y = C + int(r * 0.30)
+    end_deg = math.degrees(math.asin(0.30))     # где дуга приходит к горизонтали
 
-    # G: дуга с разрывом справа. Нижний конец обрывается ровно там,
-    # где начинается горизонталь, — стык, а не наложение.
-    draw.arc(box, start=end_deg, end=330, fill=255, width=w)
-
-    right = C + int(r * math.cos(math.radians(end_deg)))
-    left = C - int(r * 0.35)
-
-    draw.rounded_rectangle(
-        [left - w // 2, bar_y - w // 2, right, bar_y + w // 2],
-        radius=w // 2, fill=255,
+    draw.arc(
+        [C - r, C - r, C + r, C + r],
+        start=end_deg, end=360 + GAP_DIR - 6,
+        fill=255, width=w,
     )
 
-    # L: вертикаль опускается в ту же горизонталь.
-    draw.rounded_rectangle(
-        [left - w // 2, C - int(r * 0.58), left + w // 2, bar_y + w // 2],
-        radius=w // 2, fill=255,
-    )
+    right = C + int(r * math.cos(math.radians(end_deg))) + w // 2
+    left = C - int(r * 0.36)
+
+    draw.rectangle([left - w // 2, bar_y - w // 2, right, bar_y + w // 2], fill=255)
+    draw.rectangle([left - w // 2, C - int(r * 0.58), left + w // 2, bar_y + w // 2], fill=255)
+
     return mask
 
 
 def build():
-    img = Image.new("RGBA", (S, S), INK_EDGE + (255,))
-    ground(img)
-    rings(img)
+    img = light_field().convert("RGBA")
 
-    mask = monogram()
-    # Мягкое свечение под знаком: не эффект, а признак того, что источник тёплый.
-    glow = mask.filter(ImageFilter.GaussianBlur(26 * SS))
-    halo = Image.new("RGBA", (S, S), GOLD + (0,))
-    halo.putalpha(glow.point(lambda v: int(v * 0.30)))
-    img.alpha_composite(halo)
-
-    fill = warm(S, S).convert("RGBA")
-    fill.putalpha(mask)
-    img.alpha_composite(fill)
+    white = Image.new("RGBA", (S, S), (255, 255, 255, 0))
+    white.putalpha(monogram())
+    img.alpha_composite(white)
 
     return img.convert("RGB").resize((SIZE, SIZE), Image.LANCZOS)
 
