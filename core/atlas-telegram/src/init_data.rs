@@ -200,8 +200,8 @@ pub fn verify(raw: &str, bot_token: &str, now: i64, max_age: i64) -> Result<Veri
         return Err(Error::Expired { age, max_age });
     }
 
-    let user: TelegramUser =
-        serde_json::from_str(find("user").ok_or(Error::MissingUser)?).map_err(|_| Error::MalformedUser)?;
+    let user: TelegramUser = serde_json::from_str(find("user").ok_or(Error::MissingUser)?)
+        .map_err(|_| Error::MalformedUser)?;
 
     Ok(Verified {
         user_id: user.id,
@@ -324,7 +324,12 @@ mod tests {
     #[test]
     fn another_bots_token_does_not_open_our_data() {
         assert_eq!(
-            verify(&ordinary(), "999999:AnotherBotEntirely", NOW, DEFAULT_MAX_AGE),
+            verify(
+                &ordinary(),
+                "999999:AnotherBotEntirely",
+                NOW,
+                DEFAULT_MAX_AGE
+            ),
             Err(Error::BadSignature)
         );
     }
@@ -363,7 +368,12 @@ mod tests {
     #[test]
     fn a_string_without_a_hash_is_rejected() {
         assert_eq!(
-            verify("user=%7B%22id%22%3A42%7D&auth_date=1", TOKEN, NOW, DEFAULT_MAX_AGE),
+            verify(
+                "user=%7B%22id%22%3A42%7D&auth_date=1",
+                TOKEN,
+                NOW,
+                DEFAULT_MAX_AGE
+            ),
             Err(Error::MissingHash)
         );
     }
@@ -386,7 +396,10 @@ mod tests {
     #[test]
     fn an_uppercase_hash_still_passes() {
         let string = ordinary();
-        assert!(string.contains("hash="), "тестовая строка собрана без подписи");
+        assert!(
+            string.contains("hash="),
+            "тестовая строка собрана без подписи"
+        );
         let Some((body, hash)) = string.rsplit_once("hash=") else {
             return;
         };
@@ -461,7 +474,10 @@ mod tests {
 
     #[test]
     fn an_empty_string_is_rejected() {
-        assert_eq!(verify("", TOKEN, NOW, DEFAULT_MAX_AGE), Err(Error::MissingHash));
+        assert_eq!(
+            verify("", TOKEN, NOW, DEFAULT_MAX_AGE),
+            Err(Error::MissingHash)
+        );
     }
 
     #[test]
