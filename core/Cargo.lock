@@ -149,6 +149,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-telegram"
+version = "0.1.0"
+dependencies = [
+ "hmac 0.12.1",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror",
+]
+
+[[package]]
 name = "atlas-tls"
 version = "0.1.0"
 dependencies = [

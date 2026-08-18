@@ -10,6 +10,7 @@ members = [
     "atlas-ffi",
     "atlas-exit",
     "atlas-billing",
+    "atlas-telegram",
 ]
 
 [workspace.package]
