@@ -1,0 +1,106 @@
+# Проверка бота.
+#
+# Отдельно от `core.yml` намеренно: у бота своё рабочее пространство, и
+# кросс-сборок под iOS и Android ему не нужно — он работает только на
+# сервере. Зато он зависит от крейтов из `core/` по пути, поэтому правка
+# там обязана проверяться и здесь.
+
+name: bot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bot/**"
+      - "db/**"
+      - "core/atlas-billing/**"
+      - "core/atlas-telegram/**"
+      - ".github/workflows/bot.yml"
+  pull_request:
+    paths:
+      - "bot/**"
+      - "db/**"
+      - "core/atlas-billing/**"
+      - "core/atlas-telegram/**"
+      - ".github/workflows/bot.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: bot-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+defaults:
+  run:
+    working-directory: bot
+
+jobs:
+  check:
+    name: тесты, clippy, формат
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Установить toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bot
+
+      - name: Формат
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Тесты
+        run: cargo test --all-features
+
+      - name: Документация без предупреждений
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  schema:
+    name: схема базы
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v5
+
+      # Миграция применяется на чистой базе, затем враждебные запросы
+      # проверяют, что сторожа срабатывают. Ограничение, которое никто не
+      # пробовал нарушить, — это комментарий, а не ограничение.
+      - name: Применить схему
+        run: psql -v ON_ERROR_STOP=1 -f db/migrations/0001_init.sql
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres
+
+      - name: Проверить сторожа
+        run: psql -v ON_ERROR_STOP=1 -f db/tests/invariants.sql
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres

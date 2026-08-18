@@ -1,0 +1,38 @@
+# Рабочее пространство бота.
+#
+# Отдельное от `core/` намеренно. В `core/` живёт клиентское ядро, и CI
+# собирает его под iOS, Android, Windows и macOS — там нет места ни
+# асинхронной среде выполнения, ни драйверу базы данных. Бот же работает
+# только на сервере, под Linux, и тащит и то и другое.
+#
+# Общее между ними — чистые крейты без зависимостей от среды: денежная
+# арифметика и проверка подписи Telegram. Они подключаются по пути.
+
+[workspace]
+resolver = "2"
+members = ["atlas-bot"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/B760m670/Saas"
+
+[workspace.dependencies]
+atlas-billing = { path = "../core/atlas-billing" }
+atlas-telegram = { path = "../core/atlas-telegram" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+panic = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
