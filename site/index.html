@@ -10,279 +10,585 @@
      ровно так чёрный экран показывала панель из-за скрипта на unpkg. -->
 <script defer src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-/* Цвета берутся из темы клиента. Значения после запятой — запасные,
-   для обычного браузера, где переменных темы нет. */
+/* ---------------------------------------------------------------------------
+   Палитра взята из аватарки (design/render_avatar.py): тёплое ядро, оранжевая
+   середина, глубокая коричневая тень, почти чёрный фон.
+
+   Тема клиента здесь намеренно НЕ используется. Обычно мини-приложение
+   подстраивается под цвета Telegram, но тогда у него нет собственного лица —
+   а лицо здесь и есть отличие от соседей по ряду, у которых всё бирюзовое.
+   Кабинет выглядит одинаково у всех и совпадает со значком бота.
+--------------------------------------------------------------------------- */
 :root {
-  color-scheme: light dark;
-  --bg:        var(--tg-theme-bg-color, #0e1014);
-  --card:      var(--tg-theme-secondary-bg-color, #171a20);
-  --text:      var(--tg-theme-text-color, #eceef2);
-  --muted:     var(--tg-theme-hint-color, #8b93a1);
-  --accent:    var(--tg-theme-button-color, #3b82f6);
-  --on-accent: var(--tg-theme-button-text-color, #ffffff);
-  --link:      var(--tg-theme-link-color, #6ab3f3);
-  --line: color-mix(in srgb, var(--text) 12%, transparent);
-  --ok:   #34d399;
-  --warn: #fbbf24;
-  --bad:  #f87171;
-  --nav-h: 64px;
+  color-scheme: dark;
+
+  --core:  #ffecbe;   /* ядро света */
+  --mid:   #ee982e;   /* тёплая середина, основной акцент */
+  --deep:  #240d05;   /* глубокая тень */
+  --black: #040406;
+
+  --bg:      #060507;
+  --card:    rgba(255, 236, 190, 0.045);
+  --card-2:  rgba(255, 236, 190, 0.075);
+  --line:    rgba(255, 236, 190, 0.10);
+  --line-2:  rgba(255, 236, 190, 0.18);
+
+  --text:  #f3ece1;
+  --muted: #9c9083;
+
+  --ok:  #4fbf8b;
+  --bad: #e5544b;
+
+  --tabbar-h: 62px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
+
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; }
+
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
   font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
 }
-.screen { display: none; padding: 20px 18px calc(var(--nav-h) + env(safe-area-inset-bottom) + 24px); max-width: 560px; margin: 0 auto; }
-.screen.on { display: block; }
 
-h1 { font-size: 22px; margin: 0 0 18px; letter-spacing: -0.4px; }
-h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 26px 0 10px; font-weight: 600; }
-p  { margin: 0 0 12px; }
+/* Поле света. Ядро вынесено за край кадра — видно только затухание, как на
+   значке. Оно же задаёт направление: свет приходит сверху справа. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -30% -30% auto -30%;
+  height: 90vh;
+  background:
+    radial-gradient(60% 55% at 78% 8%, rgba(238, 152, 46, 0.30), transparent 72%),
+    radial-gradient(38% 34% at 86% 2%, rgba(255, 236, 190, 0.20), transparent 68%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ------------------------------- экраны ---------------------------------- */
+
+main { position: relative; z-index: 1; }
+
+.screen {
+  display: none;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 22px 18px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px);
+}
+.screen.on { display: block; animation: rise 0.34s var(--ease) both; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen.on { animation: none; }
+  * { transition-duration: 0.01ms !important; }
+}
+
+h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.5px; font-weight: 700; }
+.sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
+h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1.4px;
+  color: var(--muted); margin: 28px 0 10px; font-weight: 700;
+}
+p { margin: 0 0 12px; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 
-/* Карточка состояния подписки */
-.status { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; text-align: center; }
-.status .label { color: var(--muted); font-size: 13px; }
-.status .days { font-size: 40px; font-weight: 700; line-height: 1.1; margin: 6px 0 2px; letter-spacing: -1px; }
-.status .until { color: var(--muted); font-size: 14px; }
-.badge { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; padding: 5px 12px; border-radius: 20px; font-size: 13px; font-weight: 600; }
-.badge.ok   { color: var(--ok);   background: color-mix(in srgb, var(--ok) 15%, transparent); }
-.badge.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 15%, transparent); }
-.badge.bad  { color: var(--bad);  background: color-mix(in srgb, var(--bad) 15%, transparent); }
-.chips { display: flex; gap: 8px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
-.chip { background: var(--bg); border: 1px solid var(--line); border-radius: 20px; padding: 5px 12px; font-size: 13px; color: var(--muted); }
+/* ------------------------------ карточки --------------------------------- */
 
-button, .btn {
-  display: block; width: 100%; padding: 15px 20px; margin-top: 10px;
-  border: 0; border-radius: 12px; font: inherit; font-size: 16px; font-weight: 600;
-  cursor: pointer; text-align: center; text-decoration: none;
-  background: var(--accent); color: var(--on-accent);
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 18px;
 }
-button:active, .btn:active { opacity: .85; }
-button.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
-button.quiet { background: var(--card); color: var(--text); }
+.card + .card { margin-top: 10px; }
 
-.duo { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
-.tile { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; text-align: left; cursor: pointer; }
-.tile .t { font-weight: 600; font-size: 15px; }
-.tile .s { color: var(--muted); font-size: 12px; margin-top: 4px; }
+/* Карточка состояния. Кольцо с разрывом — тот же знак, что на значке:
+   разомкнуто в сторону света. */
+.status { position: relative; overflow: hidden; padding: 26px 18px 22px; text-align: center; }
+.status .ring {
+  position: absolute; top: -54px; right: -46px;
+  width: 190px; height: 190px; opacity: 0.5; pointer-events: none;
+}
+.status .days {
+  font-size: 46px; font-weight: 700; line-height: 1; letter-spacing: -1.5px;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(150deg, var(--core), var(--mid));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.status .until { color: var(--muted); font-size: 14px; margin-top: 6px; }
 
-/* Тарифы */
-.plan { display: flex; align-items: center; gap: 12px; text-align: left; background: var(--card); border: 1px solid var(--line); margin-bottom: 8px; padding: 15px 16px; }
-.plan .term { flex: 1; font-weight: 500; }
-.plan .save { color: var(--ok); font-size: 12px; font-weight: 600; margin-left: 6px; }
-.plan .price { font-size: 19px; font-weight: 700; white-space: nowrap; text-align: right; }
-.plan .per { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 20px;
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.2px;
+}
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge.ok   { color: var(--ok);   background: rgba(79, 191, 139, 0.13); }
+.badge.warn { color: var(--mid);  background: rgba(238, 152, 46, 0.14); }
+.badge.bad  { color: var(--bad);  background: rgba(229, 84, 75, 0.13); }
 
-/* Списки и шаги */
-ul.plain { list-style: none; padding: 0; margin: 0; }
-ul.plain li { padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
-ul.plain li:last-child { border-bottom: 0; }
-ol.steps { padding-left: 22px; margin: 0; }
-ol.steps li { margin-bottom: 14px; }
+.chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.chip {
+  border: 1px solid var(--line); border-radius: 20px;
+  padding: 5px 12px; font-size: 12.5px; color: var(--muted);
+}
 
-.copy { display: flex; gap: 8px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin-top: 8px; }
-.copy code { flex: 1; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
-.copy button { width: auto; margin: 0; padding: 8px 14px; font-size: 14px; border-radius: 8px; }
+/* ------------------------------- кнопки ---------------------------------- */
 
-/* Нижняя навигация */
-nav {
+button { font: inherit; color: inherit; }
+
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 15px 18px; margin-top: 10px;
+  border: 1px solid var(--line-2); border-radius: 14px;
+  background: var(--card-2); color: var(--text);
+  font-size: 15.5px; font-weight: 600; cursor: pointer;
+  transition: transform 0.12s var(--ease), background 0.18s;
+}
+.btn:active { transform: scale(0.985); }
+
+.btn.primary {
+  border-color: transparent;
+  background: linear-gradient(140deg, var(--core), var(--mid));
+  color: #2a1403;
+  font-weight: 700;
+}
+.btn.ghost { background: transparent; }
+
+/* Строка списка: иконка, текст, стрелка */
+.row {
+  display: flex; align-items: center; gap: 14px;
+  width: 100%; padding: 15px 16px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); text-align: left; cursor: pointer;
+  transition: background 0.18s;
+}
+.row + .row { margin-top: 8px; }
+.row:active { background: var(--card-2); }
+.row .ico { flex: none; width: 22px; height: 22px; color: var(--mid); }
+.row .body { flex: 1; min-width: 0; }
+.row .title { display: block; font-size: 15px; font-weight: 600; }
+.row .hint { display: block; font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.row .chev { flex: none; color: var(--muted); }
+
+/* Переключатель */
+.switch { flex: none; width: 46px; height: 28px; border-radius: 20px; background: var(--card-2);
+          border: 1px solid var(--line-2); position: relative; transition: background 0.22s; }
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px;
+  border-radius: 50%; background: var(--muted); transition: transform 0.24s var(--ease), background 0.24s;
+}
+.switch.on { background: rgba(238, 152, 46, 0.25); border-color: transparent; }
+.switch.on::after { transform: translateX(18px); background: linear-gradient(140deg, var(--core), var(--mid)); }
+
+/* Поле со значением, которое копируют */
+.copy {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px dashed var(--line-2); border-radius: 14px;
+  padding: 13px 14px; background: rgba(0, 0, 0, 0.25); cursor: pointer;
+}
+.copy code {
+  flex: 1; min-width: 0; font-size: 13px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.copy .ico { flex: none; color: var(--mid); }
+
+/* Числа реферальной статистики */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat { text-align: center; padding: 16px 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.stat .n { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+.stat .k { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+/* Вопрос-ответ */
+.qa { border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+.qa + .qa { margin-top: 8px; }
+.qa summary {
+  padding: 15px 16px; font-size: 15px; font-weight: 600; cursor: pointer; list-style: none;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.qa summary::-webkit-details-marker { display: none; }
+.qa summary::after {
+  content: ""; flex: none; width: 8px; height: 8px; margin-right: 3px;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg); transition: transform 0.24s var(--ease);
+}
+.qa[open] summary::after { transform: rotate(-135deg); }
+.qa .answer { padding: 0 16px 15px; color: var(--muted); font-size: 14px; }
+
+/* Предупреждение о заглушке */
+.demo {
+  margin-bottom: 16px; padding: 11px 14px; border-radius: 12px;
+  background: rgba(238, 152, 46, 0.12); border: 1px solid rgba(238, 152, 46, 0.3);
+  color: var(--mid); font-size: 13px; font-weight: 600;
+}
+
+/* ------------------------------ таб-бар ---------------------------------- */
+
+.tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
-  display: flex; background: var(--card); border-top: 1px solid var(--line);
-  padding-bottom: env(safe-area-inset-bottom);
+  padding: 6px 10px calc(6px + env(safe-area-inset-bottom));
+  background: rgba(8, 6, 10, 0.78);
+  backdrop-filter: saturate(180%) blur(22px);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+  border-top: 1px solid var(--line);
 }
-nav button {
-  flex: 1; margin: 0; padding: 10px 4px; border-radius: 0;
-  background: transparent; color: var(--muted);
-  font-size: 11px; font-weight: 500; height: var(--nav-h);
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+.tabs { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); max-width: 560px; margin: 0 auto; }
+
+/* Таблетка. Она одна на весь бар и переезжает под нажатую кнопку —
+   ширина ровно в четверть, сдвиг кратен ей же. */
+.pill {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 25%;
+  padding: 0 5px; pointer-events: none;
+  transform: translateX(calc(var(--tab, 0) * 100%));
+  transition: transform 0.42s var(--ease);
 }
-nav button.on { color: var(--accent); }
-nav svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.pill i {
+  display: block; height: 100%; border-radius: 14px;
+  background: rgba(238, 152, 46, 0.16);
+  border: 1px solid rgba(238, 152, 46, 0.22);
+}
+
+.tab {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 8px 0 7px; border: 0; background: none; cursor: pointer;
+  color: var(--muted); transition: color 0.28s var(--ease);
+}
+.tab svg { width: 23px; height: 23px; }
+.tab span { font-size: 10.5px; font-weight: 600; letter-spacing: 0.1px; }
+.tab[aria-selected="true"] { color: var(--core); }
+.tab:active { transform: scale(0.94); }
+
+/* ----------------------------- всплывашка -------------------------------- */
+
+.sheet-bg {
+  position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.6);
+  opacity: 0; pointer-events: none; transition: opacity 0.28s var(--ease);
+}
+.sheet-bg.on { opacity: 1; pointer-events: auto; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 21;
+  max-width: 560px; margin: 0 auto;
+  padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
+  background: #0d0a10; border: 1px solid var(--line); border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  transform: translateY(100%); transition: transform 0.36s var(--ease);
+}
+.sheet.on { transform: none; }
+.sheet .grab { width: 38px; height: 4px; border-radius: 4px; background: var(--line-2); margin: 0 auto 16px; }
+
+.plan {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 15px 16px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); cursor: pointer; text-align: left;
+}
+.plan + .plan { margin-top: 8px; }
+.plan.best { border-color: rgba(238, 152, 46, 0.4); background: rgba(238, 152, 46, 0.08); }
+.plan .term { font-size: 15.5px; font-weight: 600; }
+.plan .per { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.plan .price { font-size: 17px; font-weight: 700; white-space: nowrap; }
+.plan .off { font-size: 11.5px; font-weight: 700; color: var(--mid); }
 
 .toast {
-  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--nav-h) + 24px);
-  background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 20px;
-  font-size: 14px; font-weight: 500; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 20;
+  position: fixed; left: 50%; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 20px);
+  z-index: 30; transform: translate(-50%, 14px);
+  padding: 11px 18px; border-radius: 12px;
+  background: #17121b; border: 1px solid var(--line-2);
+  font-size: 14px; opacity: 0; pointer-events: none;
+  transition: opacity 0.24s, transform 0.24s var(--ease);
 }
-.toast.on { opacity: 1; }
-.demo { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); border-radius: 10px; padding: 10px 14px; font-size: 13px; margin-bottom: 16px; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
 </style>
 </head>
 <body>
 
-<!-- ГЛАВНАЯ -->
-<section class="screen on" id="s-home">
-  <div class="demo" id="demo-note" hidden>Показаны примерные данные — сервер ещё не подключён.</div>
+<main>
 
-  <div class="status">
-    <div class="label" id="st-label">Подписка активна</div>
+<!-- ============================ ГЛАВНАЯ ============================== -->
+<section class="screen on" id="s-home">
+  <div class="demo" id="demo-note" hidden>Показаны примерные данные — сервер ещё не отвечает</div>
+
+  <h1>Подписка</h1>
+  <p class="sub" id="hello">Gloria VPN</p>
+
+  <div class="card status">
+    <svg class="ring" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+      <path d="M50 8 a42 42 0 1 1 -29.7 12.3" stroke="url(#g)" stroke-width="9" stroke-linecap="round"/>
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffecbe"/>
+          <stop offset="1" stop-color="#ee982e" stop-opacity="0.15"/>
+        </linearGradient>
+      </defs>
+    </svg>
     <div class="days" id="st-days">—</div>
-    <div class="until" id="st-until"></div>
-    <div id="st-badge"></div>
+    <div class="until" id="st-until">загружаем…</div>
+    <div style="margin-top:14px"><span class="badge warn" id="st-badge">проверяем</span></div>
     <div class="chips">
       <span class="chip" id="st-devices">— из 4 устройств</span>
-      <span class="chip">Безлимит</span>
+      <span class="chip">Безлимитный трафик</span>
     </div>
+    <button class="btn primary" data-act="plans" style="margin-top:18px">Продлить</button>
   </div>
 
-  <button id="btn-pay">Оплатить подписку</button>
-  <button class="ghost" data-go="connect">Подключить устройство</button>
+  <h2>Подключение</h2>
 
-  <div class="duo">
-    <div class="tile" data-go="profile">
-      <div class="t">Пригласи друга</div>
-      <div class="s">Скидка вам обоим</div>
-    </div>
-    <div class="tile" data-go="profile">
-      <div class="t">Поддержка</div>
-      <div class="s">Ответим и поможем</div>
-    </div>
+  <div class="copy" data-act="copy-sub">
+    <code id="sub-url">—</code>
+    <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
   </div>
+  <p class="small muted" style="margin-top:8px">
+    Одна ссылка на всё время. Вставьте её в приложение — ключи оно заберёт само,
+    в том числе после смены сервера.
+  </p>
+
+  <button class="row" data-act="device" data-device="ios">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18.5h2"/></svg>
+    <span class="body"><span class="title">iPhone и iPad</span><span class="hint">Streisand</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-act="device" data-device="android">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M10 18.5h4"/></svg>
+    <span class="body"><span class="title">Android</span><span class="hint">Happ</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-act="device" data-device="pc">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
+    <span class="body"><span class="title">Компьютер</span><span class="hint">Hiddify</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
 </section>
 
-<!-- ТАРИФЫ -->
-<section class="screen" id="s-plans">
-  <h1>Тарифы</h1>
-  <p class="muted small">Во всех одно и то же — отличается только срок. Оплата разовая, автосписания нет.</p>
+<!-- =========================== РЕФЕРАЛЫ ============================== -->
+<section class="screen" id="s-ref">
+  <h1>Приглашайте</h1>
+  <p class="sub">За каждого, кто оплатит подписку, вам добавляются дни</p>
 
-  <button class="plan" data-buy="1m">
-    <span class="term">1 месяц</span>
-    <span class="price">199 ₽<span class="per">199 ₽ / мес</span></span>
-  </button>
-  <button class="plan" data-buy="3m">
-    <span class="term">3 месяца<span class="save">−16 %</span></span>
-    <span class="price">499 ₽<span class="per">166 ₽ / мес</span></span>
-  </button>
-  <button class="plan" data-buy="6m">
-    <span class="term">6 месяцев<span class="save">−34 %</span></span>
-    <span class="price">790 ₽<span class="per">132 ₽ / мес</span></span>
-  </button>
-  <button class="plan" data-buy="12m">
-    <span class="term">12 месяцев<span class="save">−46 %</span></span>
-    <span class="price">1290 ₽<span class="per">106 ₽ / мес</span></span>
-  </button>
-
-  <h2>Что входит</h2>
-  <ul class="plain">
-    <li>Безлимитный трафик, без ограничения скорости</li>
-    <li>До 4 устройств одновременно</li>
-    <li>iPhone, Android, Windows, macOS</li>
-    <li>Настраивается один раз, дальше обновляется само</li>
-  </ul>
-</section>
-
-<!-- ПОДКЛЮЧЕНИЕ -->
-<section class="screen" id="s-connect">
-  <h1>Подключение</h1>
-  <p class="muted small">Занимает меньше двух минут. Ссылка одна на все устройства.</p>
+  <div class="stats">
+    <div class="stat"><div class="n" id="rf-invited">0</div><div class="k">перешли</div></div>
+    <div class="stat"><div class="n" id="rf-paying">0</div><div class="k">оплатили</div></div>
+    <div class="stat"><div class="n" id="rf-days">0</div><div class="k">дней вам</div></div>
+  </div>
 
   <h2>Ваша ссылка</h2>
-  <div class="copy">
-    <code id="sub-url">—</code>
-    <button id="btn-copy">Копировать</button>
-  </div>
-
-  <h2>Шаг 1 — установите приложение</h2>
-  <button class="quiet" data-store="ios">Для iPhone и iPad</button>
-  <button class="quiet" data-store="android">Для Android</button>
-  <button class="quiet" data-store="desktop">Для компьютера</button>
-
-  <h2>Шаг 2 — добавьте ссылку</h2>
-  <ol class="steps">
-    <li>Откройте установленное приложение.</li>
-    <li>Нажмите «Добавить подписку» или значок <b>+</b>.</li>
-    <li>Вставьте ссылку — она уже скопирована кнопкой выше.</li>
-    <li>Выберите сервер и нажмите подключение.</li>
-  </ol>
-
-  <button class="ghost" data-go="profile">Не получилось — написать в поддержку</button>
-</section>
-
-<!-- ПРОФИЛЬ -->
-<section class="screen" id="s-profile">
-  <h1>Профиль</h1>
-
-  <h2>Приглашайте друзей</h2>
-  <p class="muted small">Друг получает скидку на первую оплату, вы — бесплатные дни за каждого, кто оплатит.</p>
-  <div class="copy">
+  <div class="copy" data-act="copy-ref">
     <code id="ref-url">—</code>
-    <button id="btn-ref">Копировать</button>
+    <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
   </div>
-  <ul class="plain">
-    <li>Приглашено: <b id="ref-invited">0</b></li>
-    <li>Оплатили: <b id="ref-paying">0</b></li>
-  </ul>
+  <button class="btn" data-act="share-ref">Поделиться</button>
 
-  <h2>Помощь</h2>
-  <button class="quiet" id="btn-support">Написать в поддержку</button>
-
-  <h2>Условия</h2>
-  <ul class="plain">
-    <li>Оплата разовая, автосписания нет</li>
-    <li>Возврат в течение 7 дней, если не заработало</li>
-    <li>Продление прибавляется к оставшемуся сроку</li>
-    <li>История посещённых сайтов не собирается</li>
-  </ul>
-
-  <p class="muted small" style="margin-top:24px;text-align:center">© 2026 Gloria</p>
+  <h2>Как это работает</h2>
+  <div class="card">
+    <p class="small muted" style="margin:0">
+      Друг переходит по вашей ссылке и оплачивает любой тариф — вам начисляются
+      дни к текущей подписке. Начисление происходит после оплаты, а не после
+      перехода: иначе ссылку выгодно было бы рассылать веером.
+    </p>
+  </div>
 </section>
 
-<nav>
-  <button class="on" data-go="home">
-    <svg viewBox="0 0 24 24"><path d="M3 10l9-7 9 7v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-    Главная
+<!-- =========================== ПОДДЕРЖКА ============================= -->
+<section class="screen" id="s-help">
+  <h1>Поддержка</h1>
+  <p class="sub">Отвечает человек, обычно в течение часа</p>
+
+  <button class="btn primary" data-act="support">Написать в поддержку</button>
+
+  <h2>Частые вопросы</h2>
+
+  <details class="qa">
+    <summary>Не открывается сайт или приложение</summary>
+    <div class="answer">
+      Сначала переподключитесь: в приложении обновите подписку круговой стрелкой
+      и выберите сервер заново. Если не помогло — напишите нам, приложив название
+      сервера и время, когда перестало работать.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>Во время ограничений мобильного интернета ничего не работает</summary>
+    <div class="answer">
+      Это ограничение стоит в сети оператора, а не в приложении. Когда в регионе
+      объявляют опасность, мобильный интернет оставляет доступными только
+      разрешённые сервисы — в такие моменты не работает ни один VPN, включая наш.
+      Дома по Wi-Fi и на проводном интернете всё продолжает работать.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>Сколько устройств можно подключить</summary>
+    <div class="answer">
+      Четыре одновременно. Ссылка одна на все — вставьте её в приложение на
+      каждом устройстве.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>Я оплатил, но подписка не продлилась</summary>
+    <div class="answer">
+      Напишите нам и приложите время платежа и последние четыре цифры карты или
+      номер операции. Все платежи сохраняются, разберёмся и продлим вручную.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>VK и Max пишут «отключите VPN»</summary>
+    <div class="answer">
+      Не должны: российские сайты идут напрямую, мимо туннеля. Если предупреждение
+      всё же появилось — обновите подписку в приложении, у вас старые настройки.
+    </div>
+  </details>
+</section>
+
+<!-- =========================== НАСТРОЙКИ ============================= -->
+<section class="screen" id="s-set">
+  <h1>Настройки</h1>
+  <p class="sub" id="set-id">—</p>
+
+  <h2>Уведомления</h2>
+  <div class="row" data-act="toggle-notify" role="button" tabindex="0">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+    <span class="body"><span class="title">Напоминать об окончании</span><span class="hint">За 3 дня и в день окончания</span></span>
+    <span class="switch on" id="sw-notify"></span>
+  </div>
+
+  <h2>Подписка</h2>
+  <button class="row" data-act="reissue">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 0 1 15.5-6.2M21 12a9 9 0 0 1-15.5 6.2"/><path d="M18 3v5h-5M6 21v-5h5"/></svg>
+    <span class="body"><span class="title">Перевыпустить ссылку</span><span class="hint">Старая перестанет работать на всех устройствах</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
-  <button data-go="plans">
-    <svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/></svg>
-    Тарифы
+
+  <button class="row" data-act="plans">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/></svg>
+    <span class="body"><span class="title">Тарифы и оплата</span><span class="hint" id="set-plan">—</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
-  <button data-go="connect">
-    <svg viewBox="0 0 24 24"><path d="M9 15l6-6"/><path d="M11 6l1-1a4 4 0 0 1 6 6l-1 1"/><path d="M13 18l-1 1a4 4 0 0 1-6-6l1-1"/></svg>
-    Подключить
-  </button>
-  <button data-go="profile">
-    <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
-    Профиль
-  </button>
+
+  <h2>О сервисе</h2>
+  <div class="card">
+    <p class="small muted" style="margin:0">
+      Gloria VPN. Ключи выдаются на постоянную ссылку — она переживает смену
+      серверов, и переустанавливать ничего не нужно.
+    </p>
+  </div>
+</section>
+
+</main>
+
+<!-- ============================= ТАБ-БАР ============================== -->
+<nav class="tabbar">
+  <div class="tabs" role="tablist">
+    <div class="pill" id="pill" aria-hidden="true"><i></i></div>
+
+    <button class="tab" role="tab" aria-selected="true" data-go="home" data-i="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4 6v6c0 4.7 3.4 8.5 8 9.5 4.6-1 8-4.8 8-9.5V6z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span>Главная</span>
+    </button>
+
+    <button class="tab" role="tab" aria-selected="false" data-go="ref" data-i="1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="9" cy="7.5" r="3.5"/><path d="M17 11.5h5m-2.5-2.5v5"/></svg>
+      <span>Друзья</span>
+    </button>
+
+    <button class="tab" role="tab" aria-selected="false" data-go="help" data-i="2">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-4.9A8.4 8.4 0 1 1 21 11.5"/><path d="M9.8 9.3a2.3 2.3 0 1 1 3 2.2v1.2"/><path d="M12.8 16h0"/></svg>
+      <span>Поддержка</span>
+    </button>
+
+    <button class="tab" role="tab" aria-selected="false" data-go="set" data-i="3">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></svg>
+      <span>Настройки</span>
+    </button>
+  </div>
 </nav>
+
+<div class="sheet-bg" id="sheet-bg"></div>
+<div class="sheet" id="sheet">
+  <div class="grab"></div>
+  <h1 style="font-size:20px;margin-bottom:14px">Продлить подписку</h1>
+  <button class="plan" data-buy="d30">
+    <span><span class="term">1 месяц</span><span class="per">199 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">199 ₽</span></span>
+  </button>
+  <button class="plan" data-buy="d90">
+    <span><span class="term">3 месяца</span><span class="per">166 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">499 ₽</span><br><span class="off">−16 %</span></span>
+  </button>
+  <button class="plan" data-buy="d180">
+    <span><span class="term">6 месяцев</span><span class="per">132 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">790 ₽</span><br><span class="off">−33 %</span></span>
+  </button>
+  <button class="plan best" data-buy="d365">
+    <span><span class="term">12 месяцев</span><span class="per">106 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">1290 ₽</span><br><span class="off">−46 %</span></span>
+  </button>
+  <button class="btn ghost" data-act="close-sheet">Закрыть</button>
+</div>
 
 <div class="toast" id="toast"></div>
 
 <script>
-// Договор с сервером. Пока сервера нет, работает заглушка ниже.
-//   GET  /api/me      → состояние подписки
-//   POST /api/trial   → включить пробный период
-// Подлинность запроса сервер проверяет по initData, которую передаёт клиент.
+/* Договор с сервером. Пока сервера нет, работает заглушка ниже.
+     GET  /api/me       → состояние подписки, рефералы, настройки
+     POST /api/trial    → включить пробный период
+     POST /api/reissue  → перевыпустить ссылку
+     POST /api/settings → сохранить настройки
+   Подлинность запроса сервер проверяет по initData (core/atlas-telegram).
+   Ни один экран не решает ничего сам: всё, что показано, приходит с сервера. */
 document.addEventListener('DOMContentLoaded', function () {
   var tg = window.Telegram && window.Telegram.WebApp;
-  if (tg) { tg.ready(); tg.expand(); }
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    // Фон приложения задаётся нашей палитрой, а не темой клиента, — иначе
+    // над кабинетом висела бы чужая полоса другого цвета.
+    if (tg.setHeaderColor) { try { tg.setHeaderColor('#060507'); } catch (e) {} }
+    if (tg.setBackgroundColor) { try { tg.setBackgroundColor('#060507'); } catch (e) {} }
+  }
 
   var state = null;
+  var SUPPORT = 'https://t.me/GloriaVPNSupport';
 
   function toast(text) {
     var el = document.getElementById('toast');
     el.textContent = text;
     el.classList.add('on');
     clearTimeout(toast.timer);
-    toast.timer = setTimeout(function () { el.classList.remove('on'); }, 1800);
+    toast.timer = setTimeout(function () { el.classList.remove('on'); }, 1900);
   }
 
   function haptic(kind) {
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred(kind || 'light');
+    if (!tg || !tg.HapticFeedback) return;
+    if (kind === 'select') tg.HapticFeedback.selectionChanged();
+    else tg.HapticFeedback.impactOccurred(kind || 'light');
   }
 
-  function go(name) {
+  /* Переход между вкладками. Таблетка едет за счёт одной переменной: её
+     сдвиг кратен собственной ширине, поэтому раскладка и анимация не могут
+     разойтись. */
+  function go(name, index) {
     document.querySelectorAll('.screen').forEach(function (s) {
       s.classList.toggle('on', s.id === 's-' + name);
     });
-    document.querySelectorAll('nav button').forEach(function (b) {
-      b.classList.toggle('on', b.dataset.go === name);
+    document.querySelectorAll('.tab').forEach(function (b) {
+      var chosen = b.dataset.go === name;
+      b.setAttribute('aria-selected', chosen ? 'true' : 'false');
+      if (chosen && index === undefined) index = Number(b.dataset.i);
     });
+    document.getElementById('pill').style.setProperty('--tab', index || 0);
     window.scrollTo(0, 0);
   }
 
@@ -296,80 +602,103 @@ document.addEventListener('DOMContentLoaded', function () {
 
   function render() {
     var s = state;
-    var days = document.getElementById('st-days');
-    var label = document.getElementById('st-label');
-    var until = document.getElementById('st-until');
+    if (!s) return;
+
+    var left = Number(s.daysLeft) || 0;
+    document.getElementById('st-days').textContent =
+      s.status === 'expired' ? 'Истекла' : left + ' ' + plural(left, 'день', 'дня', 'дней');
+    document.getElementById('st-until').textContent =
+      s.status === 'expired' ? 'Продлите, чтобы продолжить' : 'до ' + s.expiresAt;
+
     var badge = document.getElementById('st-badge');
-    var pay = document.getElementById('btn-pay');
+    badge.className = 'badge ' + (s.status === 'expired' ? 'bad' : (s.status === 'trial' ? 'warn' : 'ok'));
+    badge.textContent = s.status === 'trial' ? 'Пробный период'
+      : (s.status === 'expired' ? 'Не активна' : 'Активна');
 
     document.getElementById('st-devices').textContent =
-      s.devices + ' из ' + s.deviceLimit + ' ' + plural(s.deviceLimit, 'устройства', 'устройств', 'устройств');
+      (s.devices || 0) + ' из ' + (s.deviceLimit || 4) + ' ' +
+      plural(s.deviceLimit || 4, 'устройства', 'устройств', 'устройств');
+
     document.getElementById('sub-url').textContent = s.subscriptionUrl || '—';
-    document.getElementById('ref-url').textContent = s.referral.link || '—';
-    document.getElementById('ref-invited').textContent = s.referral.invited;
-    document.getElementById('ref-paying').textContent = s.referral.paying;
 
-    if (s.status === 'none') {
-      label.textContent = 'Подписки пока нет';
-      days.textContent = '3 дня';
-      until.textContent = 'бесплатно, без привязки карты';
-      badge.innerHTML = '';
-      pay.textContent = 'Попробовать бесплатно';
-      pay.dataset.act = 'trial';
-      return;
-    }
+    var r = s.referral || {};
+    document.getElementById('rf-invited').textContent = r.invited || 0;
+    document.getElementById('rf-paying').textContent = r.paying || 0;
+    document.getElementById('rf-days').textContent = r.bonusDays || 0;
+    document.getElementById('ref-url').textContent = r.link || '—';
 
-    label.textContent = s.status === 'trial' ? 'Пробный период' : 'Подписка';
-    days.textContent = s.daysLeft + ' ' + plural(s.daysLeft, 'день', 'дня', 'дней');
-    until.textContent = 'до ' + s.expiresAt;
-    pay.dataset.act = 'buy';
+    var name = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.first_name) || '';
+    document.getElementById('hello').textContent = name ? name + ', рады видеть' : 'Gloria VPN';
+    document.getElementById('set-id').textContent = s.userId ? 'ID ' + s.userId : '';
+    document.getElementById('set-plan').textContent =
+      s.status === 'expired' ? 'Подписка не активна' : 'Активна до ' + s.expiresAt;
 
-    if (s.status === 'expired') {
-      label.textContent = 'Подписка закончилась';
-      days.textContent = '0 дней';
-      until.textContent = 'доступ приостановлен';
-      badge.innerHTML = '<span class="badge bad">Не активна</span>';
-      pay.textContent = 'Продлить подписку';
-    } else if (s.daysLeft <= 3) {
-      badge.innerHTML = '<span class="badge warn">Скоро закончится</span>';
-      pay.textContent = 'Продлить подписку';
-    } else {
-      badge.innerHTML = '<span class="badge ok">Активна</span>';
-      pay.textContent = s.status === 'trial' ? 'Оформить подписку' : 'Продлить подписку';
-    }
+    var notify = !s.settings || s.settings.notify !== false;
+    document.getElementById('sw-notify').classList.toggle('on', notify);
   }
 
   function copy(text, what) {
-    if (!text || text === '—') return;
+    if (!text || text === '—') return toast('Ссылка ещё не получена');
     navigator.clipboard.writeText(text).then(function () {
-      haptic('medium');
+      haptic('light');
       toast(what + ' скопирована');
     }, function () {
-      toast('Не удалось скопировать');
+      toast('Скопировать не вышло — выделите вручную');
     });
   }
 
+  function sheet(open) {
+    document.getElementById('sheet').classList.toggle('on', open);
+    document.getElementById('sheet-bg').classList.toggle('on', open);
+  }
+
   document.addEventListener('click', function (event) {
-    var el = event.target.closest('[data-go],[data-buy],[data-store],#btn-pay,#btn-copy,#btn-ref,#btn-support');
-    if (!el) return;
-    haptic();
-
-    if (el.dataset.go) return go(el.dataset.go);
-
-    if (el.id === 'btn-copy')    return copy(state.subscriptionUrl, 'Ссылка');
-    if (el.id === 'btn-ref')     return copy(state.referral.link, 'Ссылка');
-    if (el.id === 'btn-support') return toast('Поддержка появится вместе с ботом');
-
-    if (el.id === 'btn-pay') {
-      if (el.dataset.act === 'trial') return toast('Пробный период включится, когда заработает сервер');
-      return go('plans');
+    var tab = event.target.closest('.tab');
+    if (tab) {
+      haptic('select');
+      return go(tab.dataset.go, Number(tab.dataset.i));
     }
 
-    if (el.dataset.buy)   return toast('Оплата пока не подключена');
-    if (el.dataset.store) return toast('Ссылки на приложения добавим следующим шагом');
+    var el = event.target.closest('[data-act], [data-buy]');
+    if (!el) return;
+
+    var act = el.dataset.act;
+
+    if (act === 'plans')       { haptic(); return sheet(true); }
+    if (act === 'close-sheet') return sheet(false);
+    if (act === 'copy-sub')    return copy(state && state.subscriptionUrl, 'Ссылка на подписку');
+    if (act === 'copy-ref')    return copy(state && state.referral && state.referral.link, 'Ваша ссылка');
+
+    if (act === 'share-ref') {
+      var link = state && state.referral && state.referral.link;
+      if (!link) return toast('Ссылка ещё не получена');
+      var url = 'https://t.me/share/url?url=' + encodeURIComponent(link) +
+                '&text=' + encodeURIComponent('Пользуюсь этим VPN — работает и не просит ничего лишнего');
+      if (tg && tg.openTelegramLink) return tg.openTelegramLink(url);
+      return window.open(url, '_blank');
+    }
+
+    if (act === 'support') {
+      if (tg && tg.openTelegramLink) return tg.openTelegramLink(SUPPORT);
+      return window.open(SUPPORT, '_blank');
+    }
+
+    if (act === 'toggle-notify') {
+      var sw = document.getElementById('sw-notify');
+      sw.classList.toggle('on');
+      haptic('light');
+      return toast(sw.classList.contains('on') ? 'Напоминания включены' : 'Напоминания выключены');
+    }
+
+    if (act === 'reissue') return toast('Перевыпуск подключим следующим шагом');
+    if (act === 'device')  return toast('Инструкция появится следующим шагом');
+    if (el.dataset.buy)    return toast('Оплата пока не подключена');
   });
 
-  // Запрос состояния. Пока сервера нет — заглушка, чтобы видеть вид.
+  document.getElementById('sheet-bg').addEventListener('click', function () { sheet(false); });
+
+  /* Состояние. Пока сервера нет — заглушка с видимым предупреждением: без
+     него легко принять придуманные числа за настоящие и удивиться позже. */
   fetch('/api/me', {
     headers: { 'X-Init-Data': (tg && tg.initData) || '' }
   }).then(function (r) {
@@ -380,11 +709,13 @@ document.addEventListener('DOMContentLoaded', function () {
     return {
       status: 'trial',
       daysLeft: 3,
-      expiresAt: '22.08.2026',
+      expiresAt: '21.08.2026',
       devices: 1,
       deviceLimit: 4,
-      subscriptionUrl: 'https://—/sub/…',
-      referral: { link: 'https://t.me/GloriaVPN_Bot?start=ref_000', invited: 0, paying: 0 }
+      userId: 0,
+      subscriptionUrl: 'https://—/api/sub/…',
+      referral: { link: 'https://t.me/GloriaVPN_Bot?start=ref_0', invited: 0, paying: 0, bonusDays: 0 },
+      settings: { notify: true }
     };
   }).then(function (data) {
     state = data;
