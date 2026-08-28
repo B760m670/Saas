@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64.workspace = true
 hmac = "0.12"
 md-5 = { version = "0.10", default-features = false }
 serde.workspace = true

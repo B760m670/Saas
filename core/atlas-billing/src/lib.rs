@@ -42,6 +42,7 @@ pub mod order;
 pub mod provider;
 pub mod signature;
 pub mod subscription;
+pub mod yookassa;
 
 pub use event::{PaymentEvent, PaymentStatus};
 pub use http::{Callback, Checkout, Method, Request};
@@ -51,3 +52,4 @@ pub use order::{Order, OrderId, Plan, UserId};
 pub use provider::{Error, Provider};
 pub use signature::Scheme;
 pub use subscription::{extend, is_active, Timestamp};
+pub use yookassa::YooKassa;
