@@ -337,3 +337,65 @@ fn a_payment_for_an_unknown_order_is_reported() {
         Some(Settled::NoSuchOrder)
     );
 }
+
+/// Админский экран: владелец видит суммы, по которым узнаёт платежи в
+/// уведомлениях банка. Закрытые и просроченные счета там мешают.
+#[test]
+fn the_admin_screen_lists_only_open_invoices() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+
+    let _ = store.open_order("adm-1", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("adm-2", 42, "d90", 90, rub(49_898), NOW);
+    let _ = store.open_order("adm-3", 42, "d30", 30, rub(19_897), NOW);
+    let _ = store.settle("adm-3", "manual", "m-1", rub(19_897), "{}", NOW);
+
+    let Ok(pending) = store.pending_orders(NOW, LIFETIME) else {
+        return;
+    };
+    let ids: Vec<&str> = pending.iter().map(|order| order.id.as_str()).collect();
+    assert_eq!(ids.len(), 2, "в списке лишние счета: {ids:?}");
+    assert!(ids.contains(&"adm-1"));
+    assert!(ids.contains(&"adm-2"));
+    assert!(!ids.contains(&"adm-3"), "оплаченный счёт остался в списке");
+
+    // Просроченные тоже уходят: подтверждать их поздно.
+    let Ok(later) = store.pending_orders(NOW + LIFETIME + 1, LIFETIME) else {
+        return;
+    };
+    assert!(later.is_empty());
+}
+
+/// Повторное подтверждение того же счёта не должно продлевать дважды —
+/// владелец может нажать /ok второй раз, не заметив, что уже подтвердил.
+#[test]
+fn confirming_the_same_invoice_twice_changes_nothing() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.open_order("adm-4", 42, "d30", 30, rub(19_899), NOW);
+
+    let reference = "19899-adm-4";
+    let first = store
+        .settle("adm-4", "manual", reference, rub(19_899), "{}", NOW)
+        .ok();
+    assert_eq!(
+        first,
+        Some(Settled::Extended {
+            expires_at: NOW + 30 * DAY
+        })
+    );
+
+    let second = store
+        .settle("adm-4", "manual", reference, rub(19_899), "{}", NOW)
+        .ok();
+    assert_eq!(second, Some(Settled::AlreadyCounted));
+
+    let Ok(user) = store.ensure_subscriber(42) else {
+        return;
+    };
+    assert_eq!(user.expires_at, Some(NOW + 30 * DAY), "срок продлён дважды");
+}

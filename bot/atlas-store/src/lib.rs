@@ -89,6 +89,19 @@ pub enum Settled {
     NoSuchOrder,
 }
 
+/// Открытый счёт для админского экрана.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pending {
+    /// Номер заказа.
+    pub id: String,
+    /// Кому выставлен.
+    pub telegram_id: i64,
+    /// Какой тариф.
+    pub plan: String,
+    /// Сумма, по которой платёж узнаётся в уведомлении банка.
+    pub amount: Money,
+}
+
 /// Хранилище.
 pub struct Store {
     client: Client,
@@ -193,6 +206,39 @@ impl Store {
             taken.insert(minor);
         }
         Ok(taken)
+    }
+
+    /// Открытые счета, от новых к старым.
+    ///
+    /// То, что видит владелец в админском экране: сумма, по которой он
+    /// узнаёт платёж в уведомлении банка, и кому этот счёт принадлежит.
+    pub fn pending_orders(&mut self, now: i64, lifetime: i64) -> Result<Vec<Pending>, Error> {
+        let rows = self.client.query(
+            "SELECT id, telegram_id, plan, amount_minor, currency
+               FROM orders
+              WHERE status = 'pending' AND created_at > to_timestamp($1::bigint)
+              ORDER BY created_at DESC
+              LIMIT 20",
+            &[&(now - lifetime)],
+        )?;
+
+        let mut pending = Vec::new();
+        for row in rows {
+            let minor: i64 = row.try_get(3)?;
+            let currency: String = row.try_get(4)?;
+            let Some(currency) = Currency::parse(&currency) else {
+                return Err(Error::Inconsistent("валюта заказа неизвестна"));
+            };
+            let minor = u64::try_from(minor)
+                .map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
+            pending.push(Pending {
+                id: row.try_get(0)?,
+                telegram_id: row.try_get(1)?,
+                plan: row.try_get(2)?,
+                amount: Money::from_minor(minor, currency),
+            });
+        }
+        Ok(pending)
     }
 
     /// Записать выставленный счёт.
