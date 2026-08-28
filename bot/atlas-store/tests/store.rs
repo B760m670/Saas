@@ -24,32 +24,49 @@ fn rub(minor: u64) -> Money {
     Money::from_minor(minor, Currency::Rub)
 }
 
-/// Свежая база на каждый тест: схема применяется заново, поэтому тесты не
-/// зависят друг от друга и от порядка запуска.
 /// База одна на все тесты, и каждый пересоздаёт схему. Значит идти они
 /// обязаны по очереди — иначе один стирает данные другого посреди работы, и
 /// провалы получаются случайными. Замок здесь, а не флагом запуска: флаг
 /// забывается, а это условие обязательное.
 static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Свежая схема на каждый тест, чтобы они не зависели друг от друга.
+///
+/// Пропуск и провал здесь — разные вещи, и путать их дорого.
+///
+/// **Переменной нет** — тесты пропускаются: у того, кто просто собирает
+/// проект, базы под рукой может не быть.
+///
+/// **Переменная есть, а база недоступна** — это провал. Раньше здесь стоял
+/// тихий выход, и в CI, где база поднимается службой, все одиннадцать
+/// проверок проходили бы вхолостую: «зелёный» означал бы «не проверено».
 fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
     let guard = match ONE_AT_A_TIME.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let url = std::env::var("GLORIA_TEST_DATABASE_URL").ok()?;
-    let mut store = match Store::connect(&url) {
-        Ok(store) => store,
-        Err(error) => {
-            eprintln!("не удалось подключиться: {error}");
-            return None;
-        }
-    };
-    if let Err(error) = store.reset_for_tests(include_str!("../../../db/migrations/0001_init.sql"))
-    {
-        eprintln!("не удалось подготовить схему: {error}");
+
+    let Ok(url) = std::env::var("GLORIA_TEST_DATABASE_URL") else {
         return None;
-    }
+    };
+
+    let connected = Store::connect(&url);
+    assert!(
+        connected.is_ok(),
+        "GLORIA_TEST_DATABASE_URL задана, но подключиться не вышло: {:?}",
+        connected.err().map(|error| error.to_string())
+    );
+    let Ok(mut store) = connected else {
+        return None;
+    };
+
+    let prepared = store.reset_for_tests(include_str!("../../../db/migrations/0001_init.sql"));
+    assert!(
+        prepared.is_ok(),
+        "схему подготовить не вышло: {:?}",
+        prepared.err().map(|error| error.to_string())
+    );
+
     Some((store, guard))
 }
 
