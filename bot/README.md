@@ -27,7 +27,7 @@ Caddy, и туда же бот ходит за ключами — все обр�
 | `GLORIA_BOT_TOKEN` | да | токен от @BotFather |
 | `GLORIA_PANEL_URL` | да | адрес панели, обязательно `https://` |
 | `GLORIA_PANEL_TOKEN` | да | Remnawave → API-токены |
-| `GLORIA_DATABASE_URL` | да | `postgres://gloria:ПАРОЛЬ@127.0.0.1/gloria` |
+| `GLORIA_DATABASE_URL` | да | `postgres://gloria:ПАРОЛЬ@127.0.0.1:6767/gloria` |
 | `GLORIA_SQUADS` | да | UUID отрядов через запятую |
 | `GLORIA_ADMINS` | нет | ваш номер в Telegram |
 | `GLORIA_SBP_PHONE` | нет | номер для перевода по СБП |
@@ -43,6 +43,11 @@ Caddy, и туда же бот ходит за ключами — все обр�
 
 Где взять UUID отряда: панель → Internal Squads → нужный отряд, его
 идентификатор в адресе страницы.
+
+Порт базы в `GLORIA_DATABASE_URL` — **не 5432**. Панель публикует свой
+PostgreSQL на другой порт хоста; какой именно, показывает
+`docker ps --format '{{.Names}}   {{.Ports}}'` слева от стрелки (обычно
+`127.0.0.1:6767`). Подробнее — в `db/README.md`.
 
 ## Как запустить
 
@@ -61,7 +66,7 @@ cat > /etc/gloria.env <<'ENV'
 GLORIA_BOT_TOKEN=…
 GLORIA_PANEL_URL=https://panel.…
 GLORIA_PANEL_TOKEN=…
-GLORIA_DATABASE_URL=postgres://gloria:…@127.0.0.1/gloria
+GLORIA_DATABASE_URL=postgres://gloria:…@127.0.0.1:6767/gloria
 GLORIA_SQUADS=…
 GLORIA_ADMINS=…
 ENV
