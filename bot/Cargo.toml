@@ -10,7 +10,7 @@
 
 [workspace]
 resolver = "2"
-members = ["atlas-bot", "atlas-panel", "atlas-store"]
+members = ["atlas-bot", "atlas-panel", "atlas-store", "atlas-tg"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +21,7 @@ repository = "https://github.com/B760m670/Saas"
 
 [workspace.dependencies]
 atlas-billing = { path = "../core/atlas-billing" }
+atlas-bot = { path = "atlas-bot" }
 atlas-panel = { path = "atlas-panel" }
 atlas-telegram = { path = "../core/atlas-telegram" }
 serde = { version = "1", features = ["derive"] }

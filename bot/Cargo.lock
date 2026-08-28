@@ -51,6 +51,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-tg"
+version = "0.1.0"
+dependencies = [
+ "atlas-billing",
+ "atlas-bot",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
