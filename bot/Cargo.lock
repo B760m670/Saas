@@ -23,6 +23,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atlas-panel"
+version = "0.1.0"
+dependencies = [
+ "atlas-billing",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
