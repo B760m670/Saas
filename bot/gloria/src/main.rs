@@ -102,6 +102,62 @@ fn run(config: &Config, telegram: &Telegram, panel: &Panel, store: &mut Store) {
         // человек, чей запрос не удалось выполнить, напишет снова, а
         // застрявший бот не поможет никому.
         offset = next_offset(&batch, offset);
+
+        sync_panel(panel, store);
+    }
+}
+
+/// Сколько человек за один круг увозим в панель.
+///
+/// Ограничение нужно на случай, когда панель была недоступна долго и очередь
+/// накопилась: без него первый удачный круг превратился бы в сотни запросов
+/// подряд, а обновления Telegram в это время не читались бы вовсе. Остаток
+/// разберётся на следующих кругах — круг идёт не реже раза в полминуты.
+const SYNC_PER_ROUND: i64 = 20;
+
+/// Отвезти в панель даты окончания, которые она ещё не подтвердила.
+///
+/// Это единственное место, где наша дата попадает в панель, — и оплата, и
+/// первая выдача проходят через него. Прямого вызова после оплаты нет
+/// намеренно: он теряется при обрыве связи ровно в тот момент, когда деньги
+/// уже взяты. Очередь при обрыве просто остаётся непустой.
+///
+/// Гасить просроченных не нужно: панель меняет статусы сама по той дате,
+/// которая у неё записана.
+fn sync_panel(panel: &Panel, store: &mut Store) {
+    let work = match store.panel_work(SYNC_PER_ROUND) {
+        Ok(work) => work,
+        Err(error) => {
+            eprintln!("Очередь панели: {error}");
+            return;
+        }
+    };
+
+    for item in work {
+        let request = panel.set_expiry(item.panel_id, item.expires_at);
+        let response = match http::send(&request) {
+            Ok(response) => response,
+            Err(error) => {
+                eprintln!("Панель для {}: {error}", item.telegram_id);
+                continue;
+            }
+        };
+
+        if !response.is_ok() {
+            eprintln!(
+                "Панель для {} отказала, код {}: {}",
+                item.telegram_id,
+                response.status,
+                excerpt(&response.body)
+            );
+            continue;
+        }
+
+        // Отметка ставится только после ответа панели. Ставить её заранее
+        // значило бы считать потерянный запрос выполненным.
+        if let Err(error) = store.mark_panel_synced(item.telegram_id, item.expires_at) {
+            eprintln!("Отметка о панели для {}: {error}", item.telegram_id);
+        }
     }
 }
 

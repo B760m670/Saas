@@ -60,7 +60,13 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         return None;
     };
 
-    let prepared = store.reset_for_tests(include_str!("../../../db/migrations/0001_init.sql"));
+    // Миграции применяются подряд, все до единой. Проверять код против одной
+    // лишь первой значит проверять схему, которой на сервере уже нет.
+    let prepared = store.reset_for_tests(concat!(
+        include_str!("../../../db/migrations/0001_init.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0002_panel_sync.sql"),
+    ));
     assert!(
         prepared.is_ok(),
         "схему подготовить не вышло: {:?}",
@@ -398,4 +404,144 @@ fn confirming_the_same_invoice_twice_changes_nothing() {
         return;
     };
     assert_eq!(user.expires_at, Some(NOW + 30 * DAY), "срок продлён дважды");
+}
+
+// ---------------------------------------------------------------------------
+// Очередь согласования с панелью
+// ---------------------------------------------------------------------------
+
+/// Пока панель не знает нашей даты, человек стоит в очереди.
+#[test]
+fn a_person_the_panel_has_not_heard_of_is_queued() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+
+    let Ok(work) = store.panel_work(10) else {
+        return;
+    };
+    assert_eq!(work.len(), 1, "человек не попал в очередь");
+    let Some(item) = work.first() else {
+        return;
+    };
+    assert_eq!(item.panel_id, 7);
+    assert_eq!(item.expires_at, NOW + 3 * DAY);
+}
+
+/// Отметились — очередь пуста. Иначе бот вёз бы одну и ту же дату вечно,
+/// по запросу в панель на каждом круге цикла.
+#[test]
+fn a_confirmed_date_leaves_the_queue() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY);
+
+    let Ok(work) = store.panel_work(10) else {
+        return;
+    };
+    assert!(work.is_empty(), "согласованный остался в очереди: {work:?}");
+}
+
+/// Оплата снова ставит человека в очередь: у панели теперь старая дата.
+/// Это и есть весь механизм «после оплаты подписка продлевается» — прямого
+/// вызова панели после оплаты нет намеренно, он терялся бы при обрыве связи
+/// ровно тогда, когда деньги уже взяты.
+#[test]
+fn a_payment_puts_the_person_back_in_the_queue() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY);
+
+    let _ = store.open_order("ord-9", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.settle("ord-9", "manual", "19899-ord-9", rub(19_899), "{}", NOW);
+
+    let Ok(work) = store.panel_work(10) else {
+        return;
+    };
+    assert_eq!(work.len(), 1, "продление не встало в очередь");
+    let Some(item) = work.first() else {
+        return;
+    };
+    assert_eq!(item.expires_at, NOW + 33 * DAY, "везём не ту дату");
+}
+
+/// Между чтением очереди и ответом панели человек мог оплатить ещё раз.
+/// Отметка о старой дате не должна объявить согласованной новую — иначе
+/// оплата потерялась бы молча, без единой строки в журнале.
+#[test]
+fn a_late_confirmation_does_not_swallow_a_newer_payment() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+
+    // Бот прочитал очередь и ушёл в панель с датой пробы.
+    let carried = NOW + 3 * DAY;
+
+    // Пока он ходил, человек оплатил.
+    let _ = store.open_order("ord-8", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.settle("ord-8", "manual", "19899-ord-8", rub(19_899), "{}", NOW);
+
+    // Ответ панели пришёл — но он про старую дату.
+    let _ = store.mark_panel_synced(42, carried);
+
+    let Ok(work) = store.panel_work(10) else {
+        return;
+    };
+    assert_eq!(work.len(), 1, "оплата пропала из очереди");
+    let Some(item) = work.first() else {
+        return;
+    };
+    assert_eq!(item.expires_at, NOW + 33 * DAY);
+}
+
+/// Человека, которого нет в панели, везти некуда: сначала его надо завести.
+#[test]
+fn a_person_without_a_panel_account_is_not_queued() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.grant_trial(42, 3, NOW);
+
+    let Ok(work) = store.panel_work(10) else {
+        return;
+    };
+    assert!(
+        work.is_empty(),
+        "везём в панель того, кого там нет: {work:?}"
+    );
+}
+
+/// Ограничение на круг: накопившаяся очередь не должна превращать один
+/// удачный круг в сотни запросов подряд, пока обновления Telegram не читаются.
+#[test]
+fn the_queue_is_drained_in_portions() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    for id in 1..=5 {
+        subscriber(&mut store, id);
+        let _ = store.link_to_panel(id, id, &format!("https://panel.example.org/api/sub/{id}"));
+        let _ = store.grant_trial(id, 3, NOW);
+    }
+
+    let Ok(work) = store.panel_work(2) else {
+        return;
+    };
+    assert_eq!(work.len(), 2);
 }

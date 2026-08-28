@@ -79,12 +79,20 @@ docker ps --format '{{.Names}}   {{.Ports}}'
 
 ## Применить схему
 
+Все миграции по порядку номеров, ни одной не пропуская:
+
 ```bash
-docker exec -i remnawave-db psql -U gloria -d gloria -v ON_ERROR_STOP=1 \
-  < db/migrations/0001_init.sql
+for m in db/migrations/*.sql; do
+  echo "== $m"
+  docker exec -i remnawave-db psql -U gloria -d gloria -v ON_ERROR_STOP=1 < "$m"
+done
 ```
 
-Ошибок быть не должно; последняя строка — `COMMIT`.
+Ошибок быть не должно; последняя строка каждой — `COMMIT`.
+
+Уже применённую миграцию второй раз запускать не нужно: она упрётся в
+«уже существует». Это не поломка, но и не проверка — учёта применённых
+миграций у нас пока нет, и порядок держится на том, что список короткий.
 
 ## Проверить сторожа
 
@@ -106,6 +114,7 @@ docker exec -i remnawave-db psql -U gloria -d gloria -v ON_ERROR_STOP=1 \
 | Файл | Что |
 |---|---|
 | `migrations/0001_init.sql` | схема целиком |
+| `migrations/0002_panel_sync.sql` | очередь согласования даты с панелью |
 | `tests/invariants.sql` | проверка того, что ограничения действуют |
 
 Миграции нумеруются и **не переписываются** после того, как применены на

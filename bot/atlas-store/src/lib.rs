@@ -65,6 +65,17 @@ pub struct Subscriber {
     pub subscription_url: Option<String>,
 }
 
+/// Один человек, до которого панель ещё не доехала.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PanelWork {
+    /// Кому.
+    pub telegram_id: i64,
+    /// Он же в панели.
+    pub panel_id: i64,
+    /// Какую дату везём.
+    pub expires_at: i64,
+}
+
 /// Чем кончилась попытка выдать пробу.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trial {
@@ -155,6 +166,55 @@ impl Store {
         self.client.execute(
             "UPDATE users SET panel_id = $2, subscription_url = $3 WHERE telegram_id = $1",
             &[&telegram_id, &panel_id, &subscription_url],
+        )?;
+        Ok(())
+    }
+
+    /// Кому надо отвезти дату в панель.
+    ///
+    /// Работа определяется расхождением двух дат: нашей и той, которую панель
+    /// подтвердила. Совпали — делать нечего, и запрос не возвращает ни строки;
+    /// так он и выглядит почти всегда.
+    ///
+    /// Гасить просроченных не наше дело: панель меняет статусы сама по той
+    /// дате, что у неё записана (`user.expired` — её собственное событие).
+    /// Поэтому здесь одна дата, а не два состояния.
+    pub fn panel_work(&mut self, limit: i64) -> Result<Vec<PanelWork>, Error> {
+        let rows = self.client.query(
+            "SELECT telegram_id, panel_id, EXTRACT(EPOCH FROM expires_at)::bigint
+               FROM users
+              WHERE panel_id IS NOT NULL
+                AND expires_at IS NOT NULL
+                AND expires_at IS DISTINCT FROM panel_expires_at
+              ORDER BY telegram_id
+              LIMIT $1",
+            &[&limit],
+        )?;
+
+        rows.iter()
+            .map(|row| {
+                Ok(PanelWork {
+                    telegram_id: row.try_get(0)?,
+                    panel_id: row.try_get(1)?,
+                    expires_at: row.try_get(2)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Отметить, что панель приняла эту дату.
+    ///
+    /// Отметка ставится **той датой, которую отвозили**, а не текущим
+    /// значением `expires_at`: между чтением очереди и ответом панели человек
+    /// мог оплатить ещё раз. Записав нынешнее значение, мы объявили бы
+    /// согласованной дату, которой панель не видела, и продление потерялось
+    /// бы молча. При таком же условии строка просто останется в очереди.
+    pub fn mark_panel_synced(&mut self, telegram_id: i64, sent: i64) -> Result<(), Error> {
+        self.client.execute(
+            "UPDATE users
+                SET panel_expires_at = to_timestamp($2::bigint)
+              WHERE telegram_id = $1 AND expires_at = to_timestamp($2::bigint)",
+            &[&telegram_id, &sent],
         )?;
         Ok(())
     }
