@@ -330,18 +330,22 @@ fn ensure_panel_user(
     let body = if response.is_ok() {
         response.body
     } else {
+        // Ответ на неудачное создание запоминаем до второй попытки: именно
+        // он объясняет причину. Код от поиска не объясняет ничего — 404 там
+        // означает обычное «такого пользователя нет», то есть в точности то,
+        // ради чего мы и создавали.
+        let refused_with = response.status;
+        let refusal = excerpt(&response.body);
+
         let request = panel
             .find(telegram_id)
             .map_err(|error| format!("панель: {error}"))?;
         let found = http::send(&request).map_err(|error| format!("панель: {error}"))?;
         if !found.is_ok() {
-            // Оба кода и адрес. По одному числу «404» неотличимы «панель
-            // отвечает не по этому адресу» и «токен не тот», а искать это
-            // без адреса в строке — гадание: панель за Caddy закрывает
-            // /api/* снаружи и отвечает 404 при живом и верном токене.
             return Err(format!(
-                "панель не завела ({}) и не нашла ({}) пользователя; адрес {}",
-                response.status, found.status, request.url
+                "панель не завела ({refused_with}) и не нашла ({}) пользователя; \
+                 адрес {}; ответ на создание: {refusal}",
+                found.status, request.url
             ));
         }
         found.body
@@ -387,4 +391,60 @@ fn unix_now() -> i64 {
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+/// Начало ответа панели — для журнала.
+///
+/// Панель объясняет отказ в теле, а не в коде: `500` с `A018 Failed to create
+/// user` чаще всего означает несуществующий UUID отряда. Печатать одно число
+/// значит выбросить объяснение и искать его потом руками.
+///
+/// Обрезаем по символам, а не по байтам: тело приходит извне, разрез посреди
+/// многобайтового символа испортил бы строку.
+fn excerpt(body: &[u8]) -> String {
+    const LIMIT: usize = 300;
+
+    let text = String::from_utf8_lossy(body);
+    let text = text.trim();
+    match text.char_indices().nth(LIMIT) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod excerpt_tests {
+    use super::excerpt;
+
+    #[test]
+    fn a_short_answer_is_shown_whole() {
+        let body = br#"{"message":"Failed to create user","errorCode":"A018"}"#;
+        assert_eq!(
+            excerpt(body),
+            r#"{"message":"Failed to create user","errorCode":"A018"}"#
+        );
+    }
+
+    #[test]
+    fn an_empty_answer_does_not_become_noise() {
+        assert_eq!(excerpt(b""), "");
+        assert_eq!(excerpt(b"  \n "), "");
+    }
+
+    /// Тело приходит извне: разрез посреди многобайтового символа выдал бы
+    /// в журнал испорченную строку, а то и панику при делении по байтам.
+    #[test]
+    fn a_long_answer_is_cut_on_a_character_boundary() {
+        let body = "щ".repeat(500);
+        let cut = excerpt(body.as_bytes());
+        assert!(cut.ends_with('…'));
+        assert_eq!(cut.chars().count(), 301);
+    }
+
+    /// Панель может ответить и не текстом — например, страницей ошибки от
+    /// промежуточного сервера. Журнал от этого не должен ломаться.
+    #[test]
+    fn bytes_that_are_not_text_do_not_break_anything() {
+        assert!(!excerpt(&[0xff, 0xfe, 0x00, 0x41]).is_empty());
+    }
 }
