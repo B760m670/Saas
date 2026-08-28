@@ -191,10 +191,14 @@ fn connect_screen(view: &View<'_>) -> Reply {
 }
 
 fn device_screen(device: Device, view: &View<'_>) -> Reply {
-    let (app, store) = match device {
-        Device::Iphone => ("Streisand", "App Store"),
-        Device::Android => ("Happ", "Google Play"),
-        Device::Desktop => ("Hiddify", "hiddify.com"),
+    // Приложение одно и то же на всех устройствах — Happ; различается только
+    // место, откуда его берут. INCY назван вторым и без объяснений: это
+    // запасной вариант на случай, если первый не встал, а не второй пункт
+    // выбора. Выбор в этом месте люди делают неправильно и пишут в поддержку.
+    let store = match device {
+        Device::Iphone => "App Store",
+        Device::Android => "Google Play",
+        Device::Desktop => "happ.su",
     };
 
     let link = match view.subscription_url {
@@ -204,9 +208,10 @@ fn device_screen(device: Device, view: &View<'_>) -> Reply {
 
     Reply {
         text: format!(
-            "1. Установите {app} — он есть в {store}.\n\n\
+            "1. Установите Happ — он есть в {store}.\n\n\
              2. Откройте приложение и выберите добавление подписки по ссылке.{link}\n\n\
-             Дальше приложение само заберёт ключи и будет обновлять их при смене сервера.",
+             Дальше приложение само заберёт ключи и будет обновлять их при смене сервера.\n\n\
+             Если Happ не подошёл, то же самое умеет INCY.",
         ),
         keyboard: Some(connect_menu()),
     }
@@ -394,19 +399,37 @@ mod tests {
         assert_eq!(checked, views.len() * actions.len());
     }
 
-    /// Инструкция подключения обязана называть одно конкретное приложение,
-    /// а не список из шести: список — это выбор, а выбор в этом месте люди
+    /// Инструкция подключения обязана называть одно приложение и одно место,
+    /// откуда его брать. Список — это выбор, а выбор в этом месте люди
     /// делают неправильно и потом пишут в поддержку.
     #[test]
-    fn each_device_gets_one_named_application() {
-        for (device, app) in [
-            (Device::Iphone, "Streisand"),
-            (Device::Android, "Happ"),
-            (Device::Desktop, "Hiddify"),
+    fn each_device_gets_one_named_application_and_one_place() {
+        for (device, store) in [
+            (Device::Iphone, "App Store"),
+            (Device::Android, "Google Play"),
+            (Device::Desktop, "happ.su"),
         ] {
             let (reply, _) = on_action(&Action::ConnectTo(device), &active());
-            assert!(reply.text.contains(app), "{device:?}: {}", reply.text);
+            assert!(reply.text.contains("Happ"), "{device:?}: {}", reply.text);
+            assert!(reply.text.contains(store), "{device:?}: {}", reply.text);
             assert!(reply.text.contains(LINK), "{device:?}: нет ссылки");
+        }
+    }
+
+    /// Клиентов ровно два, и оба должны быть теми, что мы поддерживаем.
+    /// Названия брошенных приложений в подсказке — это обращения в поддержку
+    /// от людей, которые их поставили и не смогли подключиться.
+    #[test]
+    fn no_abandoned_client_is_recommended() {
+        for device in [Device::Iphone, Device::Android, Device::Desktop] {
+            let (reply, _) = on_action(&Action::ConnectTo(device), &active());
+            for dropped in ["Streisand", "Hiddify", "v2rayTun", "Shadowrocket"] {
+                assert!(
+                    !reply.text.contains(dropped),
+                    "{device:?} советует {dropped}: {}",
+                    reply.text
+                );
+            }
         }
     }
 

@@ -352,23 +352,35 @@ button { font: inherit; color: inherit; }
     в том числе после смены сервера.
   </p>
 
-  <button class="row" data-act="device" data-device="ios">
-    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18.5h2"/></svg>
-    <span class="body"><span class="title">iPhone и iPad</span><span class="hint">Streisand</span></span>
-    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
-  </button>
+  <!-- Выбор идёт по приложению, а не по устройству: оба клиента есть на
+       всех платформах, и вопрос «где вы сидите» только добавлял бы шаг. -->
+  <p class="small muted" style="margin:20px 0 10px">
+    Подойдёт любое из двух. Оба есть на iPhone, Android, Windows, macOS и Linux —
+    ставить нужно одно, а не оба.
+  </p>
 
-  <button class="row" data-act="device" data-device="android">
-    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M10 18.5h4"/></svg>
-    <span class="body"><span class="title">Android</span><span class="hint">Happ</span></span>
-    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
-  </button>
+  <div class="card">
+    <div class="row" style="background:transparent;padding:0;border:0">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
+      <span class="body"><span class="title">Happ</span><span class="hint">Проще, если ставите впервые</span></span>
+    </div>
+    <button class="btn primary" data-act="add-to-app" data-app="happ" style="margin-top:12px">Добавить ссылку</button>
+    <button class="btn ghost" data-act="install-app" data-app="happ" style="margin-top:8px">Где скачать</button>
+  </div>
 
-  <button class="row" data-act="device" data-device="pc">
-    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
-    <span class="body"><span class="title">Компьютер</span><span class="hint">Hiddify</span></span>
-    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
-  </button>
+  <div class="card">
+    <div class="row" style="background:transparent;padding:0;border:0">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
+      <span class="body"><span class="title">INCY</span><span class="hint">Больше настроек, если они нужны</span></span>
+    </div>
+    <button class="btn primary" data-act="add-to-app" data-app="incy" style="margin-top:12px">Добавить ссылку</button>
+    <button class="btn ghost" data-act="install-app" data-app="incy" style="margin-top:8px">Где скачать</button>
+  </div>
+
+  <p class="small muted" style="margin-top:12px">
+    Если приложение не открылось — значит оно ещё не установлено. Поставьте его
+    и вернитесь сюда; ссылку выше всегда можно скопировать и вставить руками.
+  </p>
 </section>
 
 <!-- =========================== РЕФЕРАЛЫ ============================== -->
@@ -647,6 +659,27 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  /* Приложения и то, как в них попадает ссылка.
+
+     Форма плоская — `схема://add/<ссылка>`, а не зашифрованная `crypt1`.
+     Зашифрованная существует, чтобы ссылку не выхватывали сканеры при
+     пересылке; здесь она лежит открытым текстом на этом же экране, парой
+     строк выше, так что прятать её в кнопке нечего. Плюс `crypt1` требует
+     ключа из чужого npm-пакета — лишняя зависимость ради ничего. */
+  var APPS = {
+    happ: { scheme: 'happ://add/', site: 'https://happ.su' },
+    incy: { scheme: 'incy://add/', site: 'https://apps.apple.com/app/id6756943388' }
+  };
+
+  /* Открыть наружу. Telegram умеет http(s) через openLink, а свои схемы —
+     нет: их приходится отдавать обычной навигацией. Если приложение не
+     установлено, не произойдёт ничего — поэтому рядом всегда есть кнопка
+     копирования, и об этом сказано на самом экране. */
+  function openOut(url) {
+    if (url.indexOf('http') === 0 && tg && tg.openLink) return tg.openLink(url);
+    window.location.href = url;
+  }
+
   function sheet(open) {
     document.getElementById('sheet').classList.toggle('on', open);
     document.getElementById('sheet-bg').classList.toggle('on', open);
@@ -690,8 +723,19 @@ document.addEventListener('DOMContentLoaded', function () {
       return toast(sw.classList.contains('on') ? 'Напоминания включены' : 'Напоминания выключены');
     }
 
+    if (act === 'add-to-app' || act === 'install-app') {
+      var app = APPS[el.dataset.app];
+      if (!app) return;
+
+      if (act === 'install-app') { haptic(); return openOut(app.site); }
+
+      var url = state && state.subscriptionUrl;
+      if (!state || state.demo || !url) return toast('Ссылка ещё не получена');
+      haptic();
+      return openOut(app.scheme + url);
+    }
+
     if (act === 'reissue') return toast('Перевыпуск подключим следующим шагом');
-    if (act === 'device')  return toast('Инструкция появится следующим шагом');
     if (el.dataset.buy)    return toast('Оплата пока не подключена');
   });
 
@@ -707,6 +751,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }).catch(function () {
     document.getElementById('demo-note').hidden = false;
     return {
+      demo: true,
       status: 'trial',
       daysLeft: 3,
       expiresAt: '21.08.2026',
