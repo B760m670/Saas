@@ -8,6 +8,13 @@
 //! времени, а часовой пояс сервера перестаёт что-либо значить: между Rust и
 //! PostgreSQL ходит одно число.
 //!
+//! Обратно дробь **отбрасывается**, а не округляется: `::bigint` от
+//! `EXTRACT` округляет по правилам арифметики, и 259200,7 секунды стали бы
+//! 259201. Остаток дней считается с округлением вверх, поэтому одной лишней
+//! секунды хватает, чтобы показать покупателю день, которого у него нет.
+//! Сами мы пишем целыми секундами, но дату можно поправить и руками в psql —
+//! отсюда `FLOOR`.
+//!
 //! # Про зачисление
 //!
 //! Единственное место, где ошибка стоит денег, — [`Store::settle`]. Оно
@@ -63,6 +70,12 @@ pub struct Subscriber {
     pub panel_id: Option<i64>,
     /// Ссылка на подписку — выдаётся один раз и живёт всё время.
     pub subscription_url: Option<String>,
+    /// Была ли хоть одна оплата.
+    ///
+    /// Нужно, чтобы отличить пробу от купленного: по одному сроку они
+    /// неразличимы, а называть пробу «активной подпиской» значит однажды
+    /// удивить человека окончанием, которого он не ждал.
+    pub has_paid: bool,
 }
 
 /// Один человек, до которого панель ещё не доехала.
@@ -141,9 +154,12 @@ impl Store {
             "INSERT INTO users (telegram_id) VALUES ($1)
              ON CONFLICT (telegram_id) DO UPDATE SET telegram_id = EXCLUDED.telegram_id
              RETURNING telegram_id,
-                       EXTRACT(EPOCH FROM expires_at)::bigint,
-                       EXTRACT(EPOCH FROM trial_granted_at)::bigint,
-                       panel_id, subscription_url",
+                       FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
+                       FLOOR(EXTRACT(EPOCH FROM trial_granted_at))::bigint,
+                       panel_id, subscription_url,
+                       EXISTS (SELECT 1 FROM orders
+                                WHERE orders.telegram_id = users.telegram_id
+                                  AND orders.status = 'paid')",
             &[&telegram_id],
         )?;
 
@@ -153,6 +169,7 @@ impl Store {
             trial_granted_at: row.try_get(2)?,
             panel_id: row.try_get(3)?,
             subscription_url: row.try_get(4)?,
+            has_paid: row.try_get(5)?,
         })
     }
 
@@ -181,7 +198,7 @@ impl Store {
     /// Поэтому здесь одна дата, а не два состояния.
     pub fn panel_work(&mut self, limit: i64) -> Result<Vec<PanelWork>, Error> {
         let rows = self.client.query(
-            "SELECT telegram_id, panel_id, EXTRACT(EPOCH FROM expires_at)::bigint
+            "SELECT telegram_id, panel_id, FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint
                FROM users
               WHERE panel_id IS NOT NULL
                 AND expires_at IS NOT NULL
@@ -235,7 +252,7 @@ impl Store {
             "UPDATE users
                 SET trial_granted_at = to_timestamp($3::bigint), expires_at = to_timestamp($2::bigint)
               WHERE telegram_id = $1 AND trial_granted_at IS NULL
-              RETURNING EXTRACT(EPOCH FROM expires_at)::bigint",
+              RETURNING FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint",
             &[&telegram_id, &expires_at, &now],
         )?;
 
@@ -494,7 +511,7 @@ fn settle_in(
 
     // 3. Срок считаем мы, а не база и не панель: то же правило, что везде.
     let user = tx.query_one(
-        "SELECT EXTRACT(EPOCH FROM expires_at)::bigint FROM users
+        "SELECT FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint FROM users
           WHERE telegram_id = $1 FOR UPDATE",
         &[&telegram_id],
     )?;

@@ -46,6 +46,10 @@ pub struct Config {
     pub sbp_phone: Option<String>,
     /// Имя получателя, как его покажет банк плательщика.
     pub sbp_name: Option<String>,
+    /// Где слушать мини-приложение. Только петля: наружу выставляет Caddy.
+    pub api_addr: String,
+    /// Имя бота без «@» — из него строится реферальная ссылка.
+    pub bot_username: Option<String>,
 }
 
 impl core::fmt::Debug for Config {
@@ -59,6 +63,7 @@ impl core::fmt::Debug for Config {
             .field("database_url", &"<скрыт>")
             .field("squads", &self.squads.len())
             .field("admins", &self.admins.len())
+            .field("мини-приложение", &self.api_addr)
             .field("принимает переводы", &self.accepts_transfers())
             .finish()
     }
@@ -73,6 +78,16 @@ pub const SQUADS: &str = "GLORIA_SQUADS";
 pub const ADMINS: &str = "GLORIA_ADMINS";
 pub const SBP_PHONE: &str = "GLORIA_SBP_PHONE";
 pub const SBP_NAME: &str = "GLORIA_SBP_NAME";
+pub const API_ADDR: &str = "GLORIA_API_ADDR";
+pub const BOT_USERNAME: &str = "GLORIA_BOT_USERNAME";
+
+/// Куда встаёт мини-приложение, если адрес не задан.
+///
+/// Петля намеренно: наружу его выставляет Caddy на том же домене, где лежит
+/// сама страница. Слушать все адреса значило бы открыть выдачу ссылок на
+/// подписки всему интернету — подпись Telegram их защищает, но выставлять
+/// наружу то, чему незачем быть снаружи, не следует.
+pub const DEFAULT_API_ADDR: &str = "127.0.0.1:8081";
 
 impl Config {
     /// Собрать настройки из окружения процесса.
@@ -140,6 +155,11 @@ impl Config {
             admins,
             sbp_phone: optional(vars, SBP_PHONE),
             sbp_name: optional(vars, SBP_NAME),
+            api_addr: optional(vars, API_ADDR).unwrap_or_else(|| DEFAULT_API_ADDR.to_owned()),
+            bot_username: optional(vars, BOT_USERNAME).map(|name| {
+                // «@» люди дописывают по привычке, а в ссылке он лишний.
+                name.trim_start_matches('@').to_owned()
+            }),
         })
     }
 

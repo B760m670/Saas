@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+mod api;
 mod config;
 mod http;
 
@@ -56,6 +57,14 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    // Мини-приложение поднимается до основного цикла: не занятый адрес —
+    // это настройка, и знать о ней надо при запуске, а не при первом
+    // человеке, открывшем кабинет.
+    if let Err(error) = api::spawn(&config) {
+        eprintln!("Мини-приложение: {error}");
+        return ExitCode::FAILURE;
+    }
 
     println!("Бот запущен. {config:?}");
     run(&config, &telegram, &panel, &mut store);

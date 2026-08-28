@@ -632,9 +632,14 @@ document.addEventListener('DOMContentLoaded', function () {
     badge.textContent = s.status === 'trial' ? 'Пробный период'
       : (s.status === 'expired' ? 'Не активна' : 'Активна');
 
+    /* Сколько устройств занято, знает панель, а не бот. Пока он этого не
+       спрашивает, честнее сказать «до четырёх», чем «0 из 4» тому, у кого
+       их два. */
+    var limit = s.deviceLimit || 4;
+    var word = plural(limit, 'устройства', 'устройств', 'устройств');
     document.getElementById('st-devices').textContent =
-      (s.devices || 0) + ' из ' + (s.deviceLimit || 4) + ' ' +
-      plural(s.deviceLimit || 4, 'устройства', 'устройств', 'устройств');
+      s.devices == null ? 'до ' + limit + ' ' + word
+                        : s.devices + ' из ' + limit + ' ' + word;
 
     document.getElementById('sub-url').textContent = s.subscriptionUrl || '—';
     fillAppLinks(s);
