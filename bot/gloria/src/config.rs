@@ -92,10 +92,10 @@ impl Config {
         };
 
         let panel_url = get(PANEL_URL)?;
-        if !panel_url.starts_with("https://") {
+        if !panel_url.starts_with("https://") && !is_loopback(&panel_url) {
             return Err(Error::Invalid {
                 name: PANEL_URL,
-                why: "адрес обязан быть https: по нему ходит токен панели",
+                why: "адрес обязан быть https или петлевым: по нему ходит токен панели",
             });
         }
 
@@ -154,6 +154,33 @@ impl Config {
     pub fn is_admin(&self, telegram_id: i64) -> bool {
         self.admins.contains(&telegram_id)
     }
+}
+
+/// Обращение к панели по петлевому адресу — единственный случай, когда
+/// `http` допустим.
+///
+/// Требование `https` существует ради одного: токен панели даёт власть над
+/// всеми узлами, и по сети он ходить открытым не должен. По `127.0.0.1`
+/// он по сети и не ходит — запрос не покидает машину. Зато `http` туда
+/// снимает целый слой чужих настроек: панель за Caddy закрывает `/api/*`
+/// от внешнего мира, и обращение по публичному адресу упирается в 404 при
+/// живом и правильном токене.
+///
+/// Проверяется именно **начало адреса**, а не вхождение подстроки:
+/// `http://127.0.0.1.attacker.example` начинается с `http://127.0.0.1`, но
+/// петлевым не является, поэтому за адресом обязан идти конец строки,
+/// двоеточие с портом или косая черта.
+fn is_loopback(url: &str) -> bool {
+    const HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "[::1]"];
+
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+
+    HOSTS.iter().any(|host| {
+        rest.strip_prefix(host)
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with(':') || tail.starts_with('/'))
+    })
 }
 
 /// Необязательное значение: пустое считается незаданным.
@@ -233,6 +260,52 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// Панель за Caddy закрывает `/api/*` снаружи, а бот стоит на той же
+    /// машине. По петле токен по сети не идёт, поэтому `http` там уместен.
+    #[test]
+    fn a_panel_on_the_loopback_may_be_plain_http() {
+        for address in [
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1",
+            "http://localhost:3000",
+            "http://[::1]:3000",
+            "http://127.0.0.1:3000/",
+        ] {
+            let mut vars = full();
+            vars.insert(PANEL_URL.to_owned(), address.to_owned());
+            assert!(
+                Config::from_map(&vars).is_ok(),
+                "петлевой адрес {address} отвергнут"
+            );
+        }
+    }
+
+    /// Проверка идёт по началу адреса, а не по вхождению подстроки: имя
+    /// `127.0.0.1.attacker.example` разрешается во что угодно, и открытый
+    /// токен ушёл бы туда.
+    #[test]
+    fn a_hostname_that_merely_starts_with_the_loopback_is_refused() {
+        for address in [
+            "http://127.0.0.1.attacker.example",
+            "http://localhost.attacker.example",
+            "http://attacker.example/127.0.0.1",
+            "http://127.0.0.10",
+        ] {
+            let mut vars = full();
+            vars.insert(PANEL_URL.to_owned(), address.to_owned());
+            assert!(
+                matches!(
+                    Config::from_map(&vars),
+                    Err(Error::Invalid {
+                        name: PANEL_URL,
+                        ..
+                    })
+                ),
+                "адрес {address} принят за петлевой"
+            );
+        }
     }
 
     /// Пользователь без отряда заводится, но ходить ему некуда: ровно та

@@ -335,9 +335,13 @@ fn ensure_panel_user(
             .map_err(|error| format!("панель: {error}"))?;
         let found = http::send(&request).map_err(|error| format!("панель: {error}"))?;
         if !found.is_ok() {
+            // Оба кода и адрес. По одному числу «404» неотличимы «панель
+            // отвечает не по этому адресу» и «токен не тот», а искать это
+            // без адреса в строке — гадание: панель за Caddy закрывает
+            // /api/* снаружи и отвечает 404 при живом и верном токене.
             return Err(format!(
-                "панель не завела и не нашла пользователя, код {}",
-                found.status
+                "панель не завела ({}) и не нашла ({}) пользователя; адрес {}",
+                response.status, found.status, request.url
             ));
         }
         found.body
