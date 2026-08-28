@@ -164,6 +164,11 @@ button { font: inherit; color: inherit; }
 }
 .btn.ghost { background: transparent; }
 
+/* Кнопка «Добавить ссылку» — настоящая ссылка: встроенный браузер Telegram
+   отдаёт системе нажатие по ссылке охотнее, чем переход из скрипта. */
+a.btn { text-decoration: none; }
+a.btn.off { opacity: 0.45; }
+
 /* Строка списка: иконка, текст, стрелка */
 .row {
   display: flex; align-items: center; gap: 14px;
@@ -364,7 +369,7 @@ button { font: inherit; color: inherit; }
       <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
       <span class="body"><span class="title">Happ</span><span class="hint">Проще, если ставите впервые</span></span>
     </div>
-    <button class="btn primary" data-act="add-to-app" data-app="happ" style="margin-top:12px">Добавить ссылку</button>
+    <a class="btn primary" id="add-happ" data-app="happ" style="margin-top:12px">Добавить ссылку</a>
     <button class="btn ghost" data-act="install-app" data-app="happ" style="margin-top:8px">Где скачать</button>
   </div>
 
@@ -373,7 +378,7 @@ button { font: inherit; color: inherit; }
       <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
       <span class="body"><span class="title">INCY</span><span class="hint">Больше настроек, если они нужны</span></span>
     </div>
-    <button class="btn primary" data-act="add-to-app" data-app="incy" style="margin-top:12px">Добавить ссылку</button>
+    <a class="btn primary" id="add-incy" data-app="incy" style="margin-top:12px">Добавить ссылку</a>
     <button class="btn ghost" data-act="install-app" data-app="incy" style="margin-top:8px">Где скачать</button>
   </div>
 
@@ -632,6 +637,7 @@ document.addEventListener('DOMContentLoaded', function () {
       plural(s.deviceLimit || 4, 'устройства', 'устройств', 'устройств');
 
     document.getElementById('sub-url').textContent = s.subscriptionUrl || '—';
+    fillAppLinks(s);
 
     var r = s.referral || {};
     document.getElementById('rf-invited').textContent = r.invited || 0;
@@ -671,6 +677,24 @@ document.addEventListener('DOMContentLoaded', function () {
     incy: { scheme: 'incy://add/', site: 'https://apps.apple.com/app/id6756943388' }
   };
 
+  /* Проставить настоящие href кнопкам «Добавить ссылку».
+
+     Именно href, а не переход из скрипта: встроенный браузер Telegram
+     скриптовый переход на чужую схему иногда молча съедает, а нажатие по
+     ссылке отдаёт системе. Пока настоящего адреса нет, ссылка остаётся
+     без href — тогда она не ведёт никуда, и обработчик ниже объясняет,
+     почему, вместо того чтобы отправить в клиент выдуманный адрес. */
+  function fillAppLinks(s) {
+    var url = s && !s.demo && s.subscriptionUrl;
+    Object.keys(APPS).forEach(function (name) {
+      var a = document.getElementById('add-' + name);
+      if (!a) return;
+      if (url) a.href = APPS[name].scheme + url;
+      else a.removeAttribute('href');
+      a.classList.toggle('off', !url);
+    });
+  }
+
   /* Открыть наружу. Telegram умеет http(s) через openLink, а свои схемы —
      нет: их приходится отдавать обычной навигацией. Если приложение не
      установлено, не произойдёт ничего — поэтому рядом всегда есть кнопка
@@ -690,6 +714,12 @@ document.addEventListener('DOMContentLoaded', function () {
     if (tab) {
       haptic('select');
       return go(tab.dataset.go, Number(tab.dataset.i));
+    }
+
+    var add = event.target.closest('[id^="add-"]');
+    if (add) {
+      if (!add.getAttribute('href')) return toast('Ссылка ещё не получена');
+      return haptic();
     }
 
     var el = event.target.closest('[data-act], [data-buy]');
@@ -723,16 +753,11 @@ document.addEventListener('DOMContentLoaded', function () {
       return toast(sw.classList.contains('on') ? 'Напоминания включены' : 'Напоминания выключены');
     }
 
-    if (act === 'add-to-app' || act === 'install-app') {
+    if (act === 'install-app') {
       var app = APPS[el.dataset.app];
       if (!app) return;
-
-      if (act === 'install-app') { haptic(); return openOut(app.site); }
-
-      var url = state && state.subscriptionUrl;
-      if (!state || state.demo || !url) return toast('Ссылка ещё не получена');
       haptic();
-      return openOut(app.scheme + url);
+      return openOut(app.site);
     }
 
     if (act === 'reissue') return toast('Перевыпуск подключим следующим шагом');
