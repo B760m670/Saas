@@ -136,9 +136,24 @@ fn handle(
         }
     }
 
-    let subscriber = store
+    let mut subscriber = store
         .ensure_subscriber(telegram_id)
         .map_err(|error| format!("база: {error}"))?;
+
+    // Подписка есть, а ссылки нет — значит панель отказала в тот раз, когда
+    // мы заводили человека. Само это не исправится: проба выдаётся один раз,
+    // и ветка с созданием в панели больше не отработает никогда. Чиним при
+    // следующем же обращении, иначе оплативший останется без ссылки навсегда.
+    if subscriber.subscription_url.is_none() {
+        if let Some(expires_at) = subscriber.expires_at {
+            match ensure_panel_user(config, panel, store, telegram_id, expires_at) {
+                Ok(url) => subscriber.subscription_url = Some(url),
+                // Разговор не прерываем. Меню без ссылки — плохо, молчащий
+                // бот — хуже: человек не поймёт, сломалось у него или у нас.
+                Err(error) => eprintln!("Панель для {telegram_id}: {error}"),
+            }
+        }
+    }
 
     let view = flow::View {
         expires_at: subscriber.expires_at,
