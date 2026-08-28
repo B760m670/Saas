@@ -43,7 +43,14 @@
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  /* Двойное касание по кнопке приближало страницу — браузер ждал второго
+     тапа, чтобы решить, нажатие это или зум. `manipulation` снимает
+     ожидание: прокрутка и щипок остаются, двойной тап перестаёт масштабировать. */
+  touch-action: manipulation;
+}
 
 html, body { height: 100%; }
 
@@ -135,6 +142,10 @@ p { margin: 0 0 12px; }
 .badge.ok   { color: var(--ok);   background: rgba(79, 191, 139, 0.13); }
 .badge.warn { color: var(--mid);  background: rgba(238, 152, 46, 0.14); }
 .badge.bad  { color: var(--bad);  background: rgba(229, 84, 75, 0.13); }
+/* Без этого правила значок не прячется: авторское `display: inline-flex`
+   выше по силе, чем браузерное `display: none` для `[hidden]`. Проверено
+   тем, что при недоступном сервере горело зелёное «Активна». */
+.badge[hidden] { display: none; }
 
 .chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
 .chip {
@@ -230,13 +241,6 @@ a.btn.off { opacity: 0.45; }
 .qa[open] summary::after { transform: rotate(-135deg); }
 .qa .answer { padding: 0 16px 15px; color: var(--muted); font-size: 14px; }
 
-/* Предупреждение о заглушке */
-.demo {
-  margin-bottom: 16px; padding: 11px 14px; border-radius: 12px;
-  background: rgba(238, 152, 46, 0.12); border: 1px solid rgba(238, 152, 46, 0.3);
-  color: var(--mid); font-size: 13px; font-weight: 600;
-}
-
 /* ------------------------------ таб-бар ---------------------------------- */
 
 .tabbar {
@@ -321,8 +325,6 @@ a.btn.off { opacity: 0.45; }
 
 <!-- ============================ ГЛАВНАЯ ============================== -->
 <section class="screen on" id="s-home">
-  <div class="demo" id="demo-note" hidden>Показаны примерные данные — сервер ещё не отвечает</div>
-
   <h1>Подписка</h1>
   <p class="sub" id="hello">Gloria VPN</p>
 
@@ -352,17 +354,9 @@ a.btn.off { opacity: 0.45; }
     <code id="sub-url">—</code>
     <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
   </div>
-  <p class="small muted" style="margin-top:8px">
-    Одна ссылка на всё время. Вставьте её в приложение — ключи оно заберёт само,
-    в том числе после смены сервера.
-  </p>
-
   <!-- Выбор идёт по приложению, а не по устройству: оба клиента есть на
        всех платформах, и вопрос «где вы сидите» только добавлял бы шаг. -->
-  <p class="small muted" style="margin:20px 0 10px">
-    Подойдёт любое из двух. Оба есть на iPhone, Android, Windows, macOS и Linux —
-    ставить нужно одно, а не оба.
-  </p>
+  <div style="height:20px"></div>
 
   <div class="card">
     <div class="row" style="background:transparent;padding:0;border:0">
@@ -381,11 +375,6 @@ a.btn.off { opacity: 0.45; }
     <a class="btn primary" id="add-incy" data-app="incy" style="margin-top:12px">Добавить ссылку</a>
     <button class="btn ghost" data-act="install-app" data-app="incy" style="margin-top:8px">Где скачать</button>
   </div>
-
-  <p class="small muted" style="margin-top:12px">
-    Если приложение не открылось — значит оно ещё не установлено. Поставьте его
-    и вернитесь сюда; ссылку выше всегда можно скопировать и вставить руками.
-  </p>
 </section>
 
 <!-- =========================== РЕФЕРАЛЫ ============================== -->
@@ -405,15 +394,6 @@ a.btn.off { opacity: 0.45; }
     <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
   </div>
   <button class="btn" data-act="share-ref">Поделиться</button>
-
-  <h2>Как это работает</h2>
-  <div class="card">
-    <p class="small muted" style="margin:0">
-      Друг переходит по вашей ссылке и оплачивает любой тариф — вам начисляются
-      дни к текущей подписке. Начисление происходит после оплаты, а не после
-      перехода: иначе ссылку выгодно было бы рассылать веером.
-    </p>
-  </div>
 </section>
 
 <!-- =========================== ПОДДЕРЖКА ============================= -->
@@ -428,43 +408,38 @@ a.btn.off { opacity: 0.45; }
   <details class="qa">
     <summary>Не открывается сайт или приложение</summary>
     <div class="answer">
-      Сначала переподключитесь: в приложении обновите подписку круговой стрелкой
-      и выберите сервер заново. Если не помогло — напишите нам, приложив название
-      сервера и время, когда перестало работать.
+      Обновите подписку в приложении круговой стрелкой и выберите сервер
+      заново. Не помогло — напишите нам.
     </div>
   </details>
 
   <details class="qa">
     <summary>Во время ограничений мобильного интернета ничего не работает</summary>
     <div class="answer">
-      Это ограничение стоит в сети оператора, а не в приложении. Когда в регионе
-      объявляют опасность, мобильный интернет оставляет доступными только
-      разрешённые сервисы — в такие моменты не работает ни один VPN, включая наш.
-      Дома по Wi-Fi и на проводном интернете всё продолжает работать.
+      Ограничение стоит в сети оператора: не работает ни один VPN, включая
+      наш. По Wi-Fi и на проводном всё продолжает работать.
     </div>
   </details>
 
   <details class="qa">
     <summary>Сколько устройств можно подключить</summary>
     <div class="answer">
-      Четыре одновременно. Ссылка одна на все — вставьте её в приложение на
-      каждом устройстве.
+      Четыре одновременно, ссылка одна на все.
     </div>
   </details>
 
   <details class="qa">
     <summary>Я оплатил, но подписка не продлилась</summary>
     <div class="answer">
-      Напишите нам и приложите время платежа и последние четыре цифры карты или
-      номер операции. Все платежи сохраняются, разберёмся и продлим вручную.
+      Напишите нам время платежа и номер операции — продлим вручную.
     </div>
   </details>
 
   <details class="qa">
     <summary>VK и Max пишут «отключите VPN»</summary>
     <div class="answer">
-      Не должны: российские сайты идут напрямую, мимо туннеля. Если предупреждение
-      всё же появилось — обновите подписку в приложении, у вас старые настройки.
+      Российские сайты идут напрямую, мимо туннеля. Появилось — обновите
+      подписку в приложении, у вас старые настройки.
     </div>
   </details>
 </section>
@@ -493,14 +468,6 @@ a.btn.off { opacity: 0.45; }
     <span class="body"><span class="title">Тарифы и оплата</span><span class="hint" id="set-plan">—</span></span>
     <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
-
-  <h2>О сервисе</h2>
-  <div class="card">
-    <p class="small muted" style="margin:0">
-      Gloria VPN. Ключи выдаются на постоянную ссылку — она переживает смену
-      серверов, и переустанавливать ничего не нужно.
-    </p>
-  </div>
 </section>
 
 </main>
@@ -621,13 +588,17 @@ document.addEventListener('DOMContentLoaded', function () {
     var s = state;
     if (!s) return;
 
+    var known = !!s.status;
     var left = Number(s.daysLeft) || 0;
+
     document.getElementById('st-days').textContent =
-      s.status === 'expired' ? 'Истекла' : left + ' ' + plural(left, 'день', 'дня', 'дней');
+      !known ? '—' : (s.status === 'expired' ? 'Истекла'
+                                             : left + ' ' + plural(left, 'день', 'дня', 'дней'));
     document.getElementById('st-until').textContent =
-      s.status === 'expired' ? 'Продлите, чтобы продолжить' : 'до ' + s.expiresAt;
+      !known ? '' : (s.status === 'expired' ? 'Продлите, чтобы продолжить' : 'до ' + s.expiresAt);
 
     var badge = document.getElementById('st-badge');
+    badge.hidden = !known;
     badge.className = 'badge ' + (s.status === 'expired' ? 'bad' : (s.status === 'trial' ? 'warn' : 'ok'));
     badge.textContent = s.status === 'trial' ? 'Пробный период'
       : (s.status === 'expired' ? 'Не активна' : 'Активна');
@@ -690,7 +661,7 @@ document.addEventListener('DOMContentLoaded', function () {
      без href — тогда она не ведёт никуда, и обработчик ниже объясняет,
      почему, вместо того чтобы отправить в клиент выдуманный адрес. */
   function fillAppLinks(s) {
-    var url = s && !s.demo && s.subscriptionUrl;
+    var url = s && s.status && s.subscriptionUrl;
     Object.keys(APPS).forEach(function (name) {
       var a = document.getElementById('add-' + name);
       if (!a) return;
@@ -779,19 +750,9 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!r.ok) throw new Error('нет ответа');
     return r.json();
   }).catch(function () {
-    document.getElementById('demo-note').hidden = false;
-    return {
-      demo: true,
-      status: 'trial',
-      daysLeft: 3,
-      expiresAt: '21.08.2026',
-      devices: 1,
-      deviceLimit: 4,
-      userId: 0,
-      subscriptionUrl: 'https://—/api/sub/…',
-      referral: { link: 'https://t.me/GloriaVPN_Bot?start=ref_0', invited: 0, paying: 0, bonusDays: 0 },
-      settings: { notify: true }
-    };
+    /* Сервер не ответил. Выдуманные числа на их месте выглядели бы как
+       настоящие, поэтому здесь пусто: прочерки и погашенные кнопки. */
+    return { status: null, subscriptionUrl: null, referral: {}, settings: {} };
   }).then(function (data) {
     state = data;
     render();
