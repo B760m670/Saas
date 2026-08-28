@@ -47,11 +47,16 @@ Caddy, и туда же бот ходит за ключами — все обр�
 ## Как запустить
 
 ```bash
-# 1. База — если ещё не создана, см. db/README.md
-# 2. Сборка
+# 1. Компилятор C. Rust линкует через cc, и у части зависимостей (libc,
+#    ring, typenum) есть скрипты сборки. На свежей Ubuntu их нет, и сборка
+#    падает на «error: linker `cc` not found».
+apt-get update && apt-get install -y build-essential pkg-config
+
+# 2. База — если ещё не создана, см. db/README.md
+# 3. Сборка
 cd bot && cargo build --release
 
-# 3. Настройки
+# 4. Настройки
 cat > /etc/gloria.env <<'ENV'
 GLORIA_BOT_TOKEN=…
 GLORIA_PANEL_URL=https://panel.…
@@ -62,7 +67,7 @@ GLORIA_ADMINS=…
 ENV
 chmod 600 /etc/gloria.env
 
-# 4. Проверка вручную
+# 5. Проверка вручную
 set -a; . /etc/gloria.env; set +a
 ./target/release/gloria
 ```
