@@ -263,19 +263,11 @@ mod tests {
     }
 
     fn showcase() -> Vec<Plan> {
-        [
-            ("d30", "1 месяц", 30, 199),
-            ("d90", "3 месяца", 90, 499),
-            ("d180", "6 месяцев", 180, 790),
-            ("d365", "12 месяцев", 365, 1290),
-        ]
-        .into_iter()
-        .filter_map(|(id, title, days, rubles)| plan(id, title, days, rubles))
-        .collect()
+        crate::catalog::plans()
     }
 
     fn base() -> Option<Money> {
-        Money::from_major(199, Currency::Rub)
+        crate::catalog::monthly_base()
     }
 
     fn every_keyboard() -> Vec<Keyboard> {
