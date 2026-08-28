@@ -52,9 +52,24 @@ impl View<'_> {
         subscription::is_active(self.expires_at, self.now)
     }
 
+    /// Сколько дней ещё можно пользоваться — с округлением **вверх**.
+    ///
+    /// Вниз округлять нельзя с обоих концов. Через десять минут после выдачи
+    /// трёх пробных дней остаётся 2 дня 23 часа, и floor показал бы
+    /// «осталось 2 дня» — покупатель читает это как обман и идёт в
+    /// поддержку. А за полчаса до конца floor показал бы «осталось 0 дней»
+    /// при работающем VPN.
+    ///
+    /// Вверх верно на обоих концах: 2 дня 23 часа — это и есть «ещё три дня
+    /// можно пользоваться», а полчаса — «сегодня ещё работает».
     fn days_left(&self) -> i64 {
-        self.expires_at
-            .map_or(0, |end| (end - self.now).max(0) / 86_400)
+        self.expires_at.map_or(0, |end| {
+            // `i64::div_ceil` пока нестабилен, поэтому вручную. Насыщение —
+            // на случай нелепой даты окончания из базы: переполнение здесь
+            // дало бы отрицательное число дней вместо большого.
+            let left = end.saturating_sub(self.now).max(0);
+            left.saturating_add(86_399) / 86_400
+        })
     }
 }
 
@@ -420,16 +435,48 @@ mod tests {
         }
     }
 
-    /// Оставшиеся дни округляются вниз: сказать «остался 1 день», когда до
-    /// конца полчаса, честнее, чем «остался 1 день» при полутора сутках.
+    /// Полтора суток — это «осталось 2 дня»: пользоваться можно ещё и
+    /// сегодня, и завтра.
     #[test]
-    fn the_days_left_are_rounded_down() {
+    fn the_days_left_are_rounded_up() {
         let view = View {
             expires_at: Some(NOW + DAY + DAY / 2),
             trial_used: true,
             subscription_url: None,
             now: NOW,
         };
+        let (reply, _) = on_action(&Action::Subscription, &view);
+        assert!(reply.text.contains("2 дня"), "{}", reply.text);
+    }
+
+    /// Случай с боевого запуска: `/start` выдал три пробных дня, человек
+    /// через десять минут нажал «Моя подписка» и прочёл «осталось 2 дня».
+    /// Обещание и показания разошлись на глазах у покупателя.
+    #[test]
+    fn a_trial_checked_minutes_later_still_shows_all_its_days() {
+        let granted_at = NOW;
+        let view = View {
+            expires_at: Some(granted_at + 3 * DAY),
+            trial_used: true,
+            subscription_url: None,
+            now: granted_at + 10 * 60,
+        };
+        let (reply, _) = on_action(&Action::Subscription, &view);
+        assert!(reply.text.contains("3 дня"), "{}", reply.text);
+    }
+
+    /// Обратный конец: подписка ещё действует, значит счётчик не вправе
+    /// показывать ноль. «Осталось 0 дней» при работающем VPN — обращение в
+    /// поддержку на ровном месте.
+    #[test]
+    fn the_last_half_hour_is_still_a_day() {
+        let view = View {
+            expires_at: Some(NOW + 1800),
+            trial_used: true,
+            subscription_url: None,
+            now: NOW,
+        };
+        assert!(view.is_active());
         let (reply, _) = on_action(&Action::Subscription, &view);
         assert!(reply.text.contains("1 день"), "{}", reply.text);
     }
