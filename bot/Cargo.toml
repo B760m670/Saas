@@ -10,7 +10,7 @@
 
 [workspace]
 resolver = "2"
-members = ["atlas-bot", "atlas-panel"]
+members = ["atlas-bot", "atlas-panel", "atlas-store"]
 
 [workspace.package]
 version = "0.1.0"

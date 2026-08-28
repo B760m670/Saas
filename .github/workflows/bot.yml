@@ -41,6 +41,25 @@ jobs:
   check:
     name: тесты, clippy, формат
     runs-on: ubuntu-latest
+
+    # Хранилище проверяется против настоящего PostgreSQL: всё, что там стоит
+    # проверять, — это поведение ограничений, блокировок и транзакций, то есть
+    # ровно то, чего у заглушки нет. Без этой службы тесты хранилища молча
+    # пропускаются, и провал прошёл бы незамеченным.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gloria_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
     steps:
       - uses: actions/checkout@v5
 
@@ -59,6 +78,8 @@ jobs:
 
       - name: Тесты
         run: cargo test --all-features
+        env:
+          GLORIA_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/gloria_test
 
       - name: Документация без предупреждений
         run: cargo doc --no-deps --all-features

@@ -53,8 +53,9 @@ CREATE TABLE users (
     -- у покупателя нет, а этот стабилен и не переиспользуется.
     telegram_id BIGINT PRIMARY KEY CHECK (telegram_id > 0),
 
-    -- Тот же человек в панели Remnawave.
-    panel_uuid UUID UNIQUE,
+    -- Тот же человек в панели Remnawave. Номер там целочисленный, а не
+    -- UUID: сверено с их спецификацией (Remnawave API 3.3.2, поле `id`).
+    panel_id BIGINT UNIQUE,
 
     -- Ссылка на подписку. Выдаётся один раз и живёт всё время, пока человек
     -- с нами, — через оплаты, перерывы и возвраты (docs/14-bot.md §1).
