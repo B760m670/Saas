@@ -191,7 +191,7 @@ fn handle(
     // подписку, а про чужие платежи, и показывать их всем нельзя.
     if let Incoming::Message { text, .. } = incoming {
         if config.is_admin(telegram_id) {
-            if let Some(answer) = admin(store, text, now)? {
+            if let Some(answer) = admin(telegram, store, text, now)? {
                 let request = telegram
                     .send_message(incoming.chat(), &answer, None)
                     .map_err(|error| format!("сообщение: {error}"))?;
@@ -237,7 +237,7 @@ fn handle(
         },
     };
 
-    let extra = apply(config, panel, store, telegram_id, &effect, now)?;
+    let extra = apply(config, telegram, panel, store, telegram_id, &effect, now)?;
 
     let text = match extra {
         Some(extra) => format!("{}\n\n{extra}", reply.text),
@@ -262,6 +262,7 @@ fn handle(
 /// Выполнить намерение и вернуть то, что надо дописать к ответу.
 fn apply(
     config: &Config,
+    telegram: &Telegram,
     panel: &Panel,
     store: &mut Store,
     telegram_id: i64,
@@ -305,6 +306,20 @@ fn apply(
                 .open_order(&order_id, telegram_id, &plan.id, plan.days, amount, now)
                 .map_err(|error| format!("счёт: {error}"))?;
 
+            // Владелец узнаёт о счёте сразу, а не когда вспомнит про
+            // /pending. Счёт живёт двадцать минут: человек, заплативший и
+            // ждущий, за это время успевает решить, что его обманули.
+            notify_admins(
+                config,
+                telegram,
+                &format!(
+                    "Счёт <b>{}</b> · {} · от {telegram_id}\n  подтвердить: /ok {}",
+                    atlas_bot::menu::price_label(amount),
+                    plan.title,
+                    amount.to_decimal(),
+                ),
+            );
+
             Ok(Some(invoice_text(config, amount)))
         }
     }
@@ -315,7 +330,12 @@ fn apply(
 /// Подтверждение вручную — то, чем рублёвый канал живёт, пока не одобрен
 /// процессинг: банк не сообщает программе о зачислении, знает о нём только
 /// владелец счёта.
-fn admin(store: &mut Store, text: &str, now: i64) -> Result<Option<String>, String> {
+fn admin(
+    telegram: &Telegram,
+    store: &mut Store,
+    text: &str,
+    now: i64,
+) -> Result<Option<String>, String> {
     let mut parts = text.split_whitespace();
     let command = parts.next().unwrap_or("").split('@').next().unwrap_or("");
 
@@ -355,7 +375,7 @@ fn admin(store: &mut Store, text: &str, now: i64) -> Result<Option<String>, Stri
             let found = store
                 .order_by_amount(amount, now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("база: {error}"))?;
-            let Some(order_id) = found else {
+            let Some((order_id, buyer)) = found else {
                 return Ok(Some(
                     "Открытого счёта на такую сумму нет. Проверьте /pending.".to_owned(),
                 ));
@@ -369,11 +389,21 @@ fn admin(store: &mut Store, text: &str, now: i64) -> Result<Option<String>, Stri
                 .settle(&order_id, "manual", &reference, amount, "{}", now)
                 .map_err(|error| format!("зачисление: {error}"))?;
 
+            // Покупателя извещаем сами. Он заплатил и ждёт; тишина после
+            // платежа читается как «деньги пропали», и следующим сообщением
+            // будет обращение в поддержку.
+            if let Settled::Extended { expires_at } = settled {
+                let text = format!(
+                    "Оплата получена. Подписка продлена до {}.\n\n                     Ничего перенастраивать не нужно — ключ прежний,                      приложение подхватит новый срок само.",
+                    day_month_year(expires_at)
+                );
+                tell(telegram, buyer, &text);
+            }
+
             Ok(Some(match settled {
-                Settled::Extended { expires_at } => format!(
-                    "Зачислено. Подписка до {}.",
-                    atlas_panel::to_iso8601(expires_at)
-                ),
+                Settled::Extended { expires_at } => {
+                    format!("Зачислено. Подписка до {}.", day_month_year(expires_at))
+                }
                 Settled::AlreadyCounted => "Этот платёж уже был учтён.".to_owned(),
                 Settled::OrderAlreadyPaid => "Счёт уже закрыт другим платежом.".to_owned(),
                 Settled::Underpaid => "Сумма меньше выставленной — не зачислено.".to_owned(),
@@ -471,6 +501,37 @@ fn unix_now() -> i64 {
         .map_or(0, |elapsed| {
             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
         })
+}
+
+/// Сказать что-то одному человеку, не прерывая начатого.
+///
+/// Отказ Telegram здесь не должен ломать то, ради чего всё делалось:
+/// подписка уже продлена, деньги уже зачислены. Не дошло — строка в
+/// журнал, а не откат.
+fn tell(telegram: &Telegram, chat_id: i64, text: &str) {
+    match telegram.send_message(chat_id, text, None) {
+        Ok(request) => {
+            if let Err(error) = http::send(&request) {
+                eprintln!(
+                    "Сообщение для {chat_id}: {}",
+                    telegram.redact(&error.to_string())
+                );
+            }
+        }
+        Err(error) => eprintln!("Сообщение для {chat_id}: {error}"),
+    }
+}
+
+/// Сказать то же самое всем владельцам.
+fn notify_admins(config: &Config, telegram: &Telegram, text: &str) {
+    for admin in &config.admins {
+        tell(telegram, *admin, text);
+    }
+}
+
+/// Дата в том виде, в каком её читает человек: `31.08.2026`.
+fn day_month_year(seconds: i64) -> String {
+    api::day_month_year(seconds)
 }
 
 /// Начало ответа панели — для журнала.

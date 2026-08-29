@@ -255,7 +255,7 @@ fn an_underpayment_does_not_hand_out_a_subscription() {
     // Заказ остался открытым — по нему ещё можно доплатить.
     assert_eq!(
         store.order_by_amount(rub(19_899), NOW, LIFETIME).ok(),
-        Some(Some("u42-d30-03".to_owned()))
+        Some(Some(("u42-d30-03".to_owned(), 42)))
     );
 }
 
@@ -321,7 +321,8 @@ fn a_payment_finds_its_order_by_the_amount_alone() {
 
     assert_eq!(
         store.order_by_amount(rub(19_898), NOW, LIFETIME).ok(),
-        Some(Some("for-43".to_owned()))
+        Some(Some(("for-43".to_owned(), 43))),
+        "по сумме находится не тот счёт или не тот покупатель"
     );
     // Круглая сумма не принадлежит никому — уходит в ручной разбор.
     assert_eq!(

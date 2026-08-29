@@ -385,11 +385,11 @@ impl Store {
         amount: Money,
         now: i64,
         lifetime: i64,
-    ) -> Result<Option<String>, Error> {
+    ) -> Result<Option<(String, i64)>, Error> {
         let minor = i64::try_from(amount.minor())
             .map_err(|_| Error::Inconsistent("сумма не помещается в базу"))?;
         let row = self.client.query_opt(
-            "SELECT id FROM orders
+            "SELECT id, telegram_id FROM orders
               WHERE status = 'pending' AND amount_minor = $1 AND currency = $2
                 AND created_at > to_timestamp($3::bigint)
               ORDER BY created_at
@@ -397,7 +397,11 @@ impl Store {
             &[&minor, &amount.currency().code(), &(now - lifetime)],
         )?;
         Ok(match row {
-            Some(row) => Some(row.try_get(0)?),
+            // Вместе с номером заказа возвращается и кому он выставлен:
+            // человека надо известить, что оплата зачислена. Без этого он
+            // заплатил и остался в тишине — а тишина после платежа читается
+            // как «деньги пропали».
+            Some(row) => Some((row.try_get(0)?, row.try_get(1)?)),
             None => None,
         })
     }

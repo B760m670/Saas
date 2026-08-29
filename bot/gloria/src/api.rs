@@ -250,7 +250,7 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
 }
 
 /// Дата в том виде, в каком её читает человек: `31.08.2026`.
-fn day_month_year(seconds: i64) -> String {
+pub fn day_month_year(seconds: i64) -> String {
     // ISO уже умеет считать календарь, и второй такой счётчик нам не нужен:
     // «2026-08-31T00:00:00.000Z» → «31.08.2026».
     let iso = atlas_panel::to_iso8601(seconds);
