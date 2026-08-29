@@ -175,8 +175,9 @@ button { font: inherit; color: inherit; }
 }
 .btn.ghost { background: transparent; }
 
-/* Кнопка «Добавить ссылку» — настоящая ссылка: встроенный браузер Telegram
-   отдаёт системе нажатие по ссылке охотнее, чем переход из скрипта. */
+/* Кнопка «Добавить в приложение» — ссылка, а не кнопка: за пределами
+   Telegram она должна работать обычным нажатием, без скрипта. Внутри
+   Telegram нажатие перехватывается и уводит в его встроенный браузер. */
 a.btn { text-decoration: none; }
 a.btn.off { opacity: 0.45; }
 
@@ -811,8 +812,26 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var add = event.target.closest('#add-link');
     if (add) {
-      if (!add.getAttribute('href')) return toast('Ссылка ещё не получена');
-      return haptic();
+      var href = add.getAttribute('href');
+      if (!href) return toast('Ссылка ещё не получена');
+      haptic();
+
+      /* Выходим из мини-приложения во встроенный браузер Telegram.
+
+         Это два разных контейнера с разными правами. WebView
+         мини-приложения не отдаёт системе переход на чужую схему вообще
+         никак: ни из скрипта, ни по ссылке с href, ни через
+         перенаправление с нашего сервера — проверено на живом телефоне
+         трижды. Встроенный браузер такие переходы отдаёт; именно в нём
+         живут чужие «кабинеты», у которых кнопка работает.
+
+         `openLink` умеет только http(s) — поэтому ведём его на наш адрес,
+         а тот уже отвечает перенаправлением на `happ://…`. */
+      if (tg && tg.openLink) {
+        event.preventDefault();
+        return tg.openLink(new URL(href, location.href).href, { try_instant_view: false });
+      }
+      return;
     }
 
     var el = event.target.closest('[data-act], [data-buy]');
