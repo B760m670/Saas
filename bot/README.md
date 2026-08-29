@@ -108,27 +108,58 @@ set -a; . /etc/gloria.env; set +a
 
 ## Службой
 
-```ini
-# /etc/systemd/system/gloria-bot.service
-[Unit]
-Description=Gloria VPN bot
-After=network-online.target docker.service
+Пока бот запущен из ssh, он умирает вместе с сессией — вместе с ним
+пропадают и кабинет, и приём оплаты. Служба переживает и обрыв связи, и
+перезагрузку машины, и собственный сбой.
 
-[Service]
-EnvironmentFile=/etc/gloria.env
-ExecStart=/opt/gloria/gloria
-Restart=always
-RestartSec=5
-User=gloria
-
-[Install]
-WantedBy=multi-user.target
-```
+Один раз:
 
 ```bash
+# Отдельный пользователь без входа и без домашнего каталога. Бот разбирает
+# то, что пришло из сети; ошибка в разборе под root — это вся машина.
+useradd --system --no-create-home --shell /usr/sbin/nologin gloria
+
+# Собранное лежит отдельно от исходников: иначе пересборка попыталась бы
+# переписать файл работающего процесса и упёрлась бы в «Text file busy».
+install -d -o root -g root /opt/gloria
+install -m 755 bot/target/release/gloria /opt/gloria/gloria
+
+# Настройки читает служба, а не вы: чужим читать их незачем.
+chown root:gloria /etc/gloria.env && chmod 640 /etc/gloria.env
+
+install -m 644 deploy/systemd/gloria-bot.service /etc/systemd/system/
+systemctl daemon-reload
 systemctl enable --now gloria-bot
+```
+
+Проверка:
+
+```bash
+systemctl status gloria-bot
 journalctl -u gloria-bot -f
 ```
+
+В журнале должны быть те же две строки, что и при запуске руками:
+`Мини-приложение слушает 127.0.0.1:8081` и `Бот запущен. Config { … }`.
+
+Права у службы урезаны: диск только для чтения, повышение прав запрещено,
+из семейств адресов оставлены лишь нужные. Бот ничего не пишет на диск, и
+это ограничение стоит ровно на случай ошибки в разборе того, что пришло
+из сети.
+
+## Обновление
+
+```bash
+cd /opt/gloria-src && ./deploy/gloria-update.sh
+```
+
+Сценарий делает всё по порядку: обновляет исходники, накатывает новые
+миграции, собирает, выкладывает мини-приложение, подменяет двоичный файл
+и перезапускает службу. Сборка идёт **до** остановки, поэтому простой —
+секунды копирования, а не минуты компиляции.
+
+Если бот не поднялся, сценарий покажет последние строки журнала и вернёт
+ошибку, а не отрапортует об успехе.
 
 ## Что умеет сегодня
 
