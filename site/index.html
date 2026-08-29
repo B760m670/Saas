@@ -180,6 +180,20 @@ button { font: inherit; color: inherit; }
 a.btn { text-decoration: none; }
 a.btn.off { opacity: 0.45; }
 
+/* Шаги мастера. Показан ровно один: остальные не спрятаны прозрачностью, а
+   убраны из потока — иначе прокрутка ниже упиралась бы в пустоту. */
+.step { display: none; }
+.step.on { display: block; animation: rise 0.28s var(--ease) both; }
+
+.back {
+  display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; margin-bottom: 14px;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: var(--card); color: var(--text); cursor: pointer;
+}
+.back:active { background: var(--card-2); }
+.back svg { width: 18px; height: 18px; }
+
 /* Строка списка: иконка, текст, стрелка */
 .row {
   display: flex; align-items: center; gap: 14px;
@@ -345,35 +359,86 @@ a.btn.off { opacity: 0.45; }
       <span class="chip" id="st-devices">— из 4 устройств</span>
       <span class="chip">Безлимитный трафик</span>
     </div>
-    <button class="btn primary" data-act="plans" style="margin-top:18px">Продлить</button>
+    <button class="btn" id="renew" data-act="plans" style="margin-top:18px">Продлить</button>
   </div>
 
-  <h2>Подключение</h2>
+  <button class="btn primary" id="setup-btn" data-act="setup" style="margin-top:22px">Настроить VPN</button>
+</section>
 
-  <div class="copy" data-act="copy-sub">
-    <code id="sub-url">—</code>
-    <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+<!-- ========================== НАСТРОЙКА VPN =========================== -->
+<!-- Мастер, а не список на главной: каждый шаг задаёт ровно один вопрос и
+     показывает ровно то, что нужно для ответа. Всё сразу на одном экране
+     человек читает как «сделай всё это», а не «выбери одно». -->
+<section class="screen" id="s-setup">
+  <button class="back" data-act="back" aria-label="Назад">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg>
+  </button>
+
+  <div class="step on" data-step="where">
+    <h1>Где настраиваем?</h1>
+    <p class="sub">Выберите устройство, на котором нужен VPN</p>
+
+    <button class="row" data-act="step" data-to="app">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18.5h2"/></svg>
+      <span class="body"><span class="title">На этом устройстве</span><span class="hint">Ключ добавится сам</span></span>
+      <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+    </button>
+
+    <button class="row" data-act="step" data-to="other">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
+      <span class="body"><span class="title">На другом устройстве</span><span class="hint">Компьютер, телевизор, второй телефон</span></span>
+      <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+    </button>
   </div>
-  <!-- Выбор идёт по приложению, а не по устройству: оба клиента есть на
-       всех платформах, и вопрос «где вы сидите» только добавлял бы шаг. -->
-  <div style="height:20px"></div>
 
-  <div class="card">
-    <div class="row" style="background:transparent;padding:0;border:0">
-      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
-      <span class="body"><span class="title">Happ</span><span class="hint">Проще, если ставите впервые</span></span>
+  <div class="step" data-step="app">
+    <h1>Какое приложение?</h1>
+    <p class="sub">Достаточно одного — ставить оба не нужно</p>
+
+    <div class="card">
+      <div class="row" style="background:transparent;padding:0;border:0">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
+        <span class="body"><span class="title">Happ</span><span class="hint">Проще, если ставите впервые</span></span>
+      </div>
+      <button class="btn" data-act="install-app" data-app="happ" style="margin-top:12px">Установить приложение</button>
+      <button class="btn ghost" data-act="step" data-to="add" data-app="happ">У меня уже есть приложение</button>
     </div>
-    <a class="btn primary" id="add-happ" data-app="happ" style="margin-top:12px">Добавить ссылку</a>
-    <button class="btn ghost" data-act="install-app" data-app="happ" style="margin-top:8px">Где скачать</button>
+
+    <div class="card">
+      <div class="row" style="background:transparent;padding:0;border:0">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
+        <span class="body"><span class="title">INCY</span><span class="hint">Больше настроек, если они нужны</span></span>
+      </div>
+      <button class="btn" data-act="install-app" data-app="incy" style="margin-top:12px">Установить приложение</button>
+      <button class="btn ghost" data-act="step" data-to="add" data-app="incy">У меня уже есть приложение</button>
+    </div>
   </div>
 
-  <div class="card">
-    <div class="row" style="background:transparent;padding:0;border:0">
-      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
-      <span class="body"><span class="title">INCY</span><span class="hint">Больше настроек, если они нужны</span></span>
+  <div class="step" data-step="add">
+    <h1>Ваш ключ</h1>
+    <p class="sub" id="add-sub">Нажмите «Добавить в приложение» — оно откроется само</p>
+
+    <div class="copy" data-act="copy-sub">
+      <code data-sub>—</code>
+      <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
     </div>
-    <a class="btn primary" id="add-incy" data-app="incy" style="margin-top:12px">Добавить ссылку</a>
-    <button class="btn ghost" data-act="install-app" data-app="incy" style="margin-top:8px">Где скачать</button>
+
+    <a class="btn primary" id="add-link" style="margin-top:18px">Добавить в приложение</a>
+    <button class="btn ghost" data-act="home">Готово</button>
+  </div>
+
+  <div class="step" data-step="other">
+    <h1>На другом устройстве</h1>
+    <p class="sub">Скопируйте ключ и вставьте его в приложение</p>
+
+    <div class="copy" data-act="copy-sub">
+      <code data-sub>—</code>
+      <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </div>
+
+    <h2>Где взять приложение</h2>
+    <button class="btn" data-act="install-app" data-app="happ">Happ</button>
+    <button class="btn" data-act="install-app" data-app="incy">INCY</button>
   </div>
 </section>
 
@@ -612,8 +677,10 @@ document.addEventListener('DOMContentLoaded', function () {
       s.devices == null ? 'до ' + limit + ' ' + word
                         : s.devices + ' из ' + limit + ' ' + word;
 
-    document.getElementById('sub-url').textContent = s.subscriptionUrl || '—';
-    fillAppLinks(s);
+    document.querySelectorAll('[data-sub]').forEach(function (el) {
+      el.textContent = s.subscriptionUrl || '—';
+    });
+    fillAppLink();
 
     var r = s.referral || {};
     document.getElementById('rf-invited').textContent = r.invited || 0;
@@ -626,6 +693,13 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('set-id').textContent = s.userId ? 'ID ' + s.userId : '';
     document.getElementById('set-plan').textContent =
       s.status === 'expired' ? 'Подписка не активна' : 'Активна до ' + s.expiresAt;
+
+    /* Пока подписка действует, главное действие — настроить VPN; когда
+       истекла — продлить. Две одинаково яркие кнопки рядом не подсказывают
+       ничего, а спорят за внимание. */
+    var expired = s.status === 'expired';
+    document.getElementById('renew').classList.toggle('primary', expired);
+    document.getElementById('setup-btn').classList.toggle('primary', !expired);
 
     var notify = !s.settings || s.settings.notify !== false;
     document.getElementById('sw-notify').classList.toggle('on', notify);
@@ -648,6 +722,38 @@ document.addEventListener('DOMContentLoaded', function () {
      пересылке; здесь она лежит открытым текстом на этом же экране, парой
      строк выше, так что прятать её в кнопке нечего. Плюс `crypt1` требует
      ключа из чужого npm-пакета — лишняя зависимость ради ничего. */
+  /* Какое приложение выбрал человек на предыдущем шаге. Ссылка в клиент
+     собирается из него, поэтому шаг «Ваш ключ» без выбора не открывается. */
+  var chosen = null;
+
+  /* Куда возвращает стрелка «назад». Стек, а не «всегда на шаг раньше»:
+     к «Ваш ключ» приходят только через выбор приложения, а к нему — только
+     через «на этом устройстве», и порядок должен разматываться так же. */
+  var trail = [];
+
+  function step(name) {
+    document.querySelectorAll('#s-setup .step').forEach(function (el) {
+      el.classList.toggle('on', el.dataset.step === name);
+    });
+    window.scrollTo(0, 0);
+  }
+
+  function setup(name, app) {
+    if (app) { chosen = app; fillAppLink(); }
+    trail.push(name);
+    go('setup');
+    step(name);
+  }
+
+  /* Назад по стеку. Дно стека — главная: мастер открывается оттуда, туда же
+     и возвращает. */
+  function back() {
+    trail.pop();
+    var previous = trail[trail.length - 1];
+    if (!previous) { trail = []; return go('home', 0); }
+    step(previous);
+  }
+
   var APPS = {
     happ: { scheme: 'happ://add/', site: 'https://happ.su' },
     incy: { scheme: 'incy://add/', site: 'https://apps.apple.com/app/id6756943388' }
@@ -660,15 +766,14 @@ document.addEventListener('DOMContentLoaded', function () {
      ссылке отдаёт системе. Пока настоящего адреса нет, ссылка остаётся
      без href — тогда она не ведёт никуда, и обработчик ниже объясняет,
      почему, вместо того чтобы отправить в клиент выдуманный адрес. */
-  function fillAppLinks(s) {
-    var url = s && s.status && s.subscriptionUrl;
-    Object.keys(APPS).forEach(function (name) {
-      var a = document.getElementById('add-' + name);
-      if (!a) return;
-      if (url) a.href = APPS[name].scheme + url;
-      else a.removeAttribute('href');
-      a.classList.toggle('off', !url);
-    });
+  function fillAppLink() {
+    var a = document.getElementById('add-link');
+    var app = APPS[chosen];
+    var url = state && state.status && state.subscriptionUrl;
+    if (!a) return;
+    if (app && url) a.href = app.scheme + url;
+    else a.removeAttribute('href');
+    a.classList.toggle('off', !(app && url));
   }
 
   /* Открыть наружу. Telegram умеет http(s) через openLink, а свои схемы —
@@ -689,10 +794,11 @@ document.addEventListener('DOMContentLoaded', function () {
     var tab = event.target.closest('.tab');
     if (tab) {
       haptic('select');
+      trail = [];
       return go(tab.dataset.go, Number(tab.dataset.i));
     }
 
-    var add = event.target.closest('[id^="add-"]');
+    var add = event.target.closest('#add-link');
     if (add) {
       if (!add.getAttribute('href')) return toast('Ссылка ещё не получена');
       return haptic();
@@ -728,6 +834,11 @@ document.addEventListener('DOMContentLoaded', function () {
       haptic('light');
       return toast(sw.classList.contains('on') ? 'Напоминания включены' : 'Напоминания выключены');
     }
+
+    if (act === 'setup') { haptic(); return setup('where'); }
+    if (act === 'step')  { haptic('select'); return setup(el.dataset.to, el.dataset.app); }
+    if (act === 'back')  { haptic('select'); return back(); }
+    if (act === 'home')  { haptic(); trail = []; return go('home', 0); }
 
     if (act === 'install-app') {
       var app = APPS[el.dataset.app];
