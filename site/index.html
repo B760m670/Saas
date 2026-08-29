@@ -755,8 +755,8 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   var APPS = {
-    happ: { scheme: 'happ://add/', site: 'https://happ.su' },
-    incy: { scheme: 'incy://add/', site: 'https://apps.apple.com/app/id6756943388' }
+    happ: { site: 'https://happ.su' },
+    incy: { site: 'https://apps.apple.com/app/id6756943388' }
   };
 
   /* Проставить настоящие href кнопкам «Добавить ссылку».
@@ -766,14 +766,25 @@ document.addEventListener('DOMContentLoaded', function () {
      ссылке отдаёт системе. Пока настоящего адреса нет, ссылка остаётся
      без href — тогда она не ведёт никуда, и обработчик ниже объясняет,
      почему, вместо того чтобы отправить в клиент выдуманный адрес. */
+  /* Кнопка ведёт на наш обычный https-адрес, а тот отвечает
+     перенаправлением на `happ://…`.
+
+     Прямая ссылка со схемой здесь не работает: встроенный браузер Telegram
+     не отдаёт системе переход на чужую схему — ни из скрипта, ни по ссылке.
+     Проверено на живом телефоне: нажатие не открывало ни приложение, ни
+     браузер, вообще ничего. С перенаправлением разбирается уже система, а
+     не браузер.
+
+     В адрес идёт только хвост ссылки на подписку — он же ключ. Сервер по
+     нему находит запись и подставляет ту ссылку, что у него записана. */
   function fillAppLink() {
     var a = document.getElementById('add-link');
-    var app = APPS[chosen];
     var url = state && state.status && state.subscriptionUrl;
+    var tail = url ? url.split('/').pop() : null;
     if (!a) return;
-    if (app && url) a.href = app.scheme + url;
+    if (chosen && tail) a.href = '/api/open/' + chosen + '/' + encodeURIComponent(tail);
     else a.removeAttribute('href');
-    a.classList.toggle('off', !(app && url));
+    a.classList.toggle('off', !(chosen && tail));
   }
 
   /* Открыть наружу. Telegram умеет http(s) через openLink, а свои схемы —

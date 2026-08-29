@@ -39,6 +39,13 @@ const MAX_HEADERS: usize = 16 * 1024;
 /// журнале. Сутки — то, что рекомендует сам Telegram.
 const INIT_DATA_MAX_AGE: i64 = 24 * 60 * 60;
 
+/// Схемы приложений, в которые умеем отдавать подписку.
+///
+/// Список закрытый: он же не даёт превратить перенаправление в открытое.
+/// Ведёт оно всегда на нашу схему и на ссылку из нашей базы — что бы ни
+/// пришло в запросе.
+const SCHEMES: [(&str, &str); 2] = [("happ", "happ://add/"), ("incy", "incy://add/")];
+
 /// Поднять сервер в отдельном потоке.
 ///
 /// Возвращает ошибку, только если не удалось занять адрес: это настройка,
@@ -99,13 +106,22 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         Err(why) => return send(&mut stream, 400, r#"{"error":"плохой запрос"}"#).map_err(|_| why),
     };
 
-    // Единственный путь. Остальные ждут своей очереди — до тех пор честнее
-    // отвечать «нет», чем делать вид.
-    if request.path != "/api/me" {
-        return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
-    }
     if request.method != "GET" {
         return send(&mut stream, 405, r#"{"error":"не тот способ"}"#);
+    }
+
+    // Переход в клиент. Отдельно от `/api/me` и без подписи Telegram: сюда
+    // приходят не запросом со страницы, а нажатием по ссылке, и заголовков
+    // при таком переходе нет. Удостоверением служит сам хвост ссылки — кто
+    // его знает, тот уже имеет доступ к подписке.
+    if let Some(rest) = request.path.strip_prefix("/api/open/") {
+        return open_in_app(shared, &mut stream, rest);
+    }
+
+    // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
+    // чем делать вид.
+    if request.path != "/api/me" {
+        return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
 
     let Some(raw) = request.init_data.as_deref() else {
@@ -128,6 +144,51 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     };
 
     send(&mut stream, 200, &body)
+}
+
+/// Перенаправить в клиент.
+///
+/// Встроенный браузер Telegram не отдаёт системе переход на чужую схему —
+/// ни из скрипта, ни по ссылке: он пропускает только `http` и `https`.
+/// Поэтому кнопка ведёт сюда, а сюда уже отвечает перенаправлением, с
+/// которым разбирается система, а не браузер.
+fn open_in_app(shared: &Shared, stream: &mut TcpStream, rest: &str) -> Result<(), String> {
+    let mut parts = rest.splitn(2, '/');
+    let (Some(app), Some(tail)) = (parts.next(), parts.next()) else {
+        return send(stream, 404, r#"{"error":"нет такого пути"}"#);
+    };
+
+    let Some((_, scheme)) = SCHEMES.iter().find(|(name, _)| *name == app) else {
+        return send(stream, 404, r#"{"error":"неизвестное приложение"}"#);
+    };
+
+    // Хвост попадает в запрос к базе и в заголовок ответа. Набор символов
+    // тот же, что у идентификатора подписки в панели; всё остальное — не
+    // наш адрес, а попытка подставить чужой.
+    if tail.is_empty()
+        || tail.len() > 64
+        || !tail
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return send(stream, 404, r#"{"error":"негодный ключ"}"#);
+    }
+
+    let found = {
+        let mut store = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?;
+        store
+            .subscription_url_ending_with(tail)
+            .map_err(|error| format!("база: {error}"))?
+    };
+
+    let Some(url) = found else {
+        return send(stream, 404, r#"{"error":"нет такой подписки"}"#);
+    };
+
+    redirect(stream, &format!("{scheme}{url}"))
 }
 
 /// Собрать состояние покупателя.
@@ -254,6 +315,27 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
         path,
         init_data,
     })
+}
+
+/// Перенаправление на чужую схему.
+///
+/// Без тела: браузер его не покажет, а система, забирая ссылку себе, не
+/// прочитает и подавно.
+fn redirect(stream: &mut TcpStream, location: &str) -> Result<(), String> {
+    // 302, а не 301: адрес подписки может смениться, а «навсегда» браузеры
+    // запоминают и перестают спрашивать сервер вовсе.
+    let head = format!(
+        "HTTP/1.1 302 Found\r\n\
+         Location: {location}\r\n\
+         Content-Length: 0\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n"
+    );
+
+    stream
+        .write_all(head.as_bytes())
+        .and_then(|()| stream.flush())
+        .map_err(|error| format!("отправка: {error}"))
 }
 
 /// Отправить ответ и закрыть соединение.
