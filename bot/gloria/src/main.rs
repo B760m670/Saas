@@ -467,7 +467,7 @@ pub fn reissue(panel: &Panel, store: &mut Store, telegram_id: i64) -> Result<Str
         .map_err(|error| format!("поиск в панели: {error}"))?;
 
     let request = panel
-        .revoke(&user.uuid)
+        .revoke(&user.action_key())
         .map_err(|error| format!("панель: {error}"))?;
     let response = http::send(&request).map_err(|error| format!("панель: {error}"))?;
     if !response.is_ok() {

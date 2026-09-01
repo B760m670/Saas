@@ -54,10 +54,12 @@ pub struct NewUser {
 pub struct User {
     /// Внутренний номер в панели — по нему идут продление и выключение.
     pub id: i64,
-    /// Он же, но в виде UUID.
+    /// Он же в виде UUID — если панель его вообще присылает.
     ///
-    /// Панель принимает то один, то другой: срок ставится по номеру, а
-    /// перевыпуск ссылки — только по UUID. Приходится держать оба.
+    /// Пусто у сборок, где пользователь адресуется числовым номером: в
+    /// ответе там есть `vlessUuid` и `externalSquadUuid`, но собственного
+    /// `uuid` у пользователя нет. Обязательным это поле быть не может —
+    /// см. [`User::action_key`].
     pub uuid: String,
     /// Короткий идентификатор, он же хвост ссылки на подписку.
     pub short_uuid: String,
@@ -78,6 +80,21 @@ impl User {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.status == "ACTIVE"
+    }
+
+    /// Чем адресовать пользователя в путях действий панели.
+    ///
+    /// Путь у действия один — `/api/users/<чем>/actions/…`, — а вот «чем»
+    /// зависит от сборки панели: где-то это UUID, где-то числовой номер.
+    /// Выбирать берёмся не мы: берём то, что панель прислала о самом
+    /// пользователе, и не подставляем недостающее из головы.
+    #[must_use]
+    pub fn action_key(&self) -> String {
+        if self.uuid.is_empty() {
+            self.id.to_string()
+        } else {
+            self.uuid.clone()
+        }
     }
 }
 
@@ -246,21 +263,24 @@ impl Panel {
     /// немедленно. Это единственный ответ на утечку: адрес подписки — сам по
     /// себе пропуск, отозвать его иначе нельзя.
     ///
-    /// По UUID, а не по номеру: этот путь панель принимает только так.
-    pub fn revoke(&self, uuid: &str) -> Result<Request, Error> {
-        // UUID уходит в адрес запроса. Набор символов проверяется здесь, а не
+    /// Ключ берётся из [`User::action_key`]: у одних сборок панели это
+    /// UUID, у других — числовой номер. Сюда приходит то, что она сама о
+    /// пользователе и сказала.
+    pub fn revoke(&self, key: &str) -> Result<Request, Error> {
+        // Ключ уходит в адрес запроса. Набор символов проверяется здесь, а не
         // надеждой на то, что панель прислала разумное: в путь запроса нельзя
-        // пускать ничего, что способно его изменить.
-        if uuid.is_empty()
-            || uuid.len() > 64
-            || !uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+        // пускать ничего, что способно его изменить. Цифры проходят как часть
+        // шестнадцатеричных — числовой номер этой проверке не противоречит.
+        if key.is_empty()
+            || key.len() > 64
+            || !key.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
         {
-            return Err(Error::Malformed("негодный UUID пользователя"));
+            return Err(Error::Malformed("негодный ключ пользователя"));
         }
 
         Ok(Request {
             method: Method::Post,
-            url: format!("{}/api/users/{uuid}/actions/revoke", self.base),
+            url: format!("{}/api/users/{key}/actions/revoke", self.base),
             headers: self.headers(false),
             body: Vec::new(),
         })
@@ -295,6 +315,10 @@ impl Panel {
         #[derive(Deserialize)]
         struct Body {
             id: i64,
+            // Необязателен намеренно: у части сборок панели собственного
+            // `uuid` у пользователя нет вовсе. Требование его сломало бы не
+            // только перевыпуск, но и заведение новичка — тем же разбором.
+            #[serde(default)]
             uuid: String,
             #[serde(rename = "shortUuid")]
             short_uuid: String,
@@ -502,6 +526,50 @@ mod tests {
         assert_eq!(user.expires_at, 1_767_225_600);
         assert!(user.is_active());
         assert!(user.subscription_url.ends_with("/api/sub/rTLwqLBoohWeKVAR"));
+    }
+
+    /// Ответ живой панели, снятый с рабочего сервера при заведении
+    /// пользователя. Собственного `uuid` у пользователя в нём нет: `vlessUuid`
+    /// и `externalSquadUuid` есть, а его — нет.
+    ///
+    /// Разбор, требовавший `uuid`, ломал не только перевыпуск, но и
+    /// заведение новичка: и то и другое читает ответ этой же функцией.
+    #[test]
+    fn a_real_answer_without_a_user_uuid_is_read() {
+        let Some(panel) = panel() else { return };
+        let real = br#"{"response":{"id":6,"shortUuid":"Rqvr67SqyYA_6Mj_",
+            "username":"tg_999999998","status":"ACTIVE","trafficLimitBytes":0,
+            "trafficLimitStrategy":"NO_RESET","expireAt":"2026-09-30T00:00:00.000Z",
+            "telegramId":null,"email":null,"description":null,"tag":null,
+            "hwidDeviceLimit":null,"externalSquadUuid":null,
+            "trojanPassword":"c594D7ccLx_8ycnzdc1NtTjLm0dmvtWs",
+            "vlessUuid":"7ac95f9f-4428-4fcd-8da3-4a5098b3ee38",
+            "ssPassword":"ZgRHXURXQyvCWVW_eD3xm0AzcsS-KJn0","lastTriggeredThreshold":0,
+            "subRevokedAt":null,"lastTrafficResetAt":null,
+            "createdAt":"2026-08-28T09:08:07.210Z","updatedAt":"2026-08-28T09:08:07.210Z",
+            "subscriptionUrl":"https://panel.example.org/api/sub/Rqvr67SqyYA_6Mj_",
+            "activeInternalSquads":[],"userTraffic":{"usedTrafficBytes":0}}}"#;
+
+        let parsed = panel.parse_user(real);
+        assert!(parsed.is_ok(), "живой ответ не разобрался: {parsed:?}");
+        let Ok(user) = parsed else { return };
+
+        assert_eq!(user.id, 6);
+        assert_eq!(user.short_uuid, "Rqvr67SqyYA_6Mj_");
+        // Ключ действия — номер, потому что UUID пользователя панель не дала.
+        // Подставлять сюда `vlessUuid` нельзя: это ключ протокола, а не
+        // пользователя, и запрос ушёл бы в никуда.
+        assert_eq!(user.action_key(), "6");
+    }
+
+    /// Когда UUID пользователя всё же есть, действие идёт по нему.
+    #[test]
+    fn a_uuid_wins_over_the_number_when_the_panel_gives_one() {
+        let Some(panel) = panel() else { return };
+        let Ok(user) = panel.parse_user(&user_json("2026-01-01T00:00:00.000Z")) else {
+            return;
+        };
+        assert_eq!(user.action_key(), "03ea8748-bd6e-4432-af37-74d45f3d397e");
     }
 
     /// Часть путей панели отвечает списком даже там, где пользователь
