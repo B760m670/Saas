@@ -510,6 +510,36 @@ fn a_late_confirmation_does_not_swallow_a_newer_payment() {
     assert_eq!(item.expires_at, NOW + 33 * DAY);
 }
 
+/// Панель ответила «такого нет» — пользователя удалили там руками. Связь
+/// забывается, но **срок остаётся**: он оплачен, и чужая уборка в панели не
+/// повод его отнимать. Человек уходит из очереди и ждёт, когда бот заведёт
+/// его заново — при первом же его обращении.
+#[test]
+fn a_person_the_panel_lost_is_forgotten_but_keeps_the_days() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+
+    let _ = store.forget_panel_link(42);
+
+    let Ok(work) = store.panel_work(10) else {
+        return;
+    };
+    assert!(work.is_empty(), "везём дату в пустоту: {work:?}");
+
+    let person = store.ensure_subscriber(42);
+    assert!(
+        person.is_ok(),
+        "человек пропал вместе со связью: {person:?}"
+    );
+    let Ok(person) = person else { return };
+    assert_eq!(person.expires_at, Some(NOW + 3 * DAY), "срок отняли");
+    assert!(person.subscription_url.is_none(), "адрес остался мёртвым");
+}
+
 /// Человека, которого нет в панели, везти некуда: сначала его надо завести.
 #[test]
 fn a_person_without_a_panel_account_is_not_queued() {
