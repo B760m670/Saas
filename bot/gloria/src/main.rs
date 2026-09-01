@@ -460,9 +460,11 @@ pub fn reissue(panel: &Panel, store: &mut Store, telegram_id: i64) -> Result<Str
             excerpt(&found.body)
         ));
     }
+    // Шаг называется в сообщении: поиск и сам перевыпуск разбираются одним и
+    // тем же кодом, и без пометки непонятно, какой из двух ответов подвёл.
     let user = panel
         .parse_user(&found.body)
-        .map_err(|error| format!("панель: {error}"))?;
+        .map_err(|error| format!("поиск в панели: {error}"))?;
 
     let request = panel
         .revoke(&user.uuid)
@@ -478,7 +480,7 @@ pub fn reissue(panel: &Panel, store: &mut Store, telegram_id: i64) -> Result<Str
 
     let user = panel
         .parse_user(&response.body)
-        .map_err(|error| format!("панель: {error}"))?;
+        .map_err(|error| format!("ответ на перевыпуск: {error}"))?;
 
     // Записываем только после ответа панели: иначе при обрыве связи у нас
     // осталась бы ссылка, которой не существует, а у человека — рабочая

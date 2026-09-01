@@ -10,6 +10,13 @@ use crate::time::{from_iso8601, to_iso8601};
 pub enum Error {
     /// Ответ не разобрался.
     Malformed(&'static str),
+    /// Ответ не разобрался, и разборщик объяснил почему.
+    ///
+    /// Отдельно от [`Self::Malformed`] потому, что «ответ панели не
+    /// разбирается» — сообщение, по которому нечего делать: оно не отличает
+    /// сломанный JSON от переименованного поля и от массива вместо объекта.
+    /// А различаются они починкой в разных местах.
+    Unreadable(String),
     /// Панель ответила отказом своими словами.
     Rejected(String),
     /// Такого пользователя в панели нет.
@@ -20,6 +27,7 @@ impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Malformed(what) => write!(f, "не удалось разобрать: {what}"),
+            Self::Unreadable(why) => write!(f, "ответ панели не разбирается: {why}"),
             Self::Rejected(reason) => write!(f, "панель отказала: {reason}"),
             Self::NotFound => f.write_str("пользователя нет в панели"),
         }
@@ -274,12 +282,16 @@ impl Panel {
     }
 
     /// Разобрать ответ, содержащий пользователя.
+    ///
+    /// Разбор идёт в два приёма: сначала конверт, потом пользователь внутри
+    /// него. Это не лишний шаг. Разбор одним куском отвечает на любую беду
+    /// одинаковым «не разбирается»: и на оборванный ответ, и на
+    /// переименованное поле, и на массив там, где ждали объект. Чинятся они
+    /// в трёх разных местах, а сообщение одно и то же.
+    ///
+    /// Заодно `response` принимается и объектом, и массивом: часть путей
+    /// панели отвечает списком даже там, где пользователь заведомо один.
     pub fn parse_user(&self, response: &[u8]) -> Result<User, Error> {
-        #[derive(Deserialize)]
-        struct Envelope {
-            response: Option<Body>,
-            message: Option<String>,
-        }
         #[derive(Deserialize)]
         struct Body {
             id: i64,
@@ -296,15 +308,25 @@ impl Panel {
             subscription_url: Option<String>,
         }
 
-        let envelope: Envelope = serde_json::from_slice(response)
-            .map_err(|_| Error::Malformed("ответ панели не разбирается"))?;
+        let envelope: serde_json::Value = serde_json::from_slice(response)
+            .map_err(|error| Error::Unreadable(format!("это не JSON: {error}")))?;
 
-        let Some(body) = envelope.response else {
-            return Err(match envelope.message {
-                Some(message) => Error::Rejected(message),
+        let Some(node) = envelope.get("response") else {
+            return Err(match envelope.get("message").and_then(|m| m.as_str()) {
+                Some(message) => Error::Rejected(message.to_owned()),
                 None => Error::Malformed("в ответе нет пользователя"),
             });
         };
+
+        // Список вместо объекта — не ошибка панели, а другой её путь. Пустой
+        // список при этом значит ровно «такого нет», а не поломку.
+        let node = match node {
+            serde_json::Value::Array(items) => items.first().ok_or(Error::NotFound)?,
+            other => other,
+        };
+
+        let body: Body = serde_json::from_value(node.clone())
+            .map_err(|error| Error::Unreadable(format!("пользователь: {error}")))?;
 
         let expires_at =
             from_iso8601(&body.expire_at).ok_or(Error::Malformed("срок не разбирается"))?;
@@ -480,6 +502,61 @@ mod tests {
         assert_eq!(user.expires_at, 1_767_225_600);
         assert!(user.is_active());
         assert!(user.subscription_url.ends_with("/api/sub/rTLwqLBoohWeKVAR"));
+    }
+
+    /// Часть путей панели отвечает списком даже там, где пользователь
+    /// заведомо один. Разбор, знающий только объект, отвечал на это глухим
+    /// «ответ панели не разбирается» — и перевыпуск падал у всех.
+    #[test]
+    fn a_user_wrapped_in_a_list_is_read_the_same_way() {
+        let Some(panel) = panel() else { return };
+        let object = user_json("2026-01-01T00:00:00.000Z");
+        let listed = String::from_utf8_lossy(&object)
+            .replacen(r#""response":{"#, r#""response":[{"#, 1)
+            .replacen("}}", "}]}", 1)
+            .into_bytes();
+
+        let from_list = panel.parse_user(&listed);
+        assert!(from_list.is_ok(), "список не разобрался: {from_list:?}");
+        assert_eq!(from_list.ok(), panel.parse_user(&object).ok());
+    }
+
+    /// Пустой список — это «такого нет», а не поломка разбора. Разница видна
+    /// только в сообщении, и именно по нему потом чинят.
+    #[test]
+    fn an_empty_list_means_the_user_is_absent() {
+        let Some(panel) = panel() else { return };
+        assert_eq!(
+            panel.parse_user(br#"{"response":[]}"#),
+            Err(Error::NotFound)
+        );
+    }
+
+    /// Сообщение об ошибке разбора должно называть причину: без неё
+    /// «не разбирается» одинаково звучит и на оборванный ответ, и на
+    /// переименованное поле, а чинятся они по-разному.
+    #[test]
+    fn a_parsing_failure_says_what_exactly_went_wrong() {
+        let Some(panel) = panel() else { return };
+
+        let broken = panel
+            .parse_user(b"{ not json at all")
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(broken.contains("это не JSON"), "{broken}");
+
+        // Поле переименовано — ответ остаётся правильным JSON, и отличить
+        // этот случай от предыдущего можно только по тексту.
+        let renamed = String::from_utf8_lossy(&user_json("2026-01-01T00:00:00.000Z"))
+            .replace("shortUuid", "short_uuid")
+            .into_bytes();
+        let missing = panel
+            .parse_user(&renamed)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(missing.contains("shortUuid"), "{missing}");
     }
 
     /// Перевыпуск идёт по UUID и никуда больше: путь запроса собирается из
