@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use atlas_billing::subscription;
 use atlas_bot::catalog;
+use atlas_panel::Panel;
 use atlas_store::Store;
 use atlas_telegram::{self as telegram_init};
 
@@ -60,8 +61,15 @@ pub fn spawn(config: &Config) -> Result<(), String> {
     let store = Store::connect(&config.database_url)
         .map_err(|error| format!("база для мини-приложения: {error}"))?;
 
+    // Свой клиент панели, отдельный от основного цикла: он ничего не хранит
+    // между запросами, так что копия обходится в две строки.
+    let Some(panel) = Panel::new(&config.panel_url, &config.panel_token) else {
+        return Err("адрес или токен панели негодны".to_owned());
+    };
+
     let shared = Shared {
         store: Arc::new(Mutex::new(store)),
+        panel,
         bot_token: config.bot_token.clone(),
         bot_username: config.bot_username.clone(),
     };
@@ -90,6 +98,7 @@ pub fn spawn(config: &Config) -> Result<(), String> {
 #[derive(Clone)]
 struct Shared {
     store: Arc<Mutex<Store>>,
+    panel: Panel,
     bot_token: String,
     bot_username: Option<String>,
 }
@@ -106,10 +115,6 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         Err(why) => return send(&mut stream, 400, r#"{"error":"плохой запрос"}"#).map_err(|_| why),
     };
 
-    if request.method != "GET" {
-        return send(&mut stream, 405, r#"{"error":"не тот способ"}"#);
-    }
-
     // Переход в клиент. Отдельно от `/api/me` и без подписи Telegram: сюда
     // приходят не запросом со страницы, а нажатием по ссылке, и заголовков
     // при таком переходе нет. Удостоверением служит сам хвост ссылки — кто
@@ -120,8 +125,19 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
 
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
-    if request.path != "/api/me" {
+    if request.path != "/api/me" && request.path != "/api/reissue" {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
+    }
+
+    // Перевыпуск меняет состояние, поэтому только POST: по ссылке из чата или
+    // предзагрузкой браузера он не должен случаться сам собой.
+    let expected = if request.path == "/api/reissue" {
+        "POST"
+    } else {
+        "GET"
+    };
+    if request.method != expected {
+        return send(&mut stream, 405, r#"{"error":"не тот способ"}"#);
     }
 
     let Some(raw) = request.init_data.as_deref() else {
@@ -134,6 +150,22 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         // «строка просрочена» полезна только тому, кто подбирает.
         return send(&mut stream, 401, r#"{"error":"подпись не принята"}"#);
     };
+
+    if request.path == "/api/reissue" {
+        return match crate::reissue_for(&shared.panel, &shared.store, verified.user_id()) {
+            Ok(()) => match state_of(shared, verified.user_id(), now) {
+                Ok(body) => send(&mut stream, 200, &body),
+                Err(error) => {
+                    eprintln!("Мини-приложение для {}: {error}", verified.user_id());
+                    send(&mut stream, 500, r#"{"error":"внутренняя ошибка"}"#)
+                }
+            },
+            Err(error) => {
+                eprintln!("Перевыпуск для {}: {error}", verified.user_id());
+                send(&mut stream, 502, r#"{"error":"панель не ответила"}"#)
+            }
+        };
+    }
 
     let body = match state_of(shared, verified.user_id(), now) {
         Ok(body) => body,

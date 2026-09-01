@@ -191,7 +191,7 @@ fn handle(
     // подписку, а про чужие платежи, и показывать их всем нельзя.
     if let Incoming::Message { text, .. } = incoming {
         if config.is_admin(telegram_id) {
-            if let Some(answer) = admin(telegram, store, text, now)? {
+            if let Some(answer) = admin(telegram, panel, store, text, now)? {
                 let request = telegram
                     .send_message(incoming.chat(), &answer, None)
                     .map_err(|error| format!("сообщение: {error}"))?;
@@ -332,6 +332,7 @@ fn apply(
 /// владелец счёта.
 fn admin(
     telegram: &Telegram,
+    panel: &Panel,
     store: &mut Store,
     text: &str,
     now: i64,
@@ -360,6 +361,28 @@ fn admin(
                 ));
             }
             Ok(Some(answer))
+        }
+
+        "/revoke" => {
+            let Some(who) = parts.next().and_then(|w| w.parse::<i64>().ok()) else {
+                return Ok(Some("Укажите номер: /revoke 123456789".to_owned()));
+            };
+
+            let url = reissue(panel, store, who)?;
+
+            // Человека извещаем: его старая ссылка только что умерла, и без
+            // предупреждения он увидит лишь то, что VPN перестал работать.
+            tell(
+                telegram,
+                who,
+                &format!(
+                    "Ссылка на подписку перевыпущена — старая больше не работает.\n\n\
+                     Новая:\n<code>{url}</code>\n\n\
+                     Добавьте её в приложение заново."
+                ),
+            );
+
+            Ok(Some(format!("Перевыпущено для {who}.")))
         }
 
         "/ok" => {
@@ -413,6 +436,71 @@ fn admin(
 
         _ => Ok(None),
     }
+}
+
+/// Перевыпустить ссылку на подписку.
+///
+/// Старая перестаёт работать сразу и навсегда. Это единственный ответ на
+/// утечку: адрес подписки сам по себе пропуск, отозвать его иначе нечем.
+///
+/// Возвращает новую ссылку. Панель отвечает обновлённым пользователем, из
+/// него же берётся и новый адрес — собирать его самим нельзя, он строится
+/// из нового `shortUuid`, которого мы не выдумываем.
+pub fn reissue(panel: &Panel, store: &mut Store, telegram_id: i64) -> Result<String, String> {
+    // Перевыпуск идёт по UUID, а хранится у нас числовой номер. Спрашиваем
+    // панель по имени: оно выводится из номера Telegram и не меняется.
+    let request = panel
+        .find(telegram_id)
+        .map_err(|error| format!("панель: {error}"))?;
+    let found = http::send(&request).map_err(|error| format!("панель: {error}"))?;
+    if !found.is_ok() {
+        return Err(format!(
+            "панель не нашла пользователя, код {}: {}",
+            found.status,
+            excerpt(&found.body)
+        ));
+    }
+    let user = panel
+        .parse_user(&found.body)
+        .map_err(|error| format!("панель: {error}"))?;
+
+    let request = panel
+        .revoke(&user.uuid)
+        .map_err(|error| format!("панель: {error}"))?;
+    let response = http::send(&request).map_err(|error| format!("панель: {error}"))?;
+    if !response.is_ok() {
+        return Err(format!(
+            "панель отказала в перевыпуске, код {}: {}",
+            response.status,
+            excerpt(&response.body)
+        ));
+    }
+
+    let user = panel
+        .parse_user(&response.body)
+        .map_err(|error| format!("панель: {error}"))?;
+
+    // Записываем только после ответа панели: иначе при обрыве связи у нас
+    // осталась бы ссылка, которой не существует, а у человека — рабочая
+    // старая, которую мы считали бы отозванной.
+    store
+        .link_to_panel(telegram_id, user.id, &user.subscription_url)
+        .map_err(|error| format!("база: {error}"))?;
+
+    Ok(user.subscription_url)
+}
+
+/// То же, что [`reissue`], но под общим замком базы — для мини-приложения.
+///
+/// Замок держится только на записи результата, а не на походе в панель:
+/// иначе один медленный ответ панели останавливал бы всех остальных.
+pub fn reissue_for(
+    panel: &Panel,
+    store: &std::sync::Mutex<Store>,
+    telegram_id: i64,
+) -> Result<(), String> {
+    let mut guard = store.lock().map_err(|_| "замок базы испорчен".to_owned())?;
+    reissue(panel, &mut guard, telegram_id).map(|_| ())
 }
 
 /// Завести человека в панели, если его там ещё нет, и запомнить ссылку.

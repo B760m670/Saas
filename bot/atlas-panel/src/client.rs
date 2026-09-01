@@ -44,8 +44,13 @@ pub struct NewUser {
 /// Пользователь, каким его вернула панель.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
-    /// Внутренний номер в панели — по нему идут все дальнейшие обращения.
+    /// Внутренний номер в панели — по нему идут продление и выключение.
     pub id: i64,
+    /// Он же, но в виде UUID.
+    ///
+    /// Панель принимает то один, то другой: срок ставится по номеру, а
+    /// перевыпуск ссылки — только по UUID. Приходится держать оба.
+    pub uuid: String,
     /// Короткий идентификатор, он же хвост ссылки на подписку.
     pub short_uuid: String,
     /// Имя вида `tg_<идентификатор>`.
@@ -73,6 +78,7 @@ impl User {
 /// Как и адаптеры платёжных сервисов, он не ходит в сеть: собирает запрос и
 /// разбирает ответ. Тип запроса взят общий с `atlas-billing`, чтобы у бота
 /// был **один** исполнитель HTTP на все внешние обращения, а не два похожих.
+#[derive(Clone)]
 pub struct Panel {
     base: String,
     token: String,
@@ -93,7 +99,7 @@ impl Panel {
     /// Собрать клиента. `base` — адрес панели без косой черты на конце.
     #[must_use]
     pub fn new(base: &str, token: &str) -> Option<Self> {
-        if token.is_empty() || !base.starts_with("https://") {
+        if token.is_empty() || !(base.starts_with("https://") || Self::is_loopback(base)) {
             return None;
         }
         Some(Self {
@@ -108,6 +114,31 @@ impl Panel {
             headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
         }
         headers
+    }
+
+    /// Обращение по петлевому адресу — единственный случай, когда `http` годится.
+    ///
+    /// Требование `https` стоит ради токена: он даёт власть над всеми узлами и по
+    /// сети открытым идти не должен. По `127.0.0.1` он по сети и не идёт.
+    ///
+    /// Та же проверка есть в настройках бота, и это намеренное повторение: там
+    /// она объясняет человеку, что не так, здесь — не пускает негодный адрес в
+    /// библиотеку, которую можно вызвать и мимо настроек.
+    ///
+    /// Сверяется **начало** адреса: `http://127.0.0.1.чужое.example` начинается с
+    /// петлевого, но петлевым не является.
+    fn is_loopback(url: &str) -> bool {
+        const HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "[::1]"];
+
+        let Some(rest) = url.strip_prefix("http://") else {
+            return false;
+        };
+
+        HOSTS.iter().any(|host| {
+            rest.strip_prefix(host).is_some_and(|tail| {
+                tail.is_empty() || tail.starts_with(':') || tail.starts_with('/')
+            })
+        })
     }
 
     /// Имя пользователя в панели по идентификатору Telegram.
@@ -201,6 +232,32 @@ impl Panel {
         }
     }
 
+    /// Перевыпустить ссылку на подписку.
+    ///
+    /// Панель выдаёт новый `shortUuid`, и прежняя ссылка перестаёт работать
+    /// немедленно. Это единственный ответ на утечку: адрес подписки — сам по
+    /// себе пропуск, отозвать его иначе нельзя.
+    ///
+    /// По UUID, а не по номеру: этот путь панель принимает только так.
+    pub fn revoke(&self, uuid: &str) -> Result<Request, Error> {
+        // UUID уходит в адрес запроса. Набор символов проверяется здесь, а не
+        // надеждой на то, что панель прислала разумное: в путь запроса нельзя
+        // пускать ничего, что способно его изменить.
+        if uuid.is_empty()
+            || uuid.len() > 64
+            || !uuid.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+        {
+            return Err(Error::Malformed("негодный UUID пользователя"));
+        }
+
+        Ok(Request {
+            method: Method::Post,
+            url: format!("{}/api/users/{uuid}/actions/revoke", self.base),
+            headers: self.headers(false),
+            body: Vec::new(),
+        })
+    }
+
     /// Выключить пользователя по истечении срока.
     ///
     /// Не удалить. Ссылка остаётся живой и отдаёт пустую конфигурацию;
@@ -226,6 +283,7 @@ impl Panel {
         #[derive(Deserialize)]
         struct Body {
             id: i64,
+            uuid: String,
             #[serde(rename = "shortUuid")]
             short_uuid: String,
             username: String,
@@ -253,6 +311,7 @@ impl Panel {
 
         Ok(User {
             id: body.id,
+            uuid: body.uuid,
             short_uuid: body.short_uuid,
             username: body.username,
             telegram_id: body.telegram_id,
@@ -271,7 +330,11 @@ mod tests {
     const TOKEN: &str = "test-token-value";
 
     fn panel() -> Option<Panel> {
-        Panel::new("https://panel.example.org", TOKEN)
+        let panel = Panel::new("https://panel.example.org", TOKEN);
+        // Иначе каждый тест ниже начинался бы с тихого `return`, и весь файл
+        // проходил бы вхолостую. Зелёный без единой проверки — худший исход.
+        assert!(panel.is_some(), "клиент панели не собрался");
+        panel
     }
 
     fn new_user() -> NewUser {
@@ -285,7 +348,8 @@ mod tests {
 
     fn user_json(expire: &str) -> Vec<u8> {
         format!(
-            r#"{{"response":{{"id":7,"shortUuid":"rTLwqLBoohWeKVAR","username":"tg_42",
+            r#"{{"response":{{"id":7,"uuid":"03ea8748-bd6e-4432-af37-74d45f3d397e",
+                "shortUuid":"rTLwqLBoohWeKVAR","username":"tg_42",
                 "telegramId":42,"status":"ACTIVE","expireAt":"{expire}",
                 "subscriptionUrl":"https://panel.example.org/api/sub/rTLwqLBoohWeKVAR"}}}}"#
         )
@@ -403,15 +467,75 @@ mod tests {
     #[test]
     fn a_users_answer_is_read_completely() {
         let Some(panel) = panel() else { return };
-        let Ok(user) = panel.parse_user(&user_json("2026-01-01T00:00:00.000Z")) else {
-            return;
-        };
+        let parsed = panel.parse_user(&user_json("2026-01-01T00:00:00.000Z"));
+        // Раньше здесь стоял тихий выход, и добавление обязательного поля в
+        // разбор оставило тест зелёным при полностью сломанном разборе.
+        assert!(parsed.is_ok(), "ответ панели не разобрался: {parsed:?}");
+        let Ok(user) = parsed else { return };
+
         assert_eq!(user.id, 7);
+        assert_eq!(user.uuid, "03ea8748-bd6e-4432-af37-74d45f3d397e");
         assert_eq!(user.short_uuid, "rTLwqLBoohWeKVAR");
         assert_eq!(user.telegram_id, Some(42));
         assert_eq!(user.expires_at, 1_767_225_600);
         assert!(user.is_active());
         assert!(user.subscription_url.ends_with("/api/sub/rTLwqLBoohWeKVAR"));
+    }
+
+    /// Перевыпуск идёт по UUID и никуда больше: путь запроса собирается из
+    /// него, и подстановка чужого значения увела бы запрос в другое место.
+    #[test]
+    fn revoking_goes_to_the_users_own_address() {
+        let Some(panel) = panel() else { return };
+        let request = panel.revoke("03ea8748-bd6e-4432-af37-74d45f3d397e");
+        assert!(request.is_ok(), "{request:?}");
+        let Ok(request) = request else { return };
+        assert_eq!(
+            request.url,
+            "https://panel.example.org/api/users/03ea8748-bd6e-4432-af37-74d45f3d397e/actions/revoke"
+        );
+        assert_eq!(request.method, Method::Post);
+    }
+
+    /// UUID приходит из ответа панели, но проверяется всё равно: в путь
+    /// запроса нельзя пускать ничего, что способно его изменить.
+    #[test]
+    fn a_uuid_that_could_bend_the_url_is_refused() {
+        let Some(panel) = panel() else { return };
+        for bad in [
+            "",
+            "../../users",
+            "03ea8748/actions/delete",
+            "03ea8748?x=1",
+            "03ea8748 bd6e",
+        ] {
+            assert!(
+                panel.revoke(bad).is_err(),
+                "UUID {bad:?} принят, а не должен"
+            );
+        }
+    }
+
+    /// Настройки бота разрешают петлевой адрес панели, и клиент обязан
+    /// разрешать его тоже. Пока это расходилось, бот отказывался стартовать
+    /// с адресом, который сам же README и советует.
+    #[test]
+    fn the_panel_may_live_on_the_loopback_over_plain_http() {
+        for good in [
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+            "http://[::1]:3000",
+        ] {
+            assert!(Panel::new(good, TOKEN).is_some(), "{good} отвергнут");
+        }
+        for bad in [
+            "http://panel.example.org",
+            "http://127.0.0.1.attacker.example",
+            "http://localhost.attacker.example",
+            "ftp://127.0.0.1",
+        ] {
+            assert!(Panel::new(bad, TOKEN).is_none(), "{bad} принят");
+        }
     }
 
     #[test]

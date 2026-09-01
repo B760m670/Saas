@@ -877,7 +877,28 @@ document.addEventListener('DOMContentLoaded', function () {
       return openOut(app.site);
     }
 
-    if (act === 'reissue') return toast('Перевыпуск подключим следующим шагом');
+    if (act === 'reissue') {
+      /* Спрашиваем прежде, чем делать: старая ссылка умрёт сразу, и на всех
+         устройствах придётся добавлять заново. Нажать это по ошибке легко —
+         строка стоит между настройками. */
+      if (!confirm('Старая ссылка перестанет работать на всех устройствах. Перевыпустить?')) return;
+      haptic();
+      toast('Перевыпускаем…');
+      fetch('/api/reissue', {
+        method: 'POST',
+        headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('отказ');
+        return r.json();
+      }).then(function (data) {
+        state = data;
+        render();
+        toast('Готово. Добавьте новую ссылку в приложение');
+      }).catch(function () {
+        toast('Не вышло — попробуйте позже');
+      });
+      return;
+    }
     if (el.dataset.buy)    return toast('Оплата пока не подключена');
   });
 
