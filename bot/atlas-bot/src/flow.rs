@@ -94,6 +94,20 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
         .next()
         .unwrap_or("");
 
+    // `/start d30` — приход из мини-приложения по кнопке тарифа. Счёт
+    // выставляет бот, а не страница: сумма у каждого счёта своя, по ней
+    // платёж потом и узнаётся, и придумывать её на клиенте нельзя.
+    //
+    // Имя тарифа пришло снаружи и здесь не проверяется: этим занимается
+    // `buy`, и выдуманное имя получит список нынешних тарифов.
+    if command == "/start" {
+        if let Some(plan) = text.split_whitespace().nth(1) {
+            if catalog::plan(plan).is_some() {
+                return buy(plan);
+            }
+        }
+    }
+
     match command {
         "/start" if !view.trial_used => (
             Reply {
@@ -291,6 +305,49 @@ mod tests {
     fn a_second_start_does_not_grant_anything() {
         let (_, effect) = on_message("/start", &active());
         assert_eq!(effect, Effect::None);
+    }
+
+    /// Кнопка тарифа в мини-приложении уводит сюда: `/start d30`. Без этой
+    /// ветки человек попадал бы на обычный экран подписки и не понимал, куда
+    /// делся выбранный им тариф.
+    #[test]
+    fn a_plan_in_the_start_payload_opens_an_invoice() {
+        let (reply, effect) = on_message("/start d30", &active());
+        assert_eq!(
+            effect,
+            Effect::OpenOrder {
+                plan: "d30".to_owned()
+            }
+        );
+        // Сумму подставляет вызывающий: она у каждого счёта своя и считается
+        // вне этого модуля. Здесь проверяется другое — что человек попал на
+        // выбранный тариф, а не на общий экран со списком.
+        assert!(reply.text.contains("1 месяц"), "{}", reply.text);
+    }
+
+    /// Приход по такой ссылке — не первый `/start`: пробу он выдавать не
+    /// должен, иначе ссылка на оплату раздавала бы бесплатные дни.
+    #[test]
+    fn a_plan_link_does_not_hand_out_a_trial() {
+        let (_, effect) = on_message("/start d30", &newcomer());
+        assert_ne!(effect, Effect::GrantTrial);
+    }
+
+    /// Имя тарифа приходит снаружи. Выдуманное не должно ни выставлять счёт,
+    /// ни ронять бота — только показывать нынешний список.
+    #[test]
+    fn a_made_up_plan_in_the_payload_shows_the_price_list() {
+        let (reply, effect) = on_message("/start d9999", &active());
+        assert_eq!(effect, Effect::None);
+        assert!(reply.keyboard.is_some(), "не показаны тарифы");
+    }
+
+    /// Реферальная ссылка тоже приходит как `/start ref_123`. Тарифом она не
+    /// является и обязана вести себя как обычный `/start`.
+    #[test]
+    fn a_referral_payload_still_behaves_like_a_plain_start() {
+        let (_, effect) = on_message("/start ref_777", &newcomer());
+        assert_eq!(effect, Effect::GrantTrial);
     }
 
     /// В группах Telegram дописывает к команде имя бота, и без отсечения

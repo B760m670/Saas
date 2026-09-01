@@ -269,6 +269,10 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         "deviceLimit": catalog::DEVICES,
         "userId": telegram_id,
         "subscriptionUrl": subscriber.subscription_url,
+        // Из него страница строит ссылку «оплатить» в переписку с ботом.
+        // Счёт выставляет бот: у каждого счёта своя сумма, по ней платёж
+        // потом и узнаётся, и придумывать её на клиенте нельзя.
+        "botUsername": shared.bot_username,
         "referral": {
             "link": referral_link,
             // Начислений пока нет, и нули здесь — правда, а не заглушка.

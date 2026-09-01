@@ -899,7 +899,21 @@ document.addEventListener('DOMContentLoaded', function () {
       });
       return;
     }
-    if (el.dataset.buy)    return toast('Оплата пока не подключена');
+    if (el.dataset.buy) {
+      /* Счёт выставляет бот, а не эта страница: сумма у каждого счёта своя,
+         по ней платёж потом и узнаётся, и придумывать её на клиенте нельзя.
+         Поэтому кнопка уводит в переписку с ботом — там счёт и реквизиты.
+
+         Имя бота приходит с сервера. Нет имени — нет и ссылки: выдуманная
+         увела бы в чужой чат. */
+      var bot = state && state.botUsername;
+      if (!bot) return toast('Напишите в поддержку — выставим счёт');
+      haptic();
+      tg && tg.openTelegramLink
+        ? tg.openTelegramLink('https://t.me/' + bot + '?start=' + el.dataset.buy)
+        : toast('Откройте бота, чтобы оплатить');
+      return;
+    }
   });
 
   document.getElementById('sheet-bg').addEventListener('click', function () { sheet(false); });
