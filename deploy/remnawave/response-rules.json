@@ -1,0 +1,58 @@
+{
+  "version": "1",
+  "rules": [
+    {
+      "name": "Browser Subscription",
+      "description": "Открытие ссылки в браузере: 403. Кабинет живёт в мини-приложении.",
+      "enabled": true,
+      "operator": "AND",
+      "conditions": [
+        {
+          "headerName": "accept",
+          "operator": "CONTAINS",
+          "value": "text/html",
+          "caseSensitive": true
+        }
+      ],
+      "responseType": "BLOCK"
+    },
+    {
+      "name": "Happ",
+      "description": "Наш клиент.",
+      "enabled": true,
+      "operator": "AND",
+      "conditions": [
+        {
+          "headerName": "user-agent",
+          "operator": "CONTAINS",
+          "value": "happ",
+          "caseSensitive": false
+        }
+      ],
+      "responseType": "XRAY_JSON"
+    },
+    {
+      "name": "INCY",
+      "description": "Наш клиент.",
+      "enabled": true,
+      "operator": "AND",
+      "conditions": [
+        {
+          "headerName": "user-agent",
+          "operator": "CONTAINS",
+          "value": "incy",
+          "caseSensitive": false
+        }
+      ],
+      "responseType": "XRAY_JSON"
+    },
+    {
+      "name": "Fallback Base64",
+      "description": "Не наш клиент — не наши адреса. Правило остаётся последним и включённым.",
+      "enabled": true,
+      "operator": "AND",
+      "conditions": [],
+      "responseType": "BLOCK"
+    }
+  ]
+}
