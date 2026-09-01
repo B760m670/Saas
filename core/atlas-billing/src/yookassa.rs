@@ -109,6 +109,7 @@ impl PaymentId {
 }
 
 /// Приём оплаты через ЮKassa.
+#[derive(Clone)]
 pub struct YooKassa {
     shop_id: String,
     secret_key: String,

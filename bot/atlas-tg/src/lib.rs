@@ -18,7 +18,7 @@
 #![forbid(unsafe_code)]
 
 use atlas_billing::http::{Method, Request};
-use atlas_bot::Keyboard;
+use atlas_bot::{Keyboard, Press};
 use serde::Deserialize;
 
 /// Предел Telegram на длину сообщения, в символах.
@@ -130,6 +130,7 @@ pub fn next_offset(batch: &Batch, current: Option<i64>) -> Option<i64> {
 }
 
 /// Клиент Telegram Bot API.
+#[derive(Clone)]
 pub struct Telegram {
     token: String,
 }
@@ -354,11 +355,16 @@ fn inline_markup(keyboard: &Keyboard) -> String {
             let buttons = row
                 .iter()
                 .map(|button| {
-                    format!(
-                        r#"{{"text":"{}","callback_data":"{}"}}"#,
-                        json_string(&button.label),
-                        json_string(&button.action.encode())
-                    )
+                    // Кнопка-ссылка уводит человека наружу, и нажатие к нам
+                    // не возвращается вовсе. Поле у Telegram для этого
+                    // другое, и прислать оба он не даст.
+                    let press = match &button.press {
+                        Press::Act(action) => {
+                            format!(r#""callback_data":"{}""#, json_string(&action.encode()))
+                        }
+                        Press::Open(url) => format!(r#""url":"{}""#, json_string(url)),
+                    };
+                    format!(r#"{{"text":"{}",{press}}}"#, json_string(&button.label))
                 })
                 .collect::<Vec<_>>()
                 .join(",");
@@ -674,13 +680,35 @@ mod tests {
         assert!(body.contains(r#""callback_query_id":"cb-1""#));
     }
 
+    /// Кнопка оплаты уводит наружу. Telegram различает два вида кнопок по
+    /// полю, и прислать оба он не даст: с `callback_data` вместо `url`
+    /// человек нажал бы «Оплатить» и остался на месте.
+    #[test]
+    fn a_link_button_becomes_a_link_and_not_a_callback() {
+        let Some(telegram) = telegram() else { return };
+        let keyboard = atlas_bot::Keyboard {
+            rows: vec![vec![atlas_bot::Button::link(
+                "Оплатить",
+                "https://yoomoney.ru/checkout/payments/v2/contract?orderId=abc",
+            )]],
+        };
+        let Ok(request) = telegram.send_message(42, "К оплате", Some(&keyboard)) else {
+            return;
+        };
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(body.contains(r#""url":"https://yoomoney.ru/"#), "{body}");
+        assert!(!body.contains("callback_data"), "{body}");
+    }
+
     /// То, что уехало в кнопку, должно вернуться разбираемым: иначе кнопка
     /// нажимается, а бот молчит.
     #[test]
     fn what_goes_into_a_button_comes_back_understood() {
         for button in main_menu().buttons() {
-            let encoded = button.action.encode();
-            assert_eq!(Action::decode(&encoded), Ok(button.action.clone()));
+            let Some(action) = button.action() else {
+                continue;
+            };
+            assert_eq!(Action::decode(&action.encode()), Ok(action.clone()));
         }
     }
 }

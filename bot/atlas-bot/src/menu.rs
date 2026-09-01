@@ -133,18 +133,48 @@ impl Action {
     }
 }
 
+/// Что происходит при нажатии.
+///
+/// Два разных исхода, а не один с необязательным полем: кнопка либо
+/// возвращает нажатие нам, либо уводит человека наружу. Кнопка, у которой
+/// есть и то и другое, — это описание, которое врёт о происходящем.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Press {
+    /// Нажатие вернётся боту.
+    Act(Action),
+    /// Человек уйдёт по ссылке. Например, на страницу оплаты.
+    Open(String),
+}
+
 /// Кнопка: что написано и что произойдёт.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Button {
     pub label: String,
-    pub action: Action,
+    pub press: Press,
 }
 
 impl Button {
     fn new(label: impl Into<String>, action: Action) -> Self {
         Self {
             label: label.into(),
-            action,
+            press: Press::Act(action),
+        }
+    }
+
+    /// Кнопка-ссылка: уводит наружу и ничего боту не возвращает.
+    pub fn link(label: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            press: Press::Open(url.into()),
+        }
+    }
+
+    /// Действие, если кнопка его несёт. У кнопки-ссылки его нет.
+    #[must_use]
+    pub fn action(&self) -> Option<&Action> {
+        match &self.press {
+            Press::Act(action) => Some(action),
+            Press::Open(_) => None,
         }
     }
 }
@@ -284,7 +314,7 @@ mod tests {
         let mut checked = 0;
         for keyboard in every_keyboard() {
             for button in keyboard.buttons() {
-                let data = button.action.encode();
+                let data = button.action().map(Action::encode).unwrap_or_default();
                 assert!(
                     data.len() <= CALLBACK_LIMIT,
                     "кнопка {:?} несёт {} байт",
@@ -305,8 +335,8 @@ mod tests {
         for keyboard in every_keyboard() {
             for button in keyboard.buttons() {
                 assert_eq!(
-                    Action::decode(&button.action.encode()),
-                    Ok(button.action.clone()),
+                    Action::decode(&button.action().map(Action::encode).unwrap_or_default()),
+                    button.action().cloned().ok_or(Unknown::NoSuchAction),
                     "не разобралось: {:?}",
                     button.label
                 );
@@ -408,7 +438,9 @@ mod tests {
         let Some(base) = base() else { return };
         for keyboard in [connect_menu(), plans_menu(&showcase(), base)] {
             assert!(
-                keyboard.buttons().any(|b| b.action == Action::Home),
+                keyboard
+                    .buttons()
+                    .any(|b| b.action() == Some(&Action::Home)),
                 "из подменю некуда вернуться"
             );
         }
@@ -418,7 +450,9 @@ mod tests {
     /// оно и есть верх.
     #[test]
     fn the_main_menu_has_no_way_back() {
-        assert!(!main_menu().buttons().any(|b| b.action == Action::Home));
+        assert!(!main_menu()
+            .buttons()
+            .any(|b| b.action() == Some(&Action::Home)));
     }
 
     #[test]
@@ -427,7 +461,7 @@ mod tests {
         for device in Device::all() {
             assert!(
                 menu.buttons()
-                    .any(|b| b.action == Action::ConnectTo(device)),
+                    .any(|b| b.action() == Some(&Action::ConnectTo(device))),
                 "нет кнопки для {device:?}"
             );
         }

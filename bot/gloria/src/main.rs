@@ -16,8 +16,8 @@ mod http;
 
 use std::process::ExitCode;
 
-use atlas_billing::invoice;
-use atlas_bot::{catalog, flow, Action, Unknown};
+use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, YooKassa};
+use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
 use atlas_store::{Settled, Store, Trial};
 use atlas_tg::{next_offset, Incoming, Telegram};
@@ -58,6 +58,24 @@ fn main() -> ExitCode {
         }
     };
 
+    // Ключи ЮKassa проверяются при запуске, а не при первом счёте: узнать о
+    // негодном ключе в момент, когда человек уже нажал «оплатить», — значит
+    // узнать об этом от него.
+    let yookassa = match (&config.yookassa_shop_id, &config.yookassa_secret) {
+        (Some(shop), Some(secret)) => {
+            let back = config.bot_username.as_ref().map_or_else(
+                || "https://t.me".to_owned(),
+                |name| format!("https://t.me/{name}"),
+            );
+            let Some(service) = YooKassa::new(shop, secret, &back) else {
+                eprintln!("Настройки: ключи ЮKassa негодны");
+                return ExitCode::FAILURE;
+            };
+            Some(service)
+        }
+        _ => None,
+    };
+
     // Мини-приложение поднимается до основного цикла: не занятый адрес —
     // это настройка, и знать о ней надо при запуске, а не при первом
     // человеке, открывшем кабинет.
@@ -67,13 +85,32 @@ fn main() -> ExitCode {
     }
 
     println!("Бот запущен. {config:?}");
-    run(&config, &telegram, &panel, &mut store);
+    let deps = Deps {
+        config: &config,
+        telegram: &telegram,
+        panel: &panel,
+        yookassa: yookassa.as_ref(),
+    };
+    run(&deps, &mut store);
     ExitCode::SUCCESS
+}
+
+/// Всё, с чем бот разговаривает наружу.
+///
+/// Собрано в один узел не ради красоты: эти четверо ходят вместе по всей
+/// цепочке ответа, и по отдельности превращают каждую подпись в простыню.
+struct Deps<'a> {
+    config: &'a Config,
+    telegram: &'a Telegram,
+    panel: &'a Panel,
+    /// Отсутствует, пока приём оплаты картой не подключён.
+    yookassa: Option<&'a YooKassa>,
 }
 
 /// Основной цикл. Из него не выходят: любая ошибка — повод подождать и
 /// попробовать снова, а не остановиться.
-fn run(config: &Config, telegram: &Telegram, panel: &Panel, store: &mut Store) {
+fn run(deps: &Deps<'_>, store: &mut Store) {
+    let telegram = deps.telegram;
     let mut offset: Option<i64> = None;
 
     loop {
@@ -101,7 +138,7 @@ fn run(config: &Config, telegram: &Telegram, panel: &Panel, store: &mut Store) {
         };
 
         for update in &batch.updates {
-            if let Err(error) = handle(config, telegram, panel, store, &update.incoming) {
+            if let Err(error) = handle(deps, store, &update.incoming) {
                 eprintln!("Обновление {}: {}", update.id, telegram.redact(&error));
             }
         }
@@ -112,7 +149,7 @@ fn run(config: &Config, telegram: &Telegram, panel: &Panel, store: &mut Store) {
         // застрявший бот не поможет никому.
         offset = next_offset(&batch, offset);
 
-        sync_panel(panel, store);
+        sync_panel(deps.panel, store);
     }
 }
 
@@ -187,13 +224,8 @@ fn sync_panel(panel: &Panel, store: &mut Store) {
 }
 
 /// Ответить на одно обновление.
-fn handle(
-    config: &Config,
-    telegram: &Telegram,
-    panel: &Panel,
-    store: &mut Store,
-    incoming: &Incoming,
-) -> Result<(), String> {
+fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(), String> {
+    let (config, telegram, panel) = (deps.config, deps.telegram, deps.panel);
     let telegram_id = incoming.from();
     let now = unix_now();
 
@@ -253,15 +285,18 @@ fn handle(
         },
     };
 
-    let extra = apply(config, telegram, panel, store, telegram_id, &effect, now)?;
+    let extra = apply(deps, store, telegram_id, &effect, now)?;
 
-    let text = match extra {
-        Some(extra) => format!("{}\n\n{extra}", reply.text),
-        None => reply.text,
+    let (text, keyboard) = match extra {
+        Some(extra) => (
+            format!("{}\n\n{}", reply.text, extra.text),
+            extra.keyboard.or(reply.keyboard),
+        ),
+        None => (reply.text, reply.keyboard),
     };
 
     let request = telegram
-        .send_message(incoming.chat(), &text, reply.keyboard.as_ref())
+        .send_message(incoming.chat(), &text, keyboard.as_ref())
         .map_err(|error| format!("сообщение: {error}"))?;
 
     let response = http::send(&request).map_err(|error| format!("отправка: {error}"))?;
@@ -275,16 +310,81 @@ fn handle(
     Ok(())
 }
 
+/// Открыть страницу оплаты и вернуть её адрес.
+///
+/// Заказ уже лежит в базе к этому моменту, и это важно: страница может не
+/// открыться, а деньги человек может перевести и вручную. Терять открытый
+/// счёт из-за недоступности сервиса нельзя — человек его уже видел.
+fn checkout(
+    service: &YooKassa,
+    order_id: &str,
+    telegram_id: i64,
+    plan: &atlas_billing::Plan,
+    amount: Money,
+) -> Result<String, String> {
+    let Some(id) = OrderId::new(order_id) else {
+        return Err("номер заказа не годится для платёжного сервиса".to_owned());
+    };
+
+    let order = Order {
+        id,
+        user: UserId(telegram_id),
+        plan: plan.id.clone(),
+        amount,
+        // Это видит покупатель в своём банке. «Оплата 199,37» без имени
+        // читается как списание неизвестно за что и заканчивается спором.
+        description: format!("Gloria VPN — {}", plan.title),
+    };
+
+    let Checkout::Request(request) = service
+        .checkout(&order)
+        .map_err(|error| format!("запрос не собрался: {error}"))?
+    else {
+        return Err("сервис не предложил запроса".to_owned());
+    };
+
+    let response = http::send(&request).map_err(|error| format!("связь: {error}"))?;
+    if !response.is_ok() {
+        return Err(format!(
+            "код {}: {}",
+            response.status,
+            excerpt(&response.body)
+        ));
+    }
+
+    service
+        .checkout_page(&response.body)
+        .map_err(|error| format!("ответ: {error}"))
+}
+
+/// Что намерение дописывает к ответу.
+struct Extra {
+    /// Текст под ответом экрана.
+    text: String,
+    /// Кнопки взамен тех, что предложил экран. Нужны счёту: кнопка оплаты
+    /// уводит на страницу сервиса, и построить её экран не может — ссылки
+    /// на тот момент ещё не существует.
+    keyboard: Option<Keyboard>,
+}
+
+impl From<String> for Extra {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            keyboard: None,
+        }
+    }
+}
+
 /// Выполнить намерение и вернуть то, что надо дописать к ответу.
 fn apply(
-    config: &Config,
-    telegram: &Telegram,
-    panel: &Panel,
+    deps: &Deps<'_>,
     store: &mut Store,
     telegram_id: i64,
     effect: &flow::Effect,
     now: i64,
-) -> Result<Option<String>, String> {
+) -> Result<Option<Extra>, String> {
+    let (config, telegram) = (deps.config, deps.telegram);
     match effect {
         flow::Effect::None => Ok(None),
 
@@ -297,10 +397,10 @@ fn apply(
                 return Ok(None);
             };
 
-            let url = ensure_panel_user(config, panel, store, telegram_id, expires_at)?;
-            Ok(Some(format!(
-                "Ваша ссылка — одна на все устройства:\n<code>{url}</code>"
-            )))
+            let url = ensure_panel_user(config, deps.panel, store, telegram_id, expires_at)?;
+            Ok(Some(
+                format!("Ваша ссылка — одна на все устройства:\n<code>{url}</code>").into(),
+            ))
         }
 
         flow::Effect::OpenOrder { plan } => {
@@ -336,7 +436,34 @@ fn apply(
                 ),
             );
 
-            Ok(Some(invoice_text(config, amount)))
+            // Сначала пробуем открыть страницу оплаты. Не вышло — счёт
+            // остаётся в базе и подтверждается вручную: терять уже открытый
+            // заказ из-за недоступности сервиса нельзя, человек его видел.
+            if let Some(service) = deps.yookassa {
+                match checkout(service, &order_id, telegram_id, &plan, amount) {
+                    Ok(page) => {
+                        return Ok(Some(Extra {
+                            text: format!(
+                                "К оплате: <b>{}</b>\n\nСчёт действует 20 минут.",
+                                atlas_bot::menu::price_label(amount)
+                            ),
+                            keyboard: Some(Keyboard {
+                                rows: vec![vec![Button::link("Оплатить", page)]],
+                            }),
+                        }));
+                    }
+                    Err(error) => {
+                        eprintln!("ЮKassa для {telegram_id}: {error}");
+                        notify_admins(
+                            config,
+                            telegram,
+                            &format!("ЮKassa не открыла оплату по счёту {order_id}: {error}"),
+                        );
+                    }
+                }
+            }
+
+            Ok(Some(invoice_text(config, amount).into()))
         }
     }
 }

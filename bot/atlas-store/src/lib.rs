@@ -402,6 +402,21 @@ impl Store {
     ///
     /// Именно так рублёвый канал узнаёт, чей платёж: банк сообщает только
     /// сумму, а по ней однозначно находится единственный открытый счёт.
+    /// Кому выставлен заказ.
+    ///
+    /// Номера Telegram в платёжном сервисе нет и быть не должно, поэтому
+    /// после зачисления покупатель находится по номеру заказа, а не по
+    /// чему-либо в ответе сервиса.
+    pub fn order_buyer(&mut self, order_id: &str) -> Result<Option<i64>, Error> {
+        let row = self
+            .client
+            .query_opt("SELECT telegram_id FROM orders WHERE id = $1", &[&order_id])?;
+        Ok(match row {
+            Some(row) => Some(row.try_get(0)?),
+            None => None,
+        })
+    }
+
     pub fn order_by_amount(
         &mut self,
         amount: Money,

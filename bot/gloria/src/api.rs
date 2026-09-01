@@ -16,11 +16,12 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atlas_billing::subscription;
+use atlas_billing::{subscription, Callback, PaymentStatus, YooKassa};
 use atlas_bot::catalog;
 use atlas_panel::Panel;
-use atlas_store::Store;
+use atlas_store::{Settled, Store};
 use atlas_telegram::{self as telegram_init};
+use atlas_tg::Telegram;
 
 use crate::config::Config;
 
@@ -67,9 +68,20 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         return Err("адрес или токен панели негодны".to_owned());
     };
 
+    // Свой клиент ЮKassa и свой Telegram: обработчик уведомления обязан
+    // сходить за настоящим состоянием платежа и сам же сказать покупателю,
+    // что деньги дошли. Ждать основного цикла нельзя — он в это время стоит
+    // на длинном опросе.
+    let yookassa = match (&config.yookassa_shop_id, &config.yookassa_secret) {
+        (Some(shop), Some(secret)) => YooKassa::new(shop, secret, "https://t.me"),
+        _ => None,
+    };
+
     let shared = Shared {
         store: Arc::new(Mutex::new(store)),
         panel,
+        yookassa,
+        telegram: Telegram::new(&config.bot_token),
         bot_token: config.bot_token.clone(),
         bot_username: config.bot_username.clone(),
     };
@@ -99,6 +111,8 @@ pub fn spawn(config: &Config) -> Result<(), String> {
 struct Shared {
     store: Arc<Mutex<Store>>,
     panel: Panel,
+    yookassa: Option<YooKassa>,
+    telegram: Option<Telegram>,
     bot_token: String,
     bot_username: Option<String>,
 }
@@ -121,6 +135,12 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     // его знает, тот уже имеет доступ к подписке.
     if let Some(rest) = request.path.strip_prefix("/api/open/") {
         return open_in_app(shared, &mut stream, rest);
+    }
+
+    // Уведомление о платеже. Без подписи Telegram: приходит оно не из
+    // мини-приложения, а от ЮKassa.
+    if request.path == "/api/pay/yookassa" {
+        return payment_notice(shared, &mut stream, &request);
     }
 
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
@@ -176,6 +196,168 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     };
 
     send(&mut stream, 200, &body)
+}
+
+/// Уведомление ЮKassa о платеже.
+///
+/// # Почему уведомлению нельзя верить
+///
+/// Уведомления ЮKassa **не подписаны** — ни HMAC, ни чем-либо ещё. Адрес
+/// этого обработчика открыт наружу, потому что иначе ЮKassa до него не
+/// достучится. Значит любой, кто его нашёл, может прислать сюда «платёж
+/// прошёл» и получить подписку даром.
+///
+/// Поэтому из тела берутся **только** событие и номер платежа. Ни суммы, ни
+/// состояния — их здесь попросту не читают. Дальше мы сами идём в ЮKassa за
+/// настоящим состоянием: ответ приходит по TLS на запрос с нашим ключом, и
+/// подделать его, не имея ключа, нельзя.
+///
+/// Адрес отправителя — второй рубеж, а не первый.
+fn payment_notice(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    request: &Request,
+) -> Result<(), String> {
+    let Some(service) = shared.yookassa.as_ref() else {
+        return send(stream, 404, r#"{"error":"нет такого пути"}"#);
+    };
+    if request.method != "POST" {
+        return send(stream, 405, r#"{"error":"не тот способ"}"#);
+    }
+
+    // Из цепочки берётся последний адрес: его вписал Caddy, увидев
+    // соединение своими глазами. Всё, что левее, прислал сам клиент, и
+    // подставить туда можно что угодно.
+    if let Some(chain) = request.forwarded_for.as_deref() {
+        let seen = chain.rsplit(',').next().unwrap_or("").trim();
+        if let Ok(ip) = seen.parse::<core::net::Ipv4Addr>() {
+            if !YooKassa::is_trusted_source(ip) {
+                eprintln!("Оплата: уведомление с чужого адреса {ip}");
+                return send(stream, 403, r#"{"error":"не ваш адрес"}"#);
+            }
+        }
+    }
+
+    let callback = Callback::new(Vec::new(), request.body.clone());
+    let notice = match service.notice(&callback) {
+        Ok(notice) => notice,
+        Err(error) => {
+            eprintln!("Оплата: уведомление не разобралось: {error}");
+            // 200, а не 400: ЮKassa повторяет доставку, пока не получит
+            // успех, а повтор неразбираемого тела ничего не изменит.
+            return send(stream, 200, r#"{"ok":true}"#);
+        }
+    };
+
+    // Вот она, настоящая проверка.
+    let response = match crate::http::send(&service.status_request(&notice.payment_id)) {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("Оплата: ЮKassa недоступна: {error}");
+            // 500 — чтобы прислали снова: платёж мог и правда пройти.
+            return send(stream, 500, r#"{"error":"попробуйте позже"}"#);
+        }
+    };
+    if !response.is_ok() {
+        eprintln!("Оплата: ЮKassa ответила кодом {}", response.status);
+        return send(stream, 500, r#"{"error":"попробуйте позже"}"#);
+    }
+
+    let event = match service.settle(&response.body) {
+        Ok(event) => event,
+        Err(error) => {
+            eprintln!("Оплата: состояние платежа не разобралось: {error}");
+            return send(stream, 200, r#"{"ok":true}"#);
+        }
+    };
+
+    if event.status != PaymentStatus::Paid {
+        // Ожидание и отказ — не наше дело: заказ просто останется открытым
+        // и истечёт сам.
+        return send(stream, 200, r#"{"ok":true}"#);
+    }
+
+    let Some(paid) = event.paid else {
+        eprintln!("Оплата: платёж прошёл, но суммы в ответе нет");
+        return send(stream, 200, r#"{"ok":true}"#);
+    };
+
+    let now = crate::unix_now();
+    let settled = {
+        let mut store = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?;
+        store.settle(
+            event.order.as_str(),
+            "yookassa",
+            &event.reference,
+            paid,
+            "{}",
+            now,
+        )
+    };
+
+    match settled {
+        // Повтор доставки — обычное дело: ЮKassa шлёт уведомление, пока не
+        // получит успех, и второй раз не должен давать ни дня.
+        Ok(Settled::AlreadyCounted | Settled::OrderAlreadyPaid) => {}
+        Ok(Settled::Extended { expires_at }) => {
+            println!(
+                "Оплата {} зачтена по счёту {}",
+                paid.to_decimal(),
+                event.order.as_str()
+            );
+            tell_buyer(shared, event.order.as_str(), expires_at);
+        }
+        Ok(other) => eprintln!("Оплата по счёту {}: {other:?}", event.order.as_str()),
+        Err(error) => {
+            eprintln!("Оплата: база не приняла зачисление: {error}");
+            return send(stream, 500, r#"{"error":"попробуйте позже"}"#);
+        }
+    }
+
+    send(stream, 200, r#"{"ok":true}"#)
+}
+
+/// Сказать покупателю, что деньги дошли.
+///
+/// Тишина после оплаты читается как «деньги пропали», и следующим сообщением
+/// было бы обращение в поддержку.
+fn tell_buyer(shared: &Shared, order_id: &str, expires_at: i64) {
+    let Some(telegram) = shared.telegram.as_ref() else {
+        return;
+    };
+
+    // Кому писать, знает заказ, а не платёж: номер Telegram в ЮKassa не
+    // уезжает вовсе.
+    let buyer = {
+        let Ok(mut store) = shared.store.lock() else {
+            return;
+        };
+        store.order_buyer(order_id)
+    };
+
+    let Ok(Some(buyer)) = buyer else {
+        eprintln!("Оплата: не нашёлся покупатель по счёту {order_id}");
+        return;
+    };
+
+    let text = format!(
+        "Оплата получена. Подписка действует до {}.",
+        day_month_year(expires_at)
+    );
+    match telegram.send_message(buyer, &text, None) {
+        Ok(request) => {
+            if let Err(error) = crate::http::send(&request) {
+                eprintln!(
+                    "Оплата: сообщение {buyer}: {}",
+                    telegram.redact(&error.to_string())
+                );
+            }
+        }
+        Err(error) => eprintln!("Оплата: сообщение не собралось: {error}"),
+    }
 }
 
 /// Перенаправить в клиент.
@@ -297,17 +479,28 @@ pub fn day_month_year(seconds: i64) -> String {
     }
 }
 
+/// Предел на тело запроса.
+///
+/// Тело читает только обработчик уведомлений о платеже; уведомление ЮKassa
+/// — это пара килобайт. Предел стоит потому, что адрес обработчика открыт
+/// наружу, а без него любой желающий занимал бы нашу память сколько хочет.
+const MAX_BODY: u64 = 64 * 1024;
+
 /// Разобранный запрос — ровно то немногое, что нам нужно.
 struct Request {
     method: String,
     path: String,
     init_data: Option<String>,
+    /// Тело. Пустое у всего, кроме уведомлений о платеже.
+    body: Vec<u8>,
+    /// Кого Caddy видит на том конце.
+    ///
+    /// Нужен, чтобы отсечь чужих от обработчика уведомлений. Второй рубеж,
+    /// а не первый: настоящая проверка — повторный запрос к ЮKassa.
+    forwarded_for: Option<String>,
 }
 
-/// Прочитать строку запроса и заголовки.
-///
-/// Тело не читается: единственный наш путь — `GET`. Это же означает, что
-/// соединение не переиспользуется, и после ответа мы его закрываем.
+/// Прочитать строку запроса, заголовки и — если оно есть — тело.
 fn read_request(stream: &TcpStream) -> Result<Request, String> {
     let mut reader = BufReader::new(stream.try_clone().map_err(|e| e.to_string())?).take(
         u64::try_from(MAX_HEADERS).map_err(|_| "предел заголовков не помещается".to_owned())?,
@@ -328,6 +521,8 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
     let path = target.split('?').next().unwrap_or(target).to_owned();
 
     let mut init_data = None;
+    let mut forwarded_for = None;
+    let mut content_length: u64 = 0;
     loop {
         let mut line = String::new();
         let read = reader
@@ -343,16 +538,38 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
         if let Some((name, value)) = line.split_once(':') {
             // Имена заголовков нечувствительны к регистру — так сказано в
             // самом протоколе, и клиенты этим пользуются.
-            if name.trim().eq_ignore_ascii_case("x-init-data") {
-                init_data = Some(value.trim().to_owned());
+            let name = name.trim();
+            let value = value.trim();
+            if name.eq_ignore_ascii_case("x-init-data") {
+                init_data = Some(value.to_owned());
+            } else if name.eq_ignore_ascii_case("x-forwarded-for") {
+                forwarded_for = Some(value.to_owned());
+            } else if name.eq_ignore_ascii_case("content-length") {
+                // Негодная длина — это ноль, а не отказ: путям без тела она
+                // безразлична, а тот, кому тело нужно, увидит пустое и
+                // ответит по-своему.
+                content_length = value.parse().unwrap_or(0);
             }
         }
+    }
+
+    // Тело читается только когда оно объявлено. Остаток заголовочного
+    // предела к этому моменту израсходован, поэтому предел выставляется
+    // заново — и уже свой.
+    let mut body = Vec::new();
+    if content_length > 0 {
+        reader.set_limit(content_length.min(MAX_BODY));
+        reader
+            .read_to_end(&mut body)
+            .map_err(|error| format!("тело запроса: {error}"))?;
     }
 
     Ok(Request {
         method: method.to_owned(),
         path,
         init_data,
+        body,
+        forwarded_for,
     })
 }
 

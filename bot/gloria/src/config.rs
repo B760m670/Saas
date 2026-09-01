@@ -50,6 +50,10 @@ pub struct Config {
     pub api_addr: String,
     /// Имя бота без «@» — из него строится реферальная ссылка.
     pub bot_username: Option<String>,
+    /// Магазин в ЮKassa, если приём оплаты картой уже подключён.
+    pub yookassa_shop_id: Option<String>,
+    /// Секретный ключ магазина.
+    pub yookassa_secret: Option<String>,
 }
 
 impl core::fmt::Debug for Config {
@@ -65,6 +69,7 @@ impl core::fmt::Debug for Config {
             .field("admins", &self.admins.len())
             .field("мини-приложение", &self.api_addr)
             .field("принимает переводы", &self.accepts_transfers())
+            .field("принимает карты", &self.accepts_cards())
             .finish()
     }
 }
@@ -80,6 +85,8 @@ pub const SBP_PHONE: &str = "GLORIA_SBP_PHONE";
 pub const SBP_NAME: &str = "GLORIA_SBP_NAME";
 pub const API_ADDR: &str = "GLORIA_API_ADDR";
 pub const BOT_USERNAME: &str = "GLORIA_BOT_USERNAME";
+pub const YOOKASSA_SHOP_ID: &str = "GLORIA_YOOKASSA_SHOP_ID";
+pub const YOOKASSA_SECRET: &str = "GLORIA_YOOKASSA_SECRET";
 
 /// Куда встаёт мини-приложение, если адрес не задан.
 ///
@@ -160,6 +167,8 @@ impl Config {
                 // «@» люди дописывают по привычке, а в ссылке он лишний.
                 name.trim_start_matches('@').to_owned()
             }),
+            yookassa_shop_id: optional(vars, YOOKASSA_SHOP_ID),
+            yookassa_secret: optional(vars, YOOKASSA_SECRET),
         })
     }
 
@@ -167,6 +176,15 @@ impl Config {
     #[must_use]
     pub fn accepts_transfers(&self) -> bool {
         self.sbp_phone.is_some() && self.sbp_name.is_some()
+    }
+
+    /// Подключён ли приём оплаты картой и СБП через ЮKassa.
+    ///
+    /// Нужны оба ключа: с одним из них запрос уйдёт и получит отказ, а
+    /// человек увидит «оплата не работает» вместо страницы оплаты.
+    #[must_use]
+    pub fn accepts_cards(&self) -> bool {
+        self.yookassa_shop_id.is_some() && self.yookassa_secret.is_some()
     }
 
     /// Разрешены ли этому человеку админские действия.
