@@ -1,0 +1,62 @@
+# Служба бота Gloria VPN.
+#
+# Ставится на машину с панелью. Обновление — deploy/gloria-update.sh.
+
+[Unit]
+Description=Бот Gloria VPN
+Documentation=https://github.com/B760m670/Saas/blob/main/bot/README.md
+# База живёт в контейнере панели: без докера стартовать бессмысленно.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gloria
+Group=gloria
+EnvironmentFile=/etc/gloria.env
+ExecStart=/opt/gloria/gloria
+
+# Из основного цикла бот не выходит сам: любой выход — это сбой, и лечится
+# он перезапуском. Пауза, чтобы не крутить перезапуск в петле, когда
+# недоступна база.
+Restart=always
+RestartSec=5
+
+# Журнал уходит в journalctl, поэтому вывод не буферизуется: иначе строки
+# появлялись бы пачками с задержкой, и «что происходит прямо сейчас» было
+# бы не видно.
+StandardOutput=journal
+StandardError=journal
+
+# --- ограничения ---------------------------------------------------------
+#
+# Бот разбирает то, что пришло из сети: обновления Telegram, ответы панели,
+# запросы к мини-приложению. Ошибка в разборе не должна превращаться в
+# доступ ко всей машине, поэтому прав у него ровно столько, сколько нужно.
+
+# Ничего не пишет на диск — ни временных файлов, ни журналов.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+
+# Повышать права некуда и незачем.
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# TCP наружу и к базе; AF_UNIX нужен разрешению имён.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

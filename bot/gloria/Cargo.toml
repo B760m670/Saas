@@ -1,0 +1,21 @@
+[package]
+name = "gloria"
+description = "Бот Gloria VPN: исполнитель"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atlas-billing.workspace = true
+atlas-bot.workspace = true
+atlas-panel.workspace = true
+atlas-store.workspace = true
+atlas-telegram.workspace = true
+atlas-tg.workspace = true
+serde_json.workspace = true
+ureq = "3"
+
+[lints]
+workspace = true

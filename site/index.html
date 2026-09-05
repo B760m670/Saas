@@ -1,0 +1,970 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gloria</title>
+<meta name="robots" content="noindex, nofollow">
+<!-- defer обязателен. Скрипт лежит на telegram.org, а он из России достаётся
+     не всегда; блокирующий тег в <head> подвесил бы отрисовку до таймаута —
+     ровно так чёрный экран показывала панель из-за скрипта на unpkg. -->
+<script defer src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+/* ---------------------------------------------------------------------------
+   Палитра взята из аватарки (design/render_avatar.py): тёплое ядро, оранжевая
+   середина, глубокая коричневая тень, почти чёрный фон.
+
+   Тема клиента здесь намеренно НЕ используется. Обычно мини-приложение
+   подстраивается под цвета Telegram, но тогда у него нет собственного лица —
+   а лицо здесь и есть отличие от соседей по ряду, у которых всё бирюзовое.
+   Кабинет выглядит одинаково у всех и совпадает со значком бота.
+--------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  --core:  #ffecbe;   /* ядро света */
+  --mid:   #ee982e;   /* тёплая середина, основной акцент */
+  --deep:  #240d05;   /* глубокая тень */
+  --black: #040406;
+
+  --bg:      #060507;
+  --card:    rgba(255, 236, 190, 0.045);
+  --card-2:  rgba(255, 236, 190, 0.075);
+  --line:    rgba(255, 236, 190, 0.10);
+  --line-2:  rgba(255, 236, 190, 0.18);
+
+  --text:  #f3ece1;
+  --muted: #9c9083;
+
+  --ok:  #4fbf8b;
+  --bad: #e5544b;
+
+  --tabbar-h: 62px;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  /* Двойное касание по кнопке приближало страницу — браузер ждал второго
+     тапа, чтобы решить, нажатие это или зум. `manipulation` снимает
+     ожидание: прокрутка и щипок остаются, двойной тап перестаёт масштабировать. */
+  touch-action: manipulation;
+}
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* Поле света. Ядро вынесено за край кадра — видно только затухание, как на
+   значке. Оно же задаёт направление: свет приходит сверху справа. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -30% -30% auto -30%;
+  height: 90vh;
+  background:
+    radial-gradient(60% 55% at 78% 8%, rgba(238, 152, 46, 0.30), transparent 72%),
+    radial-gradient(38% 34% at 86% 2%, rgba(255, 236, 190, 0.20), transparent 68%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ------------------------------- экраны ---------------------------------- */
+
+main { position: relative; z-index: 1; }
+
+.screen {
+  display: none;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: 22px 18px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28px);
+}
+.screen.on { display: block; animation: rise 0.34s var(--ease) both; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .screen.on { animation: none; }
+  * { transition-duration: 0.01ms !important; }
+}
+
+h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.5px; font-weight: 700; }
+.sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
+h2 {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 1.4px;
+  color: var(--muted); margin: 28px 0 10px; font-weight: 700;
+}
+p { margin: 0 0 12px; }
+.muted { color: var(--muted); }
+.small { font-size: 13px; }
+
+/* ------------------------------ карточки --------------------------------- */
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 18px;
+}
+.card + .card { margin-top: 10px; }
+
+/* Карточка состояния. Кольцо с разрывом — тот же знак, что на значке:
+   разомкнуто в сторону света. */
+.status { position: relative; overflow: hidden; padding: 26px 18px 22px; text-align: center; }
+.status .ring {
+  position: absolute; top: -54px; right: -46px;
+  width: 190px; height: 190px; opacity: 0.5; pointer-events: none;
+}
+.status .days {
+  font-size: 46px; font-weight: 700; line-height: 1; letter-spacing: -1.5px;
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(150deg, var(--core), var(--mid));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.status .until { color: var(--muted); font-size: 14px; margin-top: 6px; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 20px;
+  font-size: 12.5px; font-weight: 700; letter-spacing: 0.2px;
+}
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge.ok   { color: var(--ok);   background: rgba(79, 191, 139, 0.13); }
+.badge.warn { color: var(--mid);  background: rgba(238, 152, 46, 0.14); }
+.badge.bad  { color: var(--bad);  background: rgba(229, 84, 75, 0.13); }
+/* Без этого правила значок не прячется: авторское `display: inline-flex`
+   выше по силе, чем браузерное `display: none` для `[hidden]`. Проверено
+   тем, что при недоступном сервере горело зелёное «Активна». */
+.badge[hidden] { display: none; }
+
+.chips { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
+.chip {
+  border: 1px solid var(--line); border-radius: 20px;
+  padding: 5px 12px; font-size: 12.5px; color: var(--muted);
+}
+
+/* ------------------------------- кнопки ---------------------------------- */
+
+button { font: inherit; color: inherit; }
+
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 15px 18px; margin-top: 10px;
+  border: 1px solid var(--line-2); border-radius: 14px;
+  background: var(--card-2); color: var(--text);
+  font-size: 15.5px; font-weight: 600; cursor: pointer;
+  transition: transform 0.12s var(--ease), background 0.18s;
+}
+.btn:active { transform: scale(0.985); }
+
+.btn.primary {
+  border-color: transparent;
+  background: linear-gradient(140deg, var(--core), var(--mid));
+  color: #2a1403;
+  font-weight: 700;
+}
+.btn.ghost { background: transparent; }
+
+/* Кнопка «Добавить в приложение» — ссылка, а не кнопка: за пределами
+   Telegram она должна работать обычным нажатием, без скрипта. Внутри
+   Telegram нажатие перехватывается и уводит в его встроенный браузер. */
+a.btn { text-decoration: none; }
+a.btn.off { opacity: 0.45; }
+
+/* Шаги мастера. Показан ровно один: остальные не спрятаны прозрачностью, а
+   убраны из потока — иначе прокрутка ниже упиралась бы в пустоту. */
+.step { display: none; }
+.step.on { display: block; animation: rise 0.28s var(--ease) both; }
+
+.back {
+  display: flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px; margin-bottom: 14px;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: var(--card); color: var(--text); cursor: pointer;
+}
+.back:active { background: var(--card-2); }
+.back svg { width: 18px; height: 18px; }
+
+/* Строка списка: иконка, текст, стрелка */
+.row {
+  display: flex; align-items: center; gap: 14px;
+  width: 100%; padding: 15px 16px;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); text-align: left; cursor: pointer;
+  transition: background 0.18s;
+}
+.row + .row { margin-top: 8px; }
+.row:active { background: var(--card-2); }
+.row .ico { flex: none; width: 22px; height: 22px; color: var(--mid); }
+.row .body { flex: 1; min-width: 0; }
+.row .title { display: block; font-size: 15px; font-weight: 600; }
+.row .hint { display: block; font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.row .chev { flex: none; color: var(--muted); }
+
+/* Переключатель */
+.switch { flex: none; width: 46px; height: 28px; border-radius: 20px; background: var(--card-2);
+          border: 1px solid var(--line-2); position: relative; transition: background 0.22s; }
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 22px; height: 22px;
+  border-radius: 50%; background: var(--muted); transition: transform 0.24s var(--ease), background 0.24s;
+}
+.switch.on { background: rgba(238, 152, 46, 0.25); border-color: transparent; }
+.switch.on::after { transform: translateX(18px); background: linear-gradient(140deg, var(--core), var(--mid)); }
+
+/* Поле со значением, которое копируют */
+.copy {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px dashed var(--line-2); border-radius: 14px;
+  padding: 13px 14px; background: rgba(0, 0, 0, 0.25); cursor: pointer;
+}
+.copy code {
+  flex: 1; min-width: 0; font-size: 13px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.copy .ico { flex: none; color: var(--mid); }
+
+/* Числа реферальной статистики */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.stat { text-align: center; padding: 16px 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.stat .n { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.5px; }
+.stat .k { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+
+/* Вопрос-ответ */
+.qa { border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+.qa + .qa { margin-top: 8px; }
+.qa summary {
+  padding: 15px 16px; font-size: 15px; font-weight: 600; cursor: pointer; list-style: none;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.qa summary::-webkit-details-marker { display: none; }
+.qa summary::after {
+  content: ""; flex: none; width: 8px; height: 8px; margin-right: 3px;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg); transition: transform 0.24s var(--ease);
+}
+.qa[open] summary::after { transform: rotate(-135deg); }
+.qa .answer { padding: 0 16px 15px; color: var(--muted); font-size: 14px; }
+
+/* ------------------------------ таб-бар ---------------------------------- */
+
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  padding: 6px 10px calc(6px + env(safe-area-inset-bottom));
+  background: rgba(8, 6, 10, 0.78);
+  backdrop-filter: saturate(180%) blur(22px);
+  -webkit-backdrop-filter: saturate(180%) blur(22px);
+  border-top: 1px solid var(--line);
+}
+.tabs { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); max-width: 560px; margin: 0 auto; }
+
+/* Таблетка. Она одна на весь бар и переезжает под нажатую кнопку —
+   ширина ровно в четверть, сдвиг кратен ей же. */
+.pill {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 25%;
+  padding: 0 5px; pointer-events: none;
+  transform: translateX(calc(var(--tab, 0) * 100%));
+  transition: transform 0.42s var(--ease);
+}
+.pill i {
+  display: block; height: 100%; border-radius: 14px;
+  background: rgba(238, 152, 46, 0.16);
+  border: 1px solid rgba(238, 152, 46, 0.22);
+}
+
+.tab {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 8px 0 7px; border: 0; background: none; cursor: pointer;
+  color: var(--muted); transition: color 0.28s var(--ease);
+}
+.tab svg { width: 23px; height: 23px; }
+.tab span { font-size: 10.5px; font-weight: 600; letter-spacing: 0.1px; }
+.tab[aria-selected="true"] { color: var(--core); }
+.tab:active { transform: scale(0.94); }
+
+/* ----------------------------- всплывашка -------------------------------- */
+
+.sheet-bg {
+  position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, 0.6);
+  opacity: 0; pointer-events: none; transition: opacity 0.28s var(--ease);
+}
+.sheet-bg.on { opacity: 1; pointer-events: auto; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 21;
+  max-width: 560px; margin: 0 auto;
+  padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
+  background: #0d0a10; border: 1px solid var(--line); border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  transform: translateY(100%); transition: transform 0.36s var(--ease);
+}
+.sheet.on { transform: none; }
+.sheet .grab { width: 38px; height: 4px; border-radius: 4px; background: var(--line-2); margin: 0 auto 16px; }
+
+.plan {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 15px 16px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); cursor: pointer; text-align: left;
+}
+.plan + .plan { margin-top: 8px; }
+.plan.best { border-color: rgba(238, 152, 46, 0.4); background: rgba(238, 152, 46, 0.08); }
+.plan .term { font-size: 15.5px; font-weight: 600; }
+.plan .per { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.plan .price { font-size: 17px; font-weight: 700; white-space: nowrap; }
+.plan .off { font-size: 11.5px; font-weight: 700; color: var(--mid); }
+
+.toast {
+  position: fixed; left: 50%; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 20px);
+  z-index: 30; transform: translate(-50%, 14px);
+  padding: 11px 18px; border-radius: 12px;
+  background: #17121b; border: 1px solid var(--line-2);
+  font-size: 14px; opacity: 0; pointer-events: none;
+  transition: opacity 0.24s, transform 0.24s var(--ease);
+}
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+
+<main>
+
+<!-- ============================ ГЛАВНАЯ ============================== -->
+<section class="screen on" id="s-home">
+  <h1>Подписка</h1>
+  <p class="sub" id="hello">Gloria VPN</p>
+
+  <div class="card status">
+    <svg class="ring" viewBox="0 0 100 100" fill="none" aria-hidden="true">
+      <path d="M50 8 a42 42 0 1 1 -29.7 12.3" stroke="url(#g)" stroke-width="9" stroke-linecap="round"/>
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#ffecbe"/>
+          <stop offset="1" stop-color="#ee982e" stop-opacity="0.15"/>
+        </linearGradient>
+      </defs>
+    </svg>
+    <div class="days" id="st-days">—</div>
+    <div class="until" id="st-until">загружаем…</div>
+    <div style="margin-top:14px"><span class="badge warn" id="st-badge">проверяем</span></div>
+    <div class="chips">
+      <span class="chip" id="st-devices">— из 4 устройств</span>
+      <span class="chip">Безлимитный трафик</span>
+    </div>
+    <button class="btn" id="renew" data-act="plans" style="margin-top:18px">Продлить</button>
+  </div>
+
+  <button class="btn primary" id="setup-btn" data-act="setup" style="margin-top:22px">Настроить VPN</button>
+</section>
+
+<!-- ========================== НАСТРОЙКА VPN =========================== -->
+<!-- Мастер, а не список на главной: каждый шаг задаёт ровно один вопрос и
+     показывает ровно то, что нужно для ответа. Всё сразу на одном экране
+     человек читает как «сделай всё это», а не «выбери одно». -->
+<section class="screen" id="s-setup">
+  <button class="back" data-act="back" aria-label="Назад">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 6-6 6 6 6"/></svg>
+  </button>
+
+  <div class="step on" data-step="where">
+    <h1>Где настраиваем?</h1>
+    <p class="sub">Выберите устройство, на котором нужен VPN</p>
+
+    <button class="row" data-act="step" data-to="app">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18.5h2"/></svg>
+      <span class="body"><span class="title">На этом устройстве</span><span class="hint">Ключ добавится сам</span></span>
+      <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+    </button>
+
+    <button class="row" data-act="step" data-to="other">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>
+      <span class="body"><span class="title">На другом устройстве</span><span class="hint">Компьютер, телевизор, второй телефон</span></span>
+      <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+    </button>
+  </div>
+
+  <div class="step" data-step="app">
+    <h1>Какое приложение?</h1>
+    <p class="sub">Достаточно одного — ставить оба не нужно</p>
+
+    <div class="card">
+      <div class="row" style="background:transparent;padding:0;border:0">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
+        <span class="body"><span class="title">Happ</span><span class="hint">Проще, если ставите впервые</span></span>
+      </div>
+      <button class="btn" data-act="install-app" data-app="happ" style="margin-top:12px">Установить приложение</button>
+      <button class="btn ghost" data-act="step" data-to="add" data-app="happ">У меня уже есть приложение</button>
+    </div>
+
+    <div class="card">
+      <div class="row" style="background:transparent;padding:0;border:0">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
+        <span class="body"><span class="title">INCY</span><span class="hint">Больше настроек, если они нужны</span></span>
+      </div>
+      <button class="btn" data-act="install-app" data-app="incy" style="margin-top:12px">Установить приложение</button>
+      <button class="btn ghost" data-act="step" data-to="add" data-app="incy">У меня уже есть приложение</button>
+    </div>
+  </div>
+
+  <div class="step" data-step="add">
+    <h1>Ваш ключ</h1>
+    <p class="sub" id="add-sub">Нажмите «Добавить в приложение» — оно откроется само</p>
+
+    <div class="copy" data-act="copy-sub">
+      <code data-sub>—</code>
+      <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </div>
+
+    <a class="btn primary" id="add-link" style="margin-top:18px">Добавить в приложение</a>
+    <button class="btn ghost" data-act="home">Готово</button>
+  </div>
+
+  <div class="step" data-step="other">
+    <h1>На другом устройстве</h1>
+    <p class="sub">Скопируйте ключ и вставьте его в приложение</p>
+
+    <div class="copy" data-act="copy-sub">
+      <code data-sub>—</code>
+      <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </div>
+
+    <h2>Где взять приложение</h2>
+    <button class="btn" data-act="install-app" data-app="happ">Happ</button>
+    <button class="btn" data-act="install-app" data-app="incy">INCY</button>
+  </div>
+</section>
+
+<!-- =========================== РЕФЕРАЛЫ ============================== -->
+<section class="screen" id="s-ref">
+  <h1>Приглашайте</h1>
+  <p class="sub">За каждого, кто оплатит подписку, вам добавляются дни</p>
+
+  <div class="stats">
+    <div class="stat"><div class="n" id="rf-invited">0</div><div class="k">перешли</div></div>
+    <div class="stat"><div class="n" id="rf-paying">0</div><div class="k">оплатили</div></div>
+    <div class="stat"><div class="n" id="rf-days">0</div><div class="k">дней вам</div></div>
+  </div>
+
+  <h2>Ваша ссылка</h2>
+  <div class="copy" data-act="copy-ref">
+    <code id="ref-url">—</code>
+    <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+  </div>
+  <button class="btn" data-act="share-ref">Поделиться</button>
+</section>
+
+<!-- =========================== ПОДДЕРЖКА ============================= -->
+<section class="screen" id="s-help">
+  <h1>Поддержка</h1>
+  <p class="sub">Отвечает человек, обычно в течение часа</p>
+
+  <button class="btn primary" data-act="support">Написать в поддержку</button>
+
+  <h2>Частые вопросы</h2>
+
+  <details class="qa">
+    <summary>Не открывается сайт или приложение</summary>
+    <div class="answer">
+      Обновите подписку в приложении круговой стрелкой и выберите сервер
+      заново. Не помогло — напишите нам.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>Во время ограничений мобильного интернета ничего не работает</summary>
+    <div class="answer">
+      Ограничение стоит в сети оператора: не работает ни один VPN, включая
+      наш. По Wi-Fi и на проводном всё продолжает работать.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>Сколько устройств можно подключить</summary>
+    <div class="answer">
+      Четыре одновременно, ссылка одна на все.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>Я оплатил, но подписка не продлилась</summary>
+    <div class="answer">
+      Напишите нам время платежа и номер операции — продлим вручную.
+    </div>
+  </details>
+
+  <details class="qa">
+    <summary>VK и Max пишут «отключите VPN»</summary>
+    <div class="answer">
+      Российские сайты идут напрямую, мимо туннеля. Появилось — обновите
+      подписку в приложении, у вас старые настройки.
+    </div>
+  </details>
+</section>
+
+<!-- =========================== НАСТРОЙКИ ============================= -->
+<section class="screen" id="s-set">
+  <h1>Настройки</h1>
+  <p class="sub" id="set-id">—</p>
+
+  <h2>Уведомления</h2>
+  <div class="row" data-act="toggle-notify" role="button" tabindex="0">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+    <span class="body"><span class="title">Напоминать об окончании</span><span class="hint">За 3 дня и в день окончания</span></span>
+    <span class="switch on" id="sw-notify"></span>
+  </div>
+
+  <h2>Подписка</h2>
+  <button class="row" data-act="reissue">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 0 1 15.5-6.2M21 12a9 9 0 0 1-15.5 6.2"/><path d="M18 3v5h-5M6 21v-5h5"/></svg>
+    <span class="body"><span class="title">Перевыпустить ссылку</span><span class="hint">Старая перестанет работать на всех устройствах</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-act="plans">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20"/></svg>
+    <span class="body"><span class="title">Тарифы и оплата</span><span class="hint" id="set-plan">—</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <h2>Документы</h2>
+  <!-- Открываются во встроенном браузере Telegram, а не внутри кабинета:
+       документы длинные, и читать их, теряя место в мини-приложении,
+       неудобно. Плюс их адрес видно — его спрашивает платёжный сервис. -->
+  <button class="row" data-doc="offer.html">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15h6M9 11h3"/></svg>
+    <span class="body"><span class="title">Публичная оферта</span><span class="hint">Условия, цены, возврат</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-doc="terms.html">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+    <span class="body"><span class="title">Пользовательское соглашение</span><span class="hint">Правила пользования</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-doc="privacy.html">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="M9 12l2 2 4-4"/></svg>
+    <span class="body"><span class="title">Персональные данные</span><span class="hint">Что храним и чего не храним</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+</section>
+
+</main>
+
+<!-- ============================= ТАБ-БАР ============================== -->
+<nav class="tabbar">
+  <div class="tabs" role="tablist">
+    <div class="pill" id="pill" aria-hidden="true"><i></i></div>
+
+    <button class="tab" role="tab" aria-selected="true" data-go="home" data-i="0">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5 4 6v6c0 4.7 3.4 8.5 8 9.5 4.6-1 8-4.8 8-9.5V6z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span>Главная</span>
+    </button>
+
+    <button class="tab" role="tab" aria-selected="false" data-go="ref" data-i="1">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="9" cy="7.5" r="3.5"/><path d="M17 11.5h5m-2.5-2.5v5"/></svg>
+      <span>Друзья</span>
+    </button>
+
+    <button class="tab" role="tab" aria-selected="false" data-go="help" data-i="2">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-4.9A8.4 8.4 0 1 1 21 11.5"/><path d="M9.8 9.3a2.3 2.3 0 1 1 3 2.2v1.2"/><path d="M12.8 16h0"/></svg>
+      <span>Поддержка</span>
+    </button>
+
+    <button class="tab" role="tab" aria-selected="false" data-go="set" data-i="3">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h10M18 17h2"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="16" cy="17" r="2"/></svg>
+      <span>Настройки</span>
+    </button>
+  </div>
+</nav>
+
+<div class="sheet-bg" id="sheet-bg"></div>
+<div class="sheet" id="sheet">
+  <div class="grab"></div>
+  <h1 style="font-size:20px;margin-bottom:14px">Продлить подписку</h1>
+  <button class="plan" data-buy="d30">
+    <span><span class="term">1 месяц</span><span class="per">199 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">199 ₽</span></span>
+  </button>
+  <button class="plan" data-buy="d90">
+    <span><span class="term">3 месяца</span><span class="per">166 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">499 ₽</span><br><span class="off">−16 %</span></span>
+  </button>
+  <button class="plan" data-buy="d180">
+    <span><span class="term">6 месяцев</span><span class="per">132 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">790 ₽</span><br><span class="off">−33 %</span></span>
+  </button>
+  <button class="plan best" data-buy="d365">
+    <span><span class="term">12 месяцев</span><span class="per">106 ₽ в месяц</span></span>
+    <span style="text-align:right"><span class="price">1290 ₽</span><br><span class="off">−46 %</span></span>
+  </button>
+  <button class="btn ghost" data-act="close-sheet">Закрыть</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* Договор с сервером. Пока сервера нет, работает заглушка ниже.
+     GET  /api/me       → состояние подписки, рефералы, настройки
+     POST /api/trial    → включить пробный период
+     POST /api/reissue  → перевыпустить ссылку
+     POST /api/settings → сохранить настройки
+   Подлинность запроса сервер проверяет по initData (core/atlas-telegram).
+   Ни один экран не решает ничего сам: всё, что показано, приходит с сервера. */
+document.addEventListener('DOMContentLoaded', function () {
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    // Фон приложения задаётся нашей палитрой, а не темой клиента, — иначе
+    // над кабинетом висела бы чужая полоса другого цвета.
+    if (tg.setHeaderColor) { try { tg.setHeaderColor('#060507'); } catch (e) {} }
+    if (tg.setBackgroundColor) { try { tg.setBackgroundColor('#060507'); } catch (e) {} }
+  }
+
+  var state = null;
+  var SUPPORT = 'https://t.me/GloriaVPNSupport';
+
+  function toast(text) {
+    var el = document.getElementById('toast');
+    el.textContent = text;
+    el.classList.add('on');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(function () { el.classList.remove('on'); }, 1900);
+  }
+
+  function haptic(kind) {
+    if (!tg || !tg.HapticFeedback) return;
+    if (kind === 'select') tg.HapticFeedback.selectionChanged();
+    else tg.HapticFeedback.impactOccurred(kind || 'light');
+  }
+
+  /* Переход между вкладками. Таблетка едет за счёт одной переменной: её
+     сдвиг кратен собственной ширине, поэтому раскладка и анимация не могут
+     разойтись. */
+  function go(name, index) {
+    document.querySelectorAll('.screen').forEach(function (s) {
+      s.classList.toggle('on', s.id === 's-' + name);
+    });
+    document.querySelectorAll('.tab').forEach(function (b) {
+      var chosen = b.dataset.go === name;
+      b.setAttribute('aria-selected', chosen ? 'true' : 'false');
+      if (chosen && index === undefined) index = Number(b.dataset.i);
+    });
+    document.getElementById('pill').style.setProperty('--tab', index || 0);
+    window.scrollTo(0, 0);
+  }
+
+  function plural(n, one, few, many) {
+    var a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return many;
+    if (b > 1 && b < 5) return few;
+    if (b === 1) return one;
+    return many;
+  }
+
+  function render() {
+    var s = state;
+    if (!s) return;
+
+    var known = !!s.status;
+    var left = Number(s.daysLeft) || 0;
+
+    document.getElementById('st-days').textContent =
+      !known ? '—' : (s.status === 'expired' ? 'Истекла'
+                                             : left + ' ' + plural(left, 'день', 'дня', 'дней'));
+    document.getElementById('st-until').textContent =
+      !known ? '' : (s.status === 'expired' ? 'Продлите, чтобы продолжить' : 'до ' + s.expiresAt);
+
+    var badge = document.getElementById('st-badge');
+    badge.hidden = !known;
+    badge.className = 'badge ' + (s.status === 'expired' ? 'bad' : (s.status === 'trial' ? 'warn' : 'ok'));
+    badge.textContent = s.status === 'trial' ? 'Пробный период'
+      : (s.status === 'expired' ? 'Не активна' : 'Активна');
+
+    /* Сколько устройств занято, знает панель, а не бот. Пока он этого не
+       спрашивает, честнее сказать «до четырёх», чем «0 из 4» тому, у кого
+       их два. */
+    var limit = s.deviceLimit || 4;
+    var word = plural(limit, 'устройства', 'устройств', 'устройств');
+    document.getElementById('st-devices').textContent =
+      s.devices == null ? 'до ' + limit + ' ' + word
+                        : s.devices + ' из ' + limit + ' ' + word;
+
+    document.querySelectorAll('[data-sub]').forEach(function (el) {
+      el.textContent = s.subscriptionUrl || '—';
+    });
+    fillAppLink();
+
+    var r = s.referral || {};
+    document.getElementById('rf-invited').textContent = r.invited || 0;
+    document.getElementById('rf-paying').textContent = r.paying || 0;
+    document.getElementById('rf-days').textContent = r.bonusDays || 0;
+    document.getElementById('ref-url').textContent = r.link || '—';
+
+    var name = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.first_name) || '';
+    document.getElementById('hello').textContent = name ? name + ', рады видеть' : 'Gloria VPN';
+    document.getElementById('set-id').textContent = s.userId ? 'ID ' + s.userId : '';
+    document.getElementById('set-plan').textContent =
+      s.status === 'expired' ? 'Подписка не активна' : 'Активна до ' + s.expiresAt;
+
+    /* Пока подписка действует, главное действие — настроить VPN; когда
+       истекла — продлить. Две одинаково яркие кнопки рядом не подсказывают
+       ничего, а спорят за внимание. */
+    var expired = s.status === 'expired';
+    document.getElementById('renew').classList.toggle('primary', expired);
+    document.getElementById('setup-btn').classList.toggle('primary', !expired);
+
+    var notify = !s.settings || s.settings.notify !== false;
+    document.getElementById('sw-notify').classList.toggle('on', notify);
+  }
+
+  function copy(text, what) {
+    if (!text || text === '—') return toast('Ссылка ещё не получена');
+    navigator.clipboard.writeText(text).then(function () {
+      haptic('light');
+      toast(what + ' скопирована');
+    }, function () {
+      toast('Скопировать не вышло — выделите вручную');
+    });
+  }
+
+  /* Приложения и то, как в них попадает ссылка.
+
+     Форма плоская — `схема://add/<ссылка>`, а не зашифрованная `crypt1`.
+     Зашифрованная существует, чтобы ссылку не выхватывали сканеры при
+     пересылке; здесь она лежит открытым текстом на этом же экране, парой
+     строк выше, так что прятать её в кнопке нечего. Плюс `crypt1` требует
+     ключа из чужого npm-пакета — лишняя зависимость ради ничего. */
+  /* Какое приложение выбрал человек на предыдущем шаге. Ссылка в клиент
+     собирается из него, поэтому шаг «Ваш ключ» без выбора не открывается. */
+  var chosen = null;
+
+  /* Куда возвращает стрелка «назад». Стек, а не «всегда на шаг раньше»:
+     к «Ваш ключ» приходят только через выбор приложения, а к нему — только
+     через «на этом устройстве», и порядок должен разматываться так же. */
+  var trail = [];
+
+  function step(name) {
+    document.querySelectorAll('#s-setup .step').forEach(function (el) {
+      el.classList.toggle('on', el.dataset.step === name);
+    });
+    window.scrollTo(0, 0);
+  }
+
+  function setup(name, app) {
+    if (app) { chosen = app; fillAppLink(); }
+    trail.push(name);
+    go('setup');
+    step(name);
+  }
+
+  /* Назад по стеку. Дно стека — главная: мастер открывается оттуда, туда же
+     и возвращает. */
+  function back() {
+    trail.pop();
+    var previous = trail[trail.length - 1];
+    if (!previous) { trail = []; return go('home', 0); }
+    step(previous);
+  }
+
+  var APPS = {
+    happ: { site: 'https://happ.su' },
+    incy: { site: 'https://apps.apple.com/app/id6756943388' }
+  };
+
+  /* Проставить настоящие href кнопкам «Добавить ссылку».
+
+     Именно href, а не переход из скрипта: встроенный браузер Telegram
+     скриптовый переход на чужую схему иногда молча съедает, а нажатие по
+     ссылке отдаёт системе. Пока настоящего адреса нет, ссылка остаётся
+     без href — тогда она не ведёт никуда, и обработчик ниже объясняет,
+     почему, вместо того чтобы отправить в клиент выдуманный адрес. */
+  /* Кнопка ведёт на наш обычный https-адрес, а тот отвечает
+     перенаправлением на `happ://…`.
+
+     Прямая ссылка со схемой здесь не работает: встроенный браузер Telegram
+     не отдаёт системе переход на чужую схему — ни из скрипта, ни по ссылке.
+     Проверено на живом телефоне: нажатие не открывало ни приложение, ни
+     браузер, вообще ничего. С перенаправлением разбирается уже система, а
+     не браузер.
+
+     В адрес идёт только хвост ссылки на подписку — он же ключ. Сервер по
+     нему находит запись и подставляет ту ссылку, что у него записана. */
+  function fillAppLink() {
+    var a = document.getElementById('add-link');
+    var url = state && state.status && state.subscriptionUrl;
+    var tail = url ? url.split('/').pop() : null;
+    if (!a) return;
+    if (chosen && tail) a.href = '/api/open/' + chosen + '/' + encodeURIComponent(tail);
+    else a.removeAttribute('href');
+    a.classList.toggle('off', !(chosen && tail));
+  }
+
+  /* Открыть наружу. Telegram умеет http(s) через openLink, а свои схемы —
+     нет: их приходится отдавать обычной навигацией. Если приложение не
+     установлено, не произойдёт ничего — поэтому рядом всегда есть кнопка
+     копирования, и об этом сказано на самом экране. */
+  function openOut(url) {
+    if (url.indexOf('http') === 0 && tg && tg.openLink) return tg.openLink(url);
+    window.location.href = url;
+  }
+
+  function sheet(open) {
+    document.getElementById('sheet').classList.toggle('on', open);
+    document.getElementById('sheet-bg').classList.toggle('on', open);
+  }
+
+  document.addEventListener('click', function (event) {
+    var tab = event.target.closest('.tab');
+    if (tab) {
+      haptic('select');
+      trail = [];
+      return go(tab.dataset.go, Number(tab.dataset.i));
+    }
+
+    var add = event.target.closest('#add-link');
+    if (add) {
+      var href = add.getAttribute('href');
+      if (!href) return toast('Ссылка ещё не получена');
+      haptic();
+
+      /* Выходим из мини-приложения во встроенный браузер Telegram.
+
+         Это два разных контейнера с разными правами. WebView
+         мини-приложения не отдаёт системе переход на чужую схему вообще
+         никак: ни из скрипта, ни по ссылке с href, ни через
+         перенаправление с нашего сервера — проверено на живом телефоне
+         трижды. Встроенный браузер такие переходы отдаёт; именно в нём
+         живут чужие «кабинеты», у которых кнопка работает.
+
+         `openLink` умеет только http(s) — поэтому ведём его на наш адрес,
+         а тот уже отвечает перенаправлением на `happ://…`. */
+      if (tg && tg.openLink) {
+        event.preventDefault();
+        return tg.openLink(new URL(href, location.href).href, { try_instant_view: false });
+      }
+      return;
+    }
+
+    var el = event.target.closest('[data-act], [data-buy], [data-doc]');
+    if (!el) return;
+
+    /* Документы лежат рядом со страницей, поэтому адрес строится от неё:
+       кабинет и они переезжают вместе, и переезд не оставит ссылок в
+       никуда. */
+    if (el.dataset.doc) {
+      haptic();
+      return openOut(new URL('legal/' + el.dataset.doc, location.href).href);
+    }
+
+    var act = el.dataset.act;
+
+    if (act === 'plans')       { haptic(); return sheet(true); }
+    if (act === 'close-sheet') return sheet(false);
+    if (act === 'copy-sub')    return copy(state && state.subscriptionUrl, 'Ссылка на подписку');
+    if (act === 'copy-ref')    return copy(state && state.referral && state.referral.link, 'Ваша ссылка');
+
+    if (act === 'share-ref') {
+      var link = state && state.referral && state.referral.link;
+      if (!link) return toast('Ссылка ещё не получена');
+      var url = 'https://t.me/share/url?url=' + encodeURIComponent(link) +
+                '&text=' + encodeURIComponent('Пользуюсь этим VPN — работает и не просит ничего лишнего');
+      if (tg && tg.openTelegramLink) return tg.openTelegramLink(url);
+      return window.open(url, '_blank');
+    }
+
+    if (act === 'support') {
+      if (tg && tg.openTelegramLink) return tg.openTelegramLink(SUPPORT);
+      return window.open(SUPPORT, '_blank');
+    }
+
+    if (act === 'toggle-notify') {
+      var sw = document.getElementById('sw-notify');
+      sw.classList.toggle('on');
+      haptic('light');
+      return toast(sw.classList.contains('on') ? 'Напоминания включены' : 'Напоминания выключены');
+    }
+
+    if (act === 'setup') { haptic(); return setup('where'); }
+    if (act === 'step')  { haptic('select'); return setup(el.dataset.to, el.dataset.app); }
+    if (act === 'back')  { haptic('select'); return back(); }
+    if (act === 'home')  { haptic(); trail = []; return go('home', 0); }
+
+    if (act === 'install-app') {
+      var app = APPS[el.dataset.app];
+      if (!app) return;
+      haptic();
+      return openOut(app.site);
+    }
+
+    if (act === 'reissue') {
+      /* Спрашиваем прежде, чем делать: старая ссылка умрёт сразу, и на всех
+         устройствах придётся добавлять заново. Нажать это по ошибке легко —
+         строка стоит между настройками. */
+      if (!confirm('Старая ссылка перестанет работать на всех устройствах. Перевыпустить?')) return;
+      haptic();
+      toast('Перевыпускаем…');
+      fetch('/api/reissue', {
+        method: 'POST',
+        headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('отказ');
+        return r.json();
+      }).then(function (data) {
+        state = data;
+        render();
+        toast('Готово. Добавьте новую ссылку в приложение');
+      }).catch(function () {
+        toast('Не вышло — попробуйте позже');
+      });
+      return;
+    }
+    if (el.dataset.buy) {
+      /* Счёт выставляет бот, а не эта страница: сумма у каждого счёта своя,
+         по ней платёж потом и узнаётся, и придумывать её на клиенте нельзя.
+         Поэтому кнопка уводит в переписку с ботом — там счёт и реквизиты.
+
+         Имя бота приходит с сервера. Нет имени — нет и ссылки: выдуманная
+         увела бы в чужой чат. */
+      var bot = state && state.botUsername;
+      if (!bot) return toast('Напишите в поддержку — выставим счёт');
+      haptic();
+      tg && tg.openTelegramLink
+        ? tg.openTelegramLink('https://t.me/' + bot + '?start=' + el.dataset.buy)
+        : toast('Откройте бота, чтобы оплатить');
+      return;
+    }
+  });
+
+  document.getElementById('sheet-bg').addEventListener('click', function () { sheet(false); });
+
+  /* Состояние. Пока сервера нет — заглушка с видимым предупреждением: без
+     него легко принять придуманные числа за настоящие и удивиться позже. */
+  fetch('/api/me', {
+    headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+  }).then(function (r) {
+    if (!r.ok) throw new Error('нет ответа');
+    return r.json();
+  }).catch(function () {
+    /* Сервер не ответил. Выдуманные числа на их месте выглядели бы как
+       настоящие, поэтому здесь пусто: прочерки и погашенные кнопки. */
+    return { status: null, subscriptionUrl: null, referral: {}, settings: {} };
+  }).then(function (data) {
+    state = data;
+    render();
+  });
+});
+</script>
+
+</body>
+</html>

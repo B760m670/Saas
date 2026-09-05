@@ -1,0 +1,21 @@
+//! Бот Gloria VPN.
+//!
+//! Пока здесь только то, что видит покупатель: экраны, кнопки и надписи на
+//! них. Это сделано первым намеренно — надписи и порядок кнопок правятся
+//! чаще всего, а проверить их можно не поднимая ни бота, ни базы.
+//!
+//! Устройство и правила описаны в `docs/14-bot.md`; здесь они превращаются
+//! в код, а тесты следят, чтобы одно не разошлось с другим.
+
+#![forbid(unsafe_code)]
+
+pub mod catalog;
+pub mod flow;
+pub mod menu;
+
+pub use catalog::{plan, plans};
+pub use flow::{on_action, on_message, Effect, Reply, View};
+pub use menu::{
+    connect_menu, main_menu, plan_label, plans_menu, Action, Button, Device, Keyboard, Press,
+    Unknown, CALLBACK_LIMIT,
+};
