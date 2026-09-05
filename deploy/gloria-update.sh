@@ -32,6 +32,13 @@ echo "== сборка"
 echo "== мини-приложение"
 install -m 644 site/index.html "$SITE/index.html"
 
+# Документы выкладываются вместе со страницей: ссылки на них строятся от её
+# адреса, и забытая копия оставила бы в кабинете три пункта в никуда. На них
+# же ссылается платёжный сервис, а для него неработающая оферта — повод
+# отключить приём оплаты.
+install -d -m 755 "$SITE/legal"
+install -m 644 site/legal/* "$SITE/legal/"
+
 echo "== бот"
 systemctl stop gloria-bot
 install -m 755 bot/target/release/gloria /opt/gloria/gloria

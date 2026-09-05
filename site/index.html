@@ -534,6 +534,28 @@ a.btn.off { opacity: 0.45; }
     <span class="body"><span class="title">Тарифы и оплата</span><span class="hint" id="set-plan">—</span></span>
     <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
+
+  <h2>Документы</h2>
+  <!-- Открываются во встроенном браузере Telegram, а не внутри кабинета:
+       документы длинные, и читать их, теряя место в мини-приложении,
+       неудобно. Плюс их адрес видно — его спрашивает платёжный сервис. -->
+  <button class="row" data-doc="offer.html">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15h6M9 11h3"/></svg>
+    <span class="body"><span class="title">Публичная оферта</span><span class="hint">Условия, цены, возврат</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-doc="terms.html">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
+    <span class="body"><span class="title">Пользовательское соглашение</span><span class="hint">Правила пользования</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-doc="privacy.html">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="M9 12l2 2 4-4"/></svg>
+    <span class="body"><span class="title">Персональные данные</span><span class="hint">Что храним и чего не храним</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
 </section>
 
 </main>
@@ -834,8 +856,16 @@ document.addEventListener('DOMContentLoaded', function () {
       return;
     }
 
-    var el = event.target.closest('[data-act], [data-buy]');
+    var el = event.target.closest('[data-act], [data-buy], [data-doc]');
     if (!el) return;
+
+    /* Документы лежат рядом со страницей, поэтому адрес строится от неё:
+       кабинет и они переезжают вместе, и переезд не оставит ссылок в
+       никуда. */
+    if (el.dataset.doc) {
+      haptic();
+      return openOut(new URL('legal/' + el.dataset.doc, location.href).href);
+    }
 
     var act = el.dataset.act;
 
