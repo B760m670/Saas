@@ -157,6 +157,14 @@ impl YooKassa {
 
     /// Запрос на создание платежа.
     ///
+    /// Способ оплаты не навязывается. `payment_method_data` здесь стоял и
+    /// требовал СБП — у него комиссия от 0,4 % против ~3,5 % по карте. Но
+    /// выбор за покупателя означает и то, что не умеющий платить выбранным
+    /// способом не заплатит вовсе, а потерянная продажа стоит дороже разницы
+    /// в шесть рублей. Без этого поля ЮKassa показывает свою страницу со
+    /// всеми способами, включёнными в магазине, и дешёвый остаётся доступен
+    /// тому, кто его выберет.
+    ///
     /// `Idempotence-Key` — номер нашего заказа. Заголовок обязателен у
     /// ЮKassa, и смысл у него ровно тот, что нужен: повтор запроса с тем же
     /// ключом не создаёт второй платёж, а возвращает первый. Сеть моргнула,
@@ -167,7 +175,6 @@ impl YooKassa {
                 r#"{{"amount":{{"value":"{amount}","currency":"{currency}"}},"#,
                 r#""capture":true,"#,
                 r#""confirmation":{{"type":"redirect","return_url":"{back}"}},"#,
-                r#""payment_method_data":{{"type":"sbp"}},"#,
                 r#""description":"{description}","#,
                 r#""metadata":{{"order_id":"{order}"}}}}"#
             ),
@@ -429,7 +436,12 @@ mod tests {
         let body = String::from_utf8_lossy(&request.body);
         assert!(body.contains(r#""value":"199.37""#), "сумма: {body}");
         assert!(body.contains(r#""currency":"RUB""#));
-        assert!(body.contains(r#""type":"sbp""#), "способ оплаты: {body}");
+        // Способ оплаты не навязывается: его выбирает покупатель на
+        // странице ЮKassa. Навязанный отсекает тех, кто им не пользуется.
+        assert!(
+            !body.contains("payment_method_data"),
+            "способ оплаты навязан: {body}"
+        );
         assert!(body.contains(r#""order_id":"u42-d30-7f""#));
         assert!(body.contains(r#""capture":true"#));
     }
