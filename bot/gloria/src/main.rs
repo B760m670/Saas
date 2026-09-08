@@ -20,7 +20,7 @@ use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, 
 use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
 use atlas_store::{Settled, Store, Subscriber, Trial};
-use atlas_tg::{next_offset, Incoming, Telegram};
+use atlas_tg::{next_offset, Command, Incoming, Scope, Telegram};
 
 use config::Config;
 
@@ -101,6 +101,8 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    announce(&config, &telegram);
+
     println!("Бот запущен. {config:?}");
     let deps = Deps {
         config: &config,
@@ -170,6 +172,67 @@ fn run(deps: &Deps<'_>, store: &mut Store) {
         offset = next_offset(&batch, offset);
 
         sync_panel(deps.panel, store);
+    }
+}
+
+/// Рассказать Telegram о себе: команды в подсказке и кнопка «Меню».
+///
+/// Делается при каждом запуске, а не однажды руками в BotFather. Настройка,
+/// живущая только на чужом сервере, восстанавливается по памяти — и не
+/// восстанавливается; та же причина, по которой правила ответов панели
+/// лежат в репозитории.
+///
+/// Ни один отказ здесь не останавливает бота. Подсказка — украшение; без
+/// неё он работает ровно так же, а падение при запуске из-за недоступного
+/// Telegram означало бы, что бот не поднимется, пока тот не ответит.
+fn announce(config: &Config, telegram: &Telegram) {
+    // Покупателю — три команды. Больше в подсказке вредно: список читают
+    // целиком, и каждая лишняя строка уменьшает шанс, что прочтут нужную.
+    let public = [
+        Command::new("start", "подписка и меню"),
+        Command::new("connect", "как подключить устройство"),
+        Command::new("help", "поддержка"),
+    ];
+
+    let tell = |what: &str, request| match http::send(&request) {
+        Ok(response) if response.is_ok() => {}
+        Ok(response) => eprintln!(
+            "{what}: панель Telegram отказала, код {}: {}",
+            response.status,
+            excerpt(&response.body)
+        ),
+        Err(error) => eprintln!("{what}: {}", telegram.redact(&error.to_string())),
+    };
+
+    tell(
+        "Команды",
+        telegram.set_my_commands(&public, Scope::Everyone),
+    );
+
+    // Владельцу — те же плюс свои. Отдельной областью, чтобы админские не
+    // висели в подсказке у покупателей: это не дыра (бот всё равно
+    // проверяет, кто пишет), но приглашение нажать на то, что откажет.
+    if !config.admins.is_empty() {
+        let mut owner: Vec<Command> = public.to_vec();
+        owner.extend([
+            Command::new("pending", "открытые счета"),
+            Command::new("ok", "подтвердить оплату по сумме"),
+            Command::new("revoke", "перевыпустить ссылку человеку"),
+        ]);
+
+        for admin in &config.admins {
+            tell(
+                "Команды владельца",
+                telegram.set_my_commands(&owner, Scope::Chat(*admin)),
+            );
+        }
+    }
+
+    // Кнопка «Меню» ведёт в кабинет. Без адреса её не ставим вовсе: по
+    // умолчанию Telegram показывает там список команд, и это лучше, чем
+    // кнопка, ведущая в никуда.
+    if let Some(url) = &config.miniapp_url {
+        tell("Кнопка меню", telegram.set_menu_button("Кабинет", url));
     }
 }
 

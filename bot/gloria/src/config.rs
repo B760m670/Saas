@@ -56,6 +56,8 @@ pub struct Config {
     pub yookassa_secret: Option<String>,
     /// Токен терминала WATA, если приём оплаты идёт через неё.
     pub wata_token: Option<String>,
+    /// Адрес мини-приложения. Из него делается кнопка «Меню» у поля ввода.
+    pub miniapp_url: Option<String>,
 }
 
 impl core::fmt::Debug for Config {
@@ -90,6 +92,7 @@ pub const BOT_USERNAME: &str = "GLORIA_BOT_USERNAME";
 pub const YOOKASSA_SHOP_ID: &str = "GLORIA_YOOKASSA_SHOP_ID";
 pub const YOOKASSA_SECRET: &str = "GLORIA_YOOKASSA_SECRET";
 pub const WATA_TOKEN: &str = "GLORIA_WATA_TOKEN";
+pub const MINIAPP_URL: &str = "GLORIA_MINIAPP_URL";
 
 /// Куда встаёт мини-приложение, если адрес не задан.
 ///
@@ -170,11 +173,30 @@ impl Config {
                 });
             }
 
+            // Раньше здесь стоял отказ. Владелец решил, что видимый номер его
+            // устраивает, — а у Т-Банка постоянной ссылки на перевод без
+            // номера попросту нет: тот QR, который он даёт, и есть платёжный
+            // QR СБП, а номер в нём не оформление, а содержимое.
+            //
+            // Поэтому предупреждение, а не запрет. Сказать стоит всё равно:
+            // решение принималось один раз, а читать журнал будут и потом.
             if carries_a_phone_number(link) {
+                eprintln!(
+                    "Внимание: в {PAY_LINK} виден номер телефона. \
+                     Его увидит каждый покупатель, открывший ссылку."
+                );
+            }
+        }
+
+        // Кнопка «Меню» ведёт в мини-приложение, а Telegram принимает там
+        // только https. Негодный адрес он отвергнет при установке кнопки —
+        // то есть при запуске, куда никто не смотрит. Лучше сказать сразу.
+        let miniapp_url = optional(vars, MINIAPP_URL);
+        if let Some(url) = &miniapp_url {
+            if !url.starts_with("https://") {
                 return Err(Error::Invalid {
-                    name: PAY_LINK,
-                    why: "в адресе виден номер телефона (например, `?requisiteNumber=+7…`) — \
-                          нужна ссылка на перевод, а не ссылка на QR-код СБП",
+                    name: MINIAPP_URL,
+                    why: "адрес кабинета обязан быть https: другого Telegram не примет",
                 });
             }
         }
@@ -195,6 +217,7 @@ impl Config {
             yookassa_shop_id: optional(vars, YOOKASSA_SHOP_ID),
             yookassa_secret: optional(vars, YOOKASSA_SECRET),
             wata_token: optional(vars, WATA_TOKEN),
+            miniapp_url,
         })
     }
 
@@ -265,8 +288,12 @@ fn is_loopback(url: &str) -> bool {
 /// `…/c2c-qr-choose-bank?requisiteNumber=+79001234567&bankCode=…`. Такая
 /// ссылка раскрывает номер надёжнее, чем прежний текст в счёте: она видна
 /// в адресной строке, остаётся в истории браузера и пересылается дальше.
-/// Ради того, чтобы номера не было видно, всё и переделывалось, — значит
-/// эта ошибка не должна доходить до покупателя.
+///
+/// Отказом это не считается. У Т-Банка постоянной ссылки на перевод без
+/// номера нет вовсе: тот QR, который он даёт, и есть платёжный QR СБП, а
+/// номер в нём — не оформление, а содержимое. Владелец это взвесил и решил,
+/// что видимый номер его устраивает. Но сказать при запуске стоит: решение
+/// принималось однажды, а журнал читают и потом.
 ///
 /// Считаем номером цепочку цифр, в которую укладывается российский
 /// мобильный: одиннадцать и больше подряд (`79001234567`) или ровно
@@ -275,8 +302,9 @@ fn is_loopback(url: &str) -> bool {
 /// обычный случай, а не всякий мыслимый.
 ///
 /// Ошибиться она может и в другую сторону: у ссылки бывает числовой
-/// признак подходящей длины. Отказ тогда ложный, но цена его — вопрос
-/// владельца, а цена пропуска — номер у каждого покупателя.
+/// признак подходящей длины. Тогда предупреждение окажется ложным — цена
+/// невелика, но лишние предупреждения перестают читать, и потому проверка
+/// не ловит всё подряд.
 fn carries_a_phone_number(link: &str) -> bool {
     let mut digits = 0usize;
     let mut starts_with_nine = false;
@@ -492,13 +520,12 @@ mod tests {
         }
     }
 
-    /// Ссылка на QR-код СБП несёт номер прямо в адресе. В приложении банка
-    /// она лежит рядом со ссылкой на перевод, и перепутать их — дело одного
-    /// нажатия; ровно это и случилось при настройке. Такая ссылка видна в
-    /// адресной строке и пересылается дальше, то есть раскрывает номер
-    /// надёжнее, чем прежний текст в счёте.
+    /// Ссылка на QR-код СБП несёт номер прямо в адресе. Отказом это больше
+    /// не считается: у Т-Банка постоянной ссылки на перевод без номера нет
+    /// вовсе, и владелец решил, что видимый номер его устраивает. Но принять
+    /// такую ссылку бот обязан — иначе приём оплаты не запустится.
     #[test]
-    fn a_link_carrying_the_phone_number_is_refused() {
+    fn a_link_carrying_the_phone_number_is_accepted_with_a_warning() {
         for value in [
             "https://t.tb.ru/c2c-qr-choose-bank?requisiteNumber=+79001234567&bankCode=100000000004",
             "https://bank.example/pay?phone=79001234567",
@@ -508,19 +535,21 @@ mod tests {
             let mut vars = full();
             vars.insert(PAY_LINK.to_owned(), value.to_owned());
             assert!(
-                matches!(
-                    Config::from_map(&vars),
-                    Err(Error::Invalid { name: PAY_LINK, .. })
-                ),
-                "ссылка с номером принята: {value}"
+                Config::from_map(&vars).is_ok(),
+                "ссылка с номером отвергнута: {value}"
+            );
+            assert!(
+                super::carries_a_phone_number(value),
+                "номер в {value} не замечен — предупреждения не будет"
             );
         }
     }
 
     /// Обратная сторона: обычная ссылка на перевод цифры тоже содержит, и
-    /// отказывать ей проверка не должна.
+    /// принимать за номер её не следует — иначе предупреждение печаталось бы
+    /// впустую и его перестали бы читать.
     #[test]
-    fn an_ordinary_transfer_link_passes() {
+    fn an_ordinary_transfer_link_carries_no_phone_number() {
         for value in [
             "https://www.tbank.ru/rm/ivanov.ivan1/AbCdE12345",
             "https://bank.example/rm/abc",
@@ -532,6 +561,10 @@ mod tests {
                 Config::from_map(&vars).is_ok(),
                 "обычная ссылка отвергнута: {value}"
             );
+            assert!(
+                !super::carries_a_phone_number(value),
+                "в обычной ссылке померещился номер: {value}"
+            );
         }
     }
 
@@ -539,14 +572,8 @@ mod tests {
     /// Без приписанного разделителя она осталась бы непроверенной.
     #[test]
     fn a_phone_number_at_the_very_end_is_still_seen() {
-        let mut vars = full();
-        vars.insert(
-            PAY_LINK.to_owned(),
-            "https://bank.example/pay?phone=79001234567".to_owned(),
-        );
-        assert!(matches!(
-            Config::from_map(&vars),
-            Err(Error::Invalid { name: PAY_LINK, .. })
+        assert!(super::carries_a_phone_number(
+            "https://bank.example/pay?phone=79001234567"
         ));
     }
 

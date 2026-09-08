@@ -121,7 +121,14 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
             },
             Effect::GrantTrial,
         ),
-        "/start" | "/menu" | "/help" => (subscription_screen(view), Effect::None),
+        "/start" | "/menu" => (subscription_screen(view), Effect::None),
+
+        // Эти двое объявлены в подсказке Telegram (см. `announce` в
+        // `gloria`), поэтому обязаны делать ровно то, что там написано.
+        // Раньше `/help` показывал экран подписки: команда есть, а помощи
+        // по ней нет — худший вид обещания.
+        "/connect" => (connect_screen(view), Effect::None),
+        "/help" => (help_screen(), Effect::None),
         _ => (
             Reply {
                 text: "Не понял. Вот что я умею:".to_owned(),
@@ -356,6 +363,38 @@ mod tests {
     fn a_command_addressed_to_the_bot_is_still_a_command() {
         let (_, effect) = on_message("/start@GloriaVPN_Bot", &newcomer());
         assert_eq!(effect, Effect::GrantTrial);
+    }
+
+    /// Команды объявлены в подсказке Telegram, значит обязаны делать ровно
+    /// то, что там написано. `/help` показывал экран подписки — команда
+    /// есть, а помощи по ней нет.
+    #[test]
+    fn every_announced_command_leads_where_it_promises() {
+        // Сравниваем с кнопкой, а не с текстом: текст экрана меняется, а
+        // требование остаётся прежним — команда и кнопка ведут в одно место.
+        let (by_command, _) = on_message("/help", &active());
+        let (by_button, _) = on_action(&Action::Help, &active());
+        assert_eq!(by_command.text, by_button.text, "/help ведёт не в помощь");
+
+        let (by_command, _) = on_message("/connect", &active());
+        let (by_button, _) = on_action(&Action::Connect, &active());
+        assert_eq!(
+            by_command.text, by_button.text,
+            "/connect ведёт не в подключение"
+        );
+
+        // И ни один из них не должен оказаться экраном подписки — с этого
+        // всё и началось: `/help` показывал именно его.
+        let (menu, _) = on_message("/menu", &active());
+        assert_ne!(by_command.text, menu.text);
+    }
+
+    /// И с именем бота — в группах Telegram дописывает его сам.
+    #[test]
+    fn the_new_commands_survive_the_bot_name_too() {
+        let (with_name, _) = on_message("/help@GloriaVPN_Bot", &active());
+        let (plain, _) = on_message("/help", &active());
+        assert_eq!(with_name.text, plain.text);
     }
 
     #[test]

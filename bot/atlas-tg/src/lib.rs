@@ -250,6 +250,55 @@ impl Telegram {
         )
     }
 
+    /// Список команд, который Telegram показывает при вводе «/».
+    ///
+    /// Без него человек, набравший «/», видит пустоту и не знает, что боту
+    /// вообще можно сказать. Список задаётся **из кода, а не в BotFather**,
+    /// по той же причине, по которой мы храним в репозитории правила
+    /// ответов панели: настройка, живущая только на чужом сервере,
+    /// восстанавливается по памяти — и не восстанавливается.
+    ///
+    /// Область (`scope`) отделяет владельца от покупателей: админские
+    /// команды не должны висеть в подсказке у всех подряд. Показывать их
+    /// всем — не дыра (бот всё равно проверяет, кто пишет), но приглашение
+    /// нажать на то, что откажет.
+    #[must_use]
+    pub fn set_my_commands(&self, commands: &[Command], scope: Scope) -> Request {
+        let list = commands
+            .iter()
+            .map(|command| {
+                format!(
+                    r#"{{"command":"{}","description":"{}"}}"#,
+                    json_string(&command.name),
+                    json_string(&command.about)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+
+        self.post(
+            "setMyCommands",
+            format!(r#"{{"commands":[{list}],"scope":{}}}"#, scope.as_json()),
+        )
+    }
+
+    /// Кнопка слева от поля ввода: открывает мини-приложение одним нажатием.
+    ///
+    /// По умолчанию там показывается список команд — то же, что и по «/»,
+    /// только другой дорогой. Кабинет полезнее: в нём и срок, и ссылка, и
+    /// тарифы, а нажатие одно вместо трёх.
+    #[must_use]
+    pub fn set_menu_button(&self, label: &str, url: &str) -> Request {
+        self.post(
+            "setChatMenuButton",
+            format!(
+                r#"{{"menu_button":{{"type":"web_app","text":"{}","web_app":{{"url":"{}"}}}}}}"#,
+                json_string(label),
+                json_string(url)
+            ),
+        )
+    }
+
     /// Разобрать ответ на [`Telegram::get_updates`].
     ///
     /// Обновления, которых мы не понимаем — вступления в группы, опросы,
@@ -398,6 +447,42 @@ fn json_string(value: &str) -> String {
 /// разметку, а Telegram отвергает всё сообщение целиком — человек просто не
 /// получает ответа.
 #[must_use]
+/// Одна команда в подсказке Telegram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Command {
+    /// Без ведущей косой черты — её добавляет сам Telegram.
+    pub name: String,
+    /// Что она делает, строчными, без точки в конце: так их показывают.
+    pub about: String,
+}
+
+impl Command {
+    pub fn new(name: impl Into<String>, about: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            about: about.into(),
+        }
+    }
+}
+
+/// Кому показывать список команд.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Всем, у кого нет своего списка.
+    Everyone,
+    /// Одному человеку — так владелец видит свои команды, а покупатели нет.
+    Chat(i64),
+}
+
+impl Scope {
+    fn as_json(self) -> String {
+        match self {
+            Self::Everyone => r#"{"type":"default"}"#.to_owned(),
+            Self::Chat(chat_id) => format!(r#"{{"type":"chat","chat_id":{chat_id}}}"#),
+        }
+    }
+}
+
 pub fn escape_html(value: &str) -> String {
     value
         .replace('&', "&amp;")
