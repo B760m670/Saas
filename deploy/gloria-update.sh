@@ -11,6 +11,11 @@ BRANCH=${BRANCH:-claude/multiplatform-vpn-service-ur6ef4}
 SRC=${SRC:-/opt/gloria-src}
 SITE=${SITE:-/var/www/gloria}
 
+# Витрина стоит отдельно от кабинета: у неё свой домен без «panel.» в имени,
+# и одна папка на двоих означала бы, что личный кабинет открывается по
+# публичному адресу, а витрина — по адресу панели.
+SITE_PUBLIC=${SITE_PUBLIC:-/var/www/gloria-public}
+
 cd "$SRC"
 
 echo "== обновляемся"
@@ -38,6 +43,13 @@ install -m 644 site/index.html "$SITE/index.html"
 # отключить приём оплаты.
 install -d -m 755 "$SITE/legal"
 install -m 644 site/legal/* "$SITE/legal/"
+
+# Витрина: то, что видит человек, открывший адрес в обычном браузере, и то,
+# что смотрит модератор платёжного сервиса. Без неё по адресу открывается
+# личный кабинет, рассчитанный на Telegram, — без подписи он показывает
+# прочерки и выглядит как недоделанный сайт.
+install -d -m 755 "$SITE_PUBLIC"
+install -m 644 site/landing/index.html "$SITE_PUBLIC/index.html"
 
 echo "== бот"
 systemctl stop gloria-bot

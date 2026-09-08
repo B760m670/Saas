@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gloria VPN — подписка на защищённое соединение</title>
+<meta name="description" content="Подписка на сервис передачи данных по зашифрованному каналу. Тарифы от 199 ₽ в месяц, до 4 устройств, доступ выдаётся сразу после оплаты в Telegram.">
+<style>
+:root {
+  color-scheme: dark;
+
+  /* Палитра взята из значка бота — та же, что в личном кабинете. */
+  --core:  #ffecbe;
+  --mid:   #ee982e;
+  --bg:    #060507;
+  --card:  rgba(255, 236, 190, 0.045);
+  --card2: rgba(255, 236, 190, 0.075);
+  --line:  rgba(255, 236, 190, 0.10);
+  --line2: rgba(255, 236, 190, 0.18);
+  --text:  #f3ece1;
+  --muted: #9c9083;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+.wrap {
+  max-width: 56rem;
+  margin-inline: auto;
+  padding: 0 20px 72px;
+}
+
+/* --- шапка ------------------------------------------------------------ */
+
+header {
+  padding: 56px 0 40px;
+  text-align: center;
+  /* Тёплое свечение из значка: единственное украшение на странице, и оно
+     же связывает её с ботом, который человек увидит следующим. */
+  background:
+    radial-gradient(60% 90% at 50% 0%, rgba(238, 152, 46, 0.16), transparent 70%);
+}
+
+.mark {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 18px;
+  border-radius: 16px;
+  background: radial-gradient(circle at 35% 30%, var(--core), var(--mid) 60%, #7a3d09);
+  box-shadow: 0 0 34px rgba(238, 152, 46, 0.34);
+}
+
+h1 {
+  font-size: clamp(1.7rem, 6vw, 2.4rem);
+  line-height: 1.15;
+  margin: 0 0 12px;
+  letter-spacing: -0.02em;
+}
+
+.lead {
+  color: var(--muted);
+  max-width: 34rem;
+  margin: 0 auto 26px;
+}
+
+.cta {
+  display: inline-block;
+  padding: 14px 30px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--core), var(--mid));
+  color: #2a1503;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.cta-note {
+  margin-top: 12px;
+  font-size: 0.88rem;
+  color: var(--muted);
+}
+
+/* --- секции ----------------------------------------------------------- */
+
+section { padding-top: 44px; }
+
+h2 {
+  font-size: 1.25rem;
+  margin: 0 0 16px;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px 20px;
+}
+
+.card h3 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
+.card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+/* --- тарифы ----------------------------------------------------------- */
+
+.plans {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 12px;
+}
+
+.plan {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px 20px;
+}
+
+.plan.best {
+  border-color: var(--line2);
+  background: var(--card2);
+}
+
+.plan .term {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.plan .price {
+  font-size: 1.7rem;
+  font-weight: 650;
+  margin: 6px 0 2px;
+  letter-spacing: -0.02em;
+}
+
+.plan .per {
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.plan .save {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(238, 152, 46, 0.14);
+  color: var(--mid);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* --- шаги ------------------------------------------------------------- */
+
+ol.steps {
+  counter-reset: step;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+ol.steps li {
+  position: relative;
+  padding: 0 0 16px 44px;
+  color: var(--muted);
+}
+
+ol.steps li b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+ol.steps li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--line2);
+  background: var(--card);
+  color: var(--mid);
+  font-size: 0.86rem;
+  font-weight: 650;
+  display: grid;
+  place-items: center;
+}
+
+/* --- реквизиты и подвал ----------------------------------------------- */
+
+#contacts .card { line-height: 1.85; }
+
+#contacts dt {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+#contacts dd {
+  margin: 0 0 12px;
+  font-weight: 550;
+}
+
+#contacts dd:last-child { margin-bottom: 0; }
+
+a { color: var(--mid); }
+
+footer {
+  margin-top: 52px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+footer a { margin-right: 16px; display: inline-block; }
+
+.small {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header>
+  <div class="mark"></div>
+  <h1>Gloria&nbsp;VPN</h1>
+  <p class="lead">
+    Подписка на передачу данных по зашифрованному каналу связи. Работает на
+    телефоне, компьютере и телевизоре — одна подписка на четыре устройства.
+  </p>
+  <a class="cta" href="https://t.me/GloriaVPN_Bot">Открыть в Telegram</a>
+  <p class="cta-note">Первые 3 дня бесплатно, без карты</p>
+</header>
+
+<section id="about">
+  <h2>Что входит в подписку</h2>
+  <div class="cards">
+    <div class="card">
+      <h3>До 4 устройств</h3>
+      <p>Одна подписка на телефон, ноутбук, планшет и телевизор. Отдельно
+         платить за каждое устройство не нужно.</p>
+    </div>
+    <div class="card">
+      <h3>Без ограничения трафика</h3>
+      <p>Объём переданных данных не ограничен и не влияет на стоимость.</p>
+    </div>
+    <div class="card">
+      <h3>Российские сайты — напрямую</h3>
+      <p>Банки, госуслуги и российские сервисы работают как обычно, минуя
+         наши серверы.</p>
+    </div>
+    <div class="card">
+      <h3>Без журналов посещений</h3>
+      <p>Мы не храним ни адреса сайтов, ни содержимое передаваемых данных —
+         это записано в политике обработки данных.</p>
+    </div>
+  </div>
+</section>
+
+<section id="plans">
+  <h2>Тарифы</h2>
+  <div class="plans">
+    <div class="plan">
+      <div class="term">1 месяц</div>
+      <div class="price">199 ₽</div>
+      <div class="per">199 ₽ в месяц</div>
+    </div>
+    <div class="plan">
+      <div class="term">3 месяца</div>
+      <div class="price">499 ₽</div>
+      <div class="per">166 ₽ в месяц</div>
+      <span class="save">−16 %</span>
+    </div>
+    <div class="plan">
+      <div class="term">6 месяцев</div>
+      <div class="price">790 ₽</div>
+      <div class="per">132 ₽ в месяц</div>
+      <span class="save">−33 %</span>
+    </div>
+    <div class="plan best">
+      <div class="term">12 месяцев</div>
+      <div class="price">1290 ₽</div>
+      <div class="per">108 ₽ в месяц</div>
+      <span class="save">−46 %</span>
+    </div>
+  </div>
+  <p class="small" style="margin-top:14px">
+    Цены окончательные, в рублях. Налог на добавленную стоимость не
+    начисляется. Оплаченные сутки складываются с неистёкшим остатком, а не
+    заменяют его. Подписка разовая: автоматических списаний нет, каждое
+    продление подтверждается вами.
+  </p>
+</section>
+
+<section id="delivery">
+  <h2>Как вы получаете доступ</h2>
+  <ol class="steps">
+    <li><b>Открываете бота</b> @GloriaVPN_Bot в Telegram и выбираете
+        срок подписки.</li>
+    <li><b>Оплачиваете</b> на защищённой странице платёжного сервиса —
+        картой или через СБП.</li>
+    <li><b>Сразу после оплаты</b> подписка продлевается автоматически, а
+        бот присылает сообщение с датой окончания.</li>
+    <li><b>Ссылка на подписку</b> появляется в личном кабинете внутри
+        Telegram. Её достаточно добавить в приложение — Happ или INCY, оба
+        бесплатные, — и соединение готово.</li>
+  </ol>
+  <p class="small">
+    Никаких файлов и материальных носителей не передаётся: услуга
+    оказывается дистанционно и начинается в момент активации подписки.
+    Если что-то не заработало, напишите в поддержку — отвечает человек.
+  </p>
+</section>
+
+<section id="refund">
+  <h2>Возврат</h2>
+  <div class="card">
+    <p style="color:var(--text);margin-bottom:10px">
+      Отказаться от подписки можно в любой момент.
+    </p>
+    <p>Возвращается стоимость неиспользованных суток: из оплаченной суммы
+       вычитается стоимость дней, которые уже прошли. Напишите в поддержку —
+       деньги вернутся тем же способом, которым вы платили, в срок до 10
+       календарных дней. Подробнее — в разделе 8
+       <a href="/legal/offer.html">публичной оферты</a>.</p>
+  </div>
+</section>
+
+<section id="contacts">
+  <h2>Контакты и реквизиты</h2>
+  <div class="card">
+    <dl>
+      <dt>Исполнитель</dt>
+      <dd>[Фамилия И. О.]</dd>
+
+      <dt>Статус</dt>
+      <dd>Налогоплательщик налога на профессиональный доход (самозанятый)</dd>
+
+      <dt>ИНН</dt>
+      <dd>[ИНН]</dd>
+
+      <dt>Электронная почта</dt>
+      <dd><a href="mailto:[АДРЕС ПОЧТЫ]">[АДРЕС ПОЧТЫ]</a></dd>
+
+      <dt>Поддержка</dt>
+      <dd><a href="https://t.me/GloriaVPNSupport">@GloriaVPNSupport</a> в Telegram</dd>
+    </dl>
+  </div>
+</section>
+
+<footer>
+  <a href="/legal/offer.html">Публичная оферта</a>
+  <a href="/legal/terms.html">Пользовательское соглашение</a>
+  <a href="/legal/privacy.html">Обработка персональных данных</a>
+  <p>© 2026 Gloria VPN</p>
+</footer>
+
+</div>
+
+</body>
+</html>
