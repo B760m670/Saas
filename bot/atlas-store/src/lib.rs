@@ -226,16 +226,27 @@ impl Store {
     /// Гасить просроченных не наше дело: панель меняет статусы сама по той
     /// дате, что у неё записана (`user.expired` — её собственное событие).
     /// Поэтому здесь одна дата, а не два состояния.
-    pub fn panel_work(&mut self, limit: i64) -> Result<Vec<PanelWork>, Error> {
+    ///
+    /// **Прошедшие даты в очередь не попадают.** Панель отказывается ставить
+    /// срок задним числом и отвечает `400`; такая строка не уедет никогда, а
+    /// очередь будет долбиться в неё каждые полминуты до скончания века.
+    /// Именно это у нас и происходило сутками.
+    ///
+    /// Терять при этом нечего: просроченного панель погасила сама по своей
+    /// дате, и рассказывать ей о прошлом незачем. А если её дата почему-то
+    /// осталась в будущем, разницу заметит сверка (`reconcile` в `gloria`) и
+    /// примет то, что записано в панели.
+    pub fn panel_work(&mut self, limit: i64, now: i64) -> Result<Vec<PanelWork>, Error> {
         let rows = self.client.query(
             "SELECT telegram_id, panel_id, FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint
                FROM users
               WHERE panel_id IS NOT NULL
                 AND expires_at IS NOT NULL
+                AND expires_at > to_timestamp($2::bigint)
                 AND expires_at IS DISTINCT FROM panel_expires_at
               ORDER BY telegram_id
               LIMIT $1",
-            &[&limit],
+            &[&limit, &now],
         )?;
 
         rows.iter()

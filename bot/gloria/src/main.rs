@@ -191,7 +191,7 @@ const SYNC_PER_ROUND: i64 = 20;
 /// Гасить просроченных не нужно: панель меняет статусы сама по той дате,
 /// которая у неё записана.
 fn sync_panel(panel: &Panel, store: &mut Store) {
-    let work = match store.panel_work(SYNC_PER_ROUND) {
+    let work = match store.panel_work(SYNC_PER_ROUND, unix_now()) {
         Ok(work) => work,
         Err(error) => {
             eprintln!("Очередь панели: {error}");
@@ -276,8 +276,8 @@ enum Verdict {
 /// уже стоит в очереди, и решает она: оплата важнее ручной правки. Условия
 /// взаимоисключающие, поэтому очередь и сверка не тянут одну дату в разные
 /// стороны.
-fn panel_verdict(panel: &Panel, subscriber: &Subscriber) -> Verdict {
-    if !worth_asking(subscriber) {
+fn panel_verdict(panel: &Panel, subscriber: &Subscriber, now: i64) -> Verdict {
+    if !worth_asking(subscriber, now) {
         return Verdict::Same;
     }
 
@@ -319,7 +319,7 @@ fn panel_verdict(panel: &Panel, subscriber: &Subscriber) -> Verdict {
 ///
 /// Вынесено отдельно, потому что это правило и есть защита от драки за одну
 /// дату между очередью и сверкой.
-fn worth_asking(subscriber: &Subscriber) -> bool {
+fn worth_asking(subscriber: &Subscriber, now: i64) -> bool {
     // Не заведён в панели — сверять не с чем.
     if subscriber.panel_id.is_none() {
         return false;
@@ -327,7 +327,17 @@ fn worth_asking(subscriber: &Subscriber) -> bool {
 
     // Своё несогласованное изменение — очередь довезёт его сама, и решает
     // она: оплата важнее ручной правки.
-    subscriber.expires_at == subscriber.panel_expires_at
+    if subscriber.expires_at == subscriber.panel_expires_at {
+        return true;
+    }
+
+    // Даты разошлись, но очередь эту работу не возьмёт: прошедший срок
+    // панель не примет, а пустого у неё и не спросишь. Ждать нечего, и без
+    // этой оговорки такой человек не согласовался бы никогда — очередь его
+    // пропускает, а сверка не бралась бы. Ровно в этот тупик мы и попали.
+    subscriber
+        .expires_at
+        .is_none_or(|expires_at| expires_at <= now)
 }
 
 /// Чем ответ панели отличается от того, что записано у нас.
@@ -424,8 +434,8 @@ fn apply_verdict(store: &mut Store, subscriber: &mut Subscriber, verdict: Verdic
 /// Цена — один запрос к панели на обращение человека. При нынешних числах
 /// это незаметно; когда станет заметно, сверку надо будет двигать в фоновый
 /// круг с отметкой «когда проверяли в последний раз».
-fn reconcile(panel: &Panel, store: &mut Store, subscriber: &mut Subscriber) {
-    let verdict = panel_verdict(panel, subscriber);
+fn reconcile(panel: &Panel, store: &mut Store, subscriber: &mut Subscriber, now: i64) {
+    let verdict = panel_verdict(panel, subscriber, now);
     apply_verdict(store, subscriber, verdict);
 }
 
@@ -437,6 +447,7 @@ pub fn reconcile_for(
     panel: &Panel,
     store: &std::sync::Mutex<Store>,
     telegram_id: i64,
+    now: i64,
 ) -> Result<Subscriber, String> {
     let mut subscriber = {
         let mut guard = store.lock().map_err(|_| "замок базы испорчен".to_owned())?;
@@ -445,7 +456,7 @@ pub fn reconcile_for(
             .map_err(|error| format!("база: {error}"))?
     };
 
-    let verdict = panel_verdict(panel, &subscriber);
+    let verdict = panel_verdict(panel, &subscriber, now);
 
     if !matches!(verdict, Verdict::Same) {
         let mut guard = store.lock().map_err(|_| "замок базы испорчен".to_owned())?;
@@ -487,7 +498,7 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
 
     // Сначала сверка, потом всё остальное: срок могли поправить в панели
     // руками, и без этого человек увидел бы «истекла» при работающем VPN.
-    reconcile(panel, store, &mut subscriber);
+    reconcile(panel, store, &mut subscriber, now);
 
     // Подписка есть, а ссылки нет — значит панель отказала в тот раз, когда
     // мы заводили человека. Само это не исправится: проба выдаётся один раз,
@@ -1147,7 +1158,29 @@ mod reconcile_tests {
     fn our_own_pending_change_wins_and_the_panel_is_not_asked() {
         let mut subscriber = settled();
         subscriber.expires_at = Some(NOW + 30 * DAY);
-        assert!(!worth_asking(&subscriber));
+        assert!(!worth_asking(&subscriber, NOW));
+    }
+
+    /// Тупик, в который мы попали. Наша дата в прошлом, панель такую не
+    /// примет и отвечает `400`; очередь эту строку теперь не берёт. Если бы
+    /// сверка тоже за неё не бралась, человек не согласовался бы никогда —
+    /// кабинет вечно показывал бы «Истекла» при работающем VPN.
+    #[test]
+    fn a_past_date_the_queue_cannot_deliver_is_reconciled_instead() {
+        let mut subscriber = settled();
+        subscriber.expires_at = Some(NOW - DAY);
+        subscriber.panel_expires_at = Some(NOW + 22 * DAY);
+        assert!(worth_asking(&subscriber, NOW));
+    }
+
+    /// А будущая дата, ещё не увезённая, по-прежнему держит сверку: за неё
+    /// заплатили, и решать должна очередь.
+    #[test]
+    fn a_future_pending_date_still_belongs_to_the_queue() {
+        let mut subscriber = settled();
+        subscriber.expires_at = Some(NOW + 30 * DAY);
+        subscriber.panel_expires_at = Some(NOW);
+        assert!(!worth_asking(&subscriber, NOW));
     }
 
     /// Не заведён в панели — спрашивать не о чем.
@@ -1155,12 +1188,12 @@ mod reconcile_tests {
     fn somebody_absent_from_the_panel_is_not_asked_about() {
         let mut subscriber = settled();
         subscriber.panel_id = None;
-        assert!(!worth_asking(&subscriber));
+        assert!(!worth_asking(&subscriber, NOW));
     }
 
     #[test]
     fn a_settled_subscriber_is_worth_asking_about() {
-        assert!(worth_asking(&settled()));
+        assert!(worth_asking(&settled(), NOW));
     }
 
     /// Совпало — записывать нечего.
@@ -1239,7 +1272,7 @@ mod reconcile_tests {
         subscriber.expires_at = None;
         subscriber.panel_expires_at = None;
 
-        assert!(worth_asking(&subscriber));
+        assert!(worth_asking(&subscriber, NOW));
         assert!(matches!(
             decide(&subscriber, &in_panel(NOW)),
             Verdict::Differs { .. }

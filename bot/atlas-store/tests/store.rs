@@ -421,7 +421,7 @@ fn a_person_the_panel_has_not_heard_of_is_queued() {
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
 
-    let Ok(work) = store.panel_work(10) else {
+    let Ok(work) = store.panel_work(10, NOW) else {
         return;
     };
     assert_eq!(work.len(), 1, "человек не попал в очередь");
@@ -445,7 +445,7 @@ fn a_confirmed_date_leaves_the_queue() {
 
     let _ = store.mark_panel_synced(42, NOW + 3 * DAY);
 
-    let Ok(work) = store.panel_work(10) else {
+    let Ok(work) = store.panel_work(10, NOW) else {
         return;
     };
     assert!(work.is_empty(), "согласованный остался в очереди: {work:?}");
@@ -468,7 +468,7 @@ fn a_payment_puts_the_person_back_in_the_queue() {
     let _ = store.open_order("ord-9", 42, "d30", 30, rub(19_899), NOW);
     let _ = store.settle("ord-9", "manual", "19899-ord-9", rub(19_899), "{}", NOW);
 
-    let Ok(work) = store.panel_work(10) else {
+    let Ok(work) = store.panel_work(10, NOW) else {
         return;
     };
     assert_eq!(work.len(), 1, "продление не встало в очередь");
@@ -500,7 +500,7 @@ fn a_late_confirmation_does_not_swallow_a_newer_payment() {
     // Ответ панели пришёл — но он про старую дату.
     let _ = store.mark_panel_synced(42, carried);
 
-    let Ok(work) = store.panel_work(10) else {
+    let Ok(work) = store.panel_work(10, NOW) else {
         return;
     };
     assert_eq!(work.len(), 1, "оплата пропала из очереди");
@@ -525,7 +525,7 @@ fn a_person_the_panel_lost_is_forgotten_but_keeps_the_days() {
 
     let _ = store.forget_panel_link(42);
 
-    let Ok(work) = store.panel_work(10) else {
+    let Ok(work) = store.panel_work(10, NOW) else {
         return;
     };
     assert!(work.is_empty(), "везём дату в пустоту: {work:?}");
@@ -549,7 +549,7 @@ fn a_person_without_a_panel_account_is_not_queued() {
     subscriber(&mut store, 42);
     let _ = store.grant_trial(42, 3, NOW);
 
-    let Ok(work) = store.panel_work(10) else {
+    let Ok(work) = store.panel_work(10, NOW) else {
         return;
     };
     assert!(
@@ -571,7 +571,7 @@ fn the_queue_is_drained_in_portions() {
         let _ = store.grant_trial(id, 3, NOW);
     }
 
-    let Ok(work) = store.panel_work(2) else {
+    let Ok(work) = store.panel_work(2, NOW) else {
         return;
     };
     assert_eq!(work.len(), 2);
@@ -626,10 +626,51 @@ fn an_adopted_date_leaves_the_queue_empty() {
     };
 
     // До принятия работа есть: проба выдана, а панель о ней не знает.
-    assert_eq!(store.panel_work(10).map(|work| work.len()).ok(), Some(1));
+    assert_eq!(
+        store.panel_work(10, NOW).map(|work| work.len()).ok(),
+        Some(1)
+    );
 
     let Ok(()) = store.adopt_from_panel(42, NOW + 22 * DAY) else {
         return;
     };
-    assert_eq!(store.panel_work(10).map(|work| work.len()).ok(), Some(0));
+    assert_eq!(
+        store.panel_work(10, NOW).map(|work| work.len()).ok(),
+        Some(0)
+    );
+}
+
+/// Панель отказывается ставить срок задним числом и отвечает `400`. Такая
+/// строка не уедет никогда, а очередь долбится в неё каждые полминуты —
+/// ровно это у нас и происходило сутками, с пустым «код 400:» в журнале.
+///
+/// Терять при этом нечего: просроченного панель гасит сама по своей дате.
+#[test]
+fn a_date_in_the_past_never_enters_the_queue() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+
+    let Ok(()) = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/AbCdE") else {
+        return;
+    };
+    let Ok(Trial::Granted { .. }) = store.grant_trial(42, 3, NOW) else {
+        return;
+    };
+
+    // Пока срок в будущем — работа есть.
+    assert_eq!(
+        store.panel_work(10, NOW).map(|work| work.len()).ok(),
+        Some(1)
+    );
+
+    // Тот же срок неделей позже уже в прошлом — и работы нет.
+    assert_eq!(
+        store
+            .panel_work(10, NOW + 7 * DAY)
+            .map(|work| work.len())
+            .ok(),
+        Some(0)
+    );
 }
