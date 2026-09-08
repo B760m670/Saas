@@ -53,25 +53,27 @@ impl core::error::Error for Error {}
 /// такого ответа обычно содержит причину словами службы, и она полезнее
 /// нашего «что-то пошло не так».
 pub fn send(request: &Request) -> Result<Response, Error> {
+    let agent = agent();
+
     // Запросы с телом и без него у ureq — разные типы, поэтому ветки
     // разведены, а общее вынесено в две небольшие вспомогательные функции.
     let result = match request.method {
         Method::Get => {
-            let mut call = ureq::get(&request.url);
+            let mut call = agent.get(&request.url);
             for (name, value) in &request.headers {
                 call = call.header(name, value);
             }
             call.call()
         }
         Method::Post => {
-            let mut call = ureq::post(&request.url);
+            let mut call = agent.post(&request.url);
             for (name, value) in &request.headers {
                 call = call.header(name, value);
             }
             call.send(&request.body[..])
         }
         Method::Patch => {
-            let mut call = ureq::patch(&request.url);
+            let mut call = agent.patch(&request.url);
             for (name, value) in &request.headers {
                 call = call.header(name, value);
             }
@@ -81,7 +83,9 @@ pub fn send(request: &Request) -> Result<Response, Error> {
 
     let mut response = match result {
         Ok(response) => response,
-        // Код ошибки — это ответ, а не сбой связи.
+        // Сюда ответ с кодом ошибки не попадает — см. [`agent`]. Ветка
+        // остаётся на случай, если настройка когда-нибудь потеряется: код
+        // без тела всё же лучше, чем «сбой связи» вместо ответа службы.
         Err(ureq::Error::StatusCode(status)) => {
             return Ok(Response {
                 status,
@@ -98,4 +102,27 @@ pub fn send(request: &Request) -> Result<Response, Error> {
         .map_err(|error| Error::Body(error.to_string()))?;
 
     Ok(Response { status, body })
+}
+
+/// Общий исполнитель, настроенный **не** считать код ошибки сбоем.
+///
+/// По умолчанию ureq превращает любой ответ с кодом 4xx или 5xx в ошибку, и
+/// тело такого ответа до нас не доходит. Мы честно возвращали код — но без
+/// причины, и в журнале появлялось «Панель отказала, код 400:» с пустотой
+/// после двоеточия.
+///
+/// Это стоило дорого: очередь дат сутками падала с `400`, а понять, почему
+/// панель отказывает, было нечем. Причина, сказанная службой своими словами,
+/// — самое ценное, что есть в неудачном ответе.
+///
+/// Исполнитель один на весь процесс: он держит пул соединений, и создавать
+/// его на каждый запрос значило бы каждый раз заново устанавливать TLS.
+fn agent() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| {
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into()
+    })
 }
