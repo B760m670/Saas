@@ -54,6 +54,8 @@ pub struct Config {
     pub yookassa_shop_id: Option<String>,
     /// Секретный ключ магазина.
     pub yookassa_secret: Option<String>,
+    /// Токен терминала WATA, если приём оплаты идёт через неё.
+    pub wata_token: Option<String>,
 }
 
 impl core::fmt::Debug for Config {
@@ -70,6 +72,7 @@ impl core::fmt::Debug for Config {
             .field("мини-приложение", &self.api_addr)
             .field("принимает переводы", &self.accepts_transfers())
             .field("принимает карты", &self.accepts_cards())
+            .field("принимает WATA", &self.accepts_wata())
             .finish()
     }
 }
@@ -87,6 +90,7 @@ pub const API_ADDR: &str = "GLORIA_API_ADDR";
 pub const BOT_USERNAME: &str = "GLORIA_BOT_USERNAME";
 pub const YOOKASSA_SHOP_ID: &str = "GLORIA_YOOKASSA_SHOP_ID";
 pub const YOOKASSA_SECRET: &str = "GLORIA_YOOKASSA_SECRET";
+pub const WATA_TOKEN: &str = "GLORIA_WATA_TOKEN";
 
 /// Куда встаёт мини-приложение, если адрес не задан.
 ///
@@ -169,6 +173,7 @@ impl Config {
             }),
             yookassa_shop_id: optional(vars, YOOKASSA_SHOP_ID),
             yookassa_secret: optional(vars, YOOKASSA_SECRET),
+            wata_token: optional(vars, WATA_TOKEN),
         })
     }
 
@@ -185,6 +190,16 @@ impl Config {
     #[must_use]
     pub fn accepts_cards(&self) -> bool {
         self.yookassa_shop_id.is_some() && self.yookassa_secret.is_some()
+    }
+
+    /// Подключён ли приём оплаты через WATA.
+    ///
+    /// Если заданы ключи обоих сервисов, счёт открывает WATA: она отдаёт
+    /// СБП, карты, T-Pay и SberPay одной ссылкой. Выбор делается здесь, а не
+    /// в основном цикле, чтобы правило было записано в одном месте.
+    #[must_use]
+    pub fn accepts_wata(&self) -> bool {
+        self.wata_token.is_some()
     }
 
     /// Разрешены ли этому человеку админские действия.

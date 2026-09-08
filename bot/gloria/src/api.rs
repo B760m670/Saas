@@ -16,7 +16,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atlas_billing::{subscription, Callback, PaymentStatus, YooKassa};
+use atlas_billing::{subscription, Callback, PaymentStatus, Wata, YooKassa};
 use atlas_bot::catalog;
 use atlas_panel::Panel;
 use atlas_store::{Settled, Store};
@@ -77,9 +77,17 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         _ => None,
     };
 
+    // Клиент WATA собирается без адресов возврата: обработчику уведомления
+    // они не нужны, он только спрашивает состояние транзакции.
+    let wata = config
+        .wata_token
+        .as_deref()
+        .and_then(|token| Wata::new(token, "https://t.me", "https://t.me"));
+
     let shared = Shared {
         store: Arc::new(Mutex::new(store)),
         panel,
+        wata,
         yookassa,
         telegram: Telegram::new(&config.bot_token),
         bot_token: config.bot_token.clone(),
@@ -111,6 +119,7 @@ pub fn spawn(config: &Config) -> Result<(), String> {
 struct Shared {
     store: Arc<Mutex<Store>>,
     panel: Panel,
+    wata: Option<Wata>,
     yookassa: Option<YooKassa>,
     telegram: Option<Telegram>,
     bot_token: String,
@@ -137,10 +146,13 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         return open_in_app(shared, &mut stream, rest);
     }
 
-    // Уведомление о платеже. Без подписи Telegram: приходит оно не из
-    // мини-приложения, а от ЮKassa.
+    // Уведомления о платеже. Без подписи Telegram: приходят они не из
+    // мини-приложения, а от платёжного сервиса.
     if request.path == "/api/pay/yookassa" {
         return payment_notice(shared, &mut stream, &request);
+    }
+    if request.path == "/api/pay/wata" {
+        return wata_notice(shared, &mut stream, &request);
     }
 
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
@@ -271,6 +283,75 @@ fn payment_notice(
         }
     };
 
+    settle_payment(shared, stream, "yookassa", &event)
+}
+
+/// Уведомление WATA о транзакции.
+///
+/// Устроено так же, как у ЮKassa, и по той же причине: из тела берутся
+/// только номер транзакции и заявленное состояние, а настоящее спрашивается
+/// у WATA отдельным запросом с нашим токеном.
+///
+/// У WATA уведомление подписано (`X-Signature`, RSA SHA512), и подпись мы не
+/// проверяем — повторный запрос сильнее. Подпись подтверждает, что тело
+/// пришло от WATA и не изменилось; ответ API подтверждает то же самое и
+/// вдобавок показывает состояние на текущий момент, а не на момент отправки.
+///
+/// **Предоплатные уведомления должны быть выключены в личном кабинете.** У
+/// них ответа ждут 10 секунд и, не дождавшись, отклоняют транзакцию, не
+/// обращаясь в банк. Мы за это время сходить в API не обязаны. У
+/// постоплатного ждут минуту и повторяют 32 часа — этого хватает.
+fn wata_notice(shared: &Shared, stream: &mut TcpStream, request: &Request) -> Result<(), String> {
+    let Some(service) = shared.wata.as_ref() else {
+        return send(stream, 404, r#"{"error":"нет такого пути"}"#);
+    };
+    if request.method != "POST" {
+        return send(stream, 405, r#"{"error":"не тот способ"}"#);
+    }
+
+    let callback = Callback::new(Vec::new(), request.body.clone());
+    let notice = match service.notice(&callback) {
+        Ok(notice) => notice,
+        Err(error) => {
+            eprintln!("WATA: уведомление не разобралось: {error}");
+            // 200, а не 400: WATA повторяет доставку 32 часа, а повтор
+            // неразбираемого тела ничего не изменит.
+            return send(stream, 200, r#"{"ok":true}"#);
+        }
+    };
+
+    // Вот она, настоящая проверка.
+    let response = match crate::http::send(&service.status_request(&notice.transaction)) {
+        Ok(response) => response,
+        Err(error) => {
+            eprintln!("WATA недоступна: {error}");
+            // 500 — чтобы прислали снова: платёж мог и правда пройти.
+            return send(stream, 500, r#"{"error":"попробуйте позже"}"#);
+        }
+    };
+    if !response.is_ok() {
+        eprintln!("WATA ответила кодом {}", response.status);
+        return send(stream, 500, r#"{"error":"попробуйте позже"}"#);
+    }
+
+    let event = match service.settle(&response.body) {
+        Ok(event) => event,
+        Err(error) => {
+            eprintln!("WATA: состояние транзакции не разобралось: {error}");
+            return send(stream, 200, r#"{"ok":true}"#);
+        }
+    };
+
+    settle_payment(shared, stream, "wata", &event)
+}
+
+/// Записать зачисление и сказать покупателю. Общее для всех сервисов.
+fn settle_payment(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    provider: &str,
+    event: &atlas_billing::PaymentEvent,
+) -> Result<(), String> {
     if event.status != PaymentStatus::Paid {
         // Ожидание и отказ — не наше дело: заказ просто останется открытым
         // и истечёт сам.
@@ -278,7 +359,7 @@ fn payment_notice(
     }
 
     let Some(paid) = event.paid else {
-        eprintln!("Оплата: платёж прошёл, но суммы в ответе нет");
+        eprintln!("{provider}: платёж прошёл, но суммы в ответе нет");
         return send(stream, 200, r#"{"ok":true}"#);
     };
 
@@ -290,7 +371,7 @@ fn payment_notice(
             .map_err(|_| "замок базы испорчен".to_owned())?;
         store.settle(
             event.order.as_str(),
-            "yookassa",
+            provider,
             &event.reference,
             paid,
             "{}",
@@ -299,12 +380,12 @@ fn payment_notice(
     };
 
     match settled {
-        // Повтор доставки — обычное дело: ЮKassa шлёт уведомление, пока не
+        // Повтор доставки — обычное дело: сервис шлёт уведомление, пока не
         // получит успех, и второй раз не должен давать ни дня.
         Ok(Settled::AlreadyCounted | Settled::OrderAlreadyPaid) => {}
         Ok(Settled::Extended { expires_at }) => {
             println!(
-                "Оплата {} зачтена по счёту {}",
+                "Оплата {} зачтена по счёту {} ({provider})",
                 paid.to_decimal(),
                 event.order.as_str()
             );
@@ -312,7 +393,7 @@ fn payment_notice(
         }
         Ok(other) => eprintln!("Оплата по счёту {}: {other:?}", event.order.as_str()),
         Err(error) => {
-            eprintln!("Оплата: база не приняла зачисление: {error}");
+            eprintln!("{provider}: база не приняла зачисление: {error}");
             return send(stream, 500, r#"{"error":"попробуйте позже"}"#);
         }
     }

@@ -43,6 +43,7 @@ pub mod order;
 pub mod provider;
 pub mod signature;
 pub mod subscription;
+pub mod wata;
 pub mod yookassa;
 
 pub use event::{PaymentEvent, PaymentStatus};
@@ -54,4 +55,5 @@ pub use order::{Order, OrderId, Plan, UserId};
 pub use provider::{Error, Provider};
 pub use signature::Scheme;
 pub use subscription::{extend, is_active, Timestamp};
+pub use wata::Wata;
 pub use yookassa::YooKassa;

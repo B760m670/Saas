@@ -16,7 +16,7 @@ mod http;
 
 use std::process::ExitCode;
 
-use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, YooKassa};
+use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, Wata, YooKassa};
 use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
 use atlas_store::{Settled, Store, Trial};
@@ -76,6 +76,23 @@ fn main() -> ExitCode {
         _ => None,
     };
 
+    // WATA отдаёт СБП, карты, T-Pay и SberPay одной ссылкой, поэтому если
+    // её токен задан, счёт открывает она. ЮKassa остаётся запасной.
+    let wata = match &config.wata_token {
+        Some(token) => {
+            let back = config.bot_username.as_ref().map_or_else(
+                || "https://t.me".to_owned(),
+                |name| format!("https://t.me/{name}"),
+            );
+            let Some(service) = Wata::new(token, &back, &back) else {
+                eprintln!("Настройки: токен WATA негоден");
+                return ExitCode::FAILURE;
+            };
+            Some(service)
+        }
+        None => None,
+    };
+
     // Мини-приложение поднимается до основного цикла: не занятый адрес —
     // это настройка, и знать о ней надо при запуске, а не при первом
     // человеке, открывшем кабинет.
@@ -90,6 +107,7 @@ fn main() -> ExitCode {
         telegram: &telegram,
         panel: &panel,
         yookassa: yookassa.as_ref(),
+        wata: wata.as_ref(),
     };
     run(&deps, &mut store);
     ExitCode::SUCCESS
@@ -105,6 +123,8 @@ struct Deps<'a> {
     panel: &'a Panel,
     /// Отсутствует, пока приём оплаты картой не подключён.
     yookassa: Option<&'a YooKassa>,
+    /// Отсутствует, пока не подключена WATA. Если есть — счёт открывает она.
+    wata: Option<&'a Wata>,
 }
 
 /// Основной цикл. Из него не выходят: любая ошибка — повод подождать и
@@ -315,18 +335,17 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
 /// Заказ уже лежит в базе к этому моменту, и это важно: страница может не
 /// открыться, а деньги человек может перевести и вручную. Терять открытый
 /// счёт из-за недоступности сервиса нельзя — человек его уже видел.
-fn checkout(
-    service: &YooKassa,
+fn order_for(
     order_id: &str,
     telegram_id: i64,
     plan: &atlas_billing::Plan,
     amount: Money,
-) -> Result<String, String> {
+) -> Result<Order, String> {
     let Some(id) = OrderId::new(order_id) else {
         return Err("номер заказа не годится для платёжного сервиса".to_owned());
     };
 
-    let order = Order {
+    Ok(Order {
         id,
         user: UserId(telegram_id),
         plan: plan.id.clone(),
@@ -334,7 +353,30 @@ fn checkout(
         // Это видит покупатель в своём банке. «Оплата 199,37» без имени
         // читается как списание неизвестно за что и заканчивается спором.
         description: format!("Gloria VPN — {}", plan.title),
-    };
+    })
+}
+
+/// Отправить запрос на создание оплаты и вернуть тело ответа.
+fn ask_for_page(request: &atlas_billing::Request) -> Result<Vec<u8>, String> {
+    let response = http::send(request).map_err(|error| format!("связь: {error}"))?;
+    if !response.is_ok() {
+        return Err(format!(
+            "код {}: {}",
+            response.status,
+            excerpt(&response.body)
+        ));
+    }
+    Ok(response.body)
+}
+
+fn checkout(
+    service: &YooKassa,
+    order_id: &str,
+    telegram_id: i64,
+    plan: &atlas_billing::Plan,
+    amount: Money,
+) -> Result<String, String> {
+    let order = order_for(order_id, telegram_id, plan, amount)?;
 
     let Checkout::Request(request) = service
         .checkout(&order)
@@ -343,17 +385,29 @@ fn checkout(
         return Err("сервис не предложил запроса".to_owned());
     };
 
-    let response = http::send(&request).map_err(|error| format!("связь: {error}"))?;
-    if !response.is_ok() {
-        return Err(format!(
-            "код {}: {}",
-            response.status,
-            excerpt(&response.body)
-        ));
-    }
+    service
+        .checkout_page(&ask_for_page(&request)?)
+        .map_err(|error| format!("ответ: {error}"))
+}
+
+/// То же через WATA.
+///
+/// Отдельная функция, а не ветка внутри общей: у WATA ссылке нужен срок
+/// жизни, а сроку — часы, которых у платёжного крейта нет намеренно. Часы
+/// живут здесь, и это единственное отличие.
+fn checkout_wata(
+    service: &Wata,
+    order_id: &str,
+    telegram_id: i64,
+    plan: &atlas_billing::Plan,
+    amount: Money,
+    now: i64,
+) -> Result<String, String> {
+    let order = order_for(order_id, telegram_id, plan, amount)?;
+    let request = service.checkout_at(&order, now);
 
     service
-        .checkout_page(&response.body)
+        .checkout_page(&ask_for_page(&request)?)
         .map_err(|error| format!("ответ: {error}"))
 }
 
@@ -439,8 +493,24 @@ fn apply(
             // Сначала пробуем открыть страницу оплаты. Не вышло — счёт
             // остаётся в базе и подтверждается вручную: терять уже открытый
             // заказ из-за недоступности сервиса нельзя, человек его видел.
-            if let Some(service) = deps.yookassa {
-                match checkout(service, &order_id, telegram_id, &plan, amount) {
+            // Порядок неслучаен: WATA первая, потому что даёт СБП вместе с
+            // картами одной ссылкой. Обе заданы — берём её.
+            let page = if let Some(service) = deps.wata {
+                Some(checkout_wata(
+                    service,
+                    &order_id,
+                    telegram_id,
+                    &plan,
+                    amount,
+                    now,
+                ))
+            } else {
+                deps.yookassa
+                    .map(|service| checkout(service, &order_id, telegram_id, &plan, amount))
+            };
+
+            if let Some(opened) = page {
+                match opened {
                     Ok(page) => {
                         return Ok(Some(Extra {
                             text: format!(
@@ -453,11 +523,11 @@ fn apply(
                         }));
                     }
                     Err(error) => {
-                        eprintln!("ЮKassa для {telegram_id}: {error}");
+                        eprintln!("Оплата для {telegram_id}: {error}");
                         notify_admins(
                             config,
                             telegram,
-                            &format!("ЮKassa не открыла оплату по счёту {order_id}: {error}"),
+                            &format!("Не открылась оплата по счёту {order_id}: {error}"),
                         );
                     }
                 }
