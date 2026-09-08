@@ -169,6 +169,14 @@ impl Config {
                     why: "нужен адрес https — тот, что стоит за QR-кодом перевода, а не номер",
                 });
             }
+
+            if carries_a_phone_number(link) {
+                return Err(Error::Invalid {
+                    name: PAY_LINK,
+                    why: "в адресе виден номер телефона (например, `?requisiteNumber=+7…`) — \
+                          нужна ссылка на перевод, а не ссылка на QR-код СБП",
+                });
+            }
         }
 
         Ok(Self {
@@ -247,6 +255,51 @@ fn is_loopback(url: &str) -> bool {
         rest.strip_prefix(host)
             .is_some_and(|tail| tail.is_empty() || tail.starts_with(':') || tail.starts_with('/'))
     })
+}
+
+/// Видно ли в ссылке номер телефона.
+///
+/// Ссылку на перевод легко перепутать со ссылкой на QR-код СБП: в
+/// приложении банка они лежат рядом и обе ведут к переводу. Разница в том,
+/// что вторая несёт номер прямо в адресе —
+/// `…/c2c-qr-choose-bank?requisiteNumber=+79001234567&bankCode=…`. Такая
+/// ссылка раскрывает номер надёжнее, чем прежний текст в счёте: она видна
+/// в адресной строке, остаётся в истории браузера и пересылается дальше.
+/// Ради того, чтобы номера не было видно, всё и переделывалось, — значит
+/// эта ошибка не должна доходить до покупателя.
+///
+/// Считаем номером цепочку цифр, в которую укладывается российский
+/// мобильный: одиннадцать и больше подряд (`79001234567`) или ровно
+/// десять, начинающиеся с девятки (`9001234567`). Разделители внутри
+/// номера цепочку разорвут, и такую запись проверка пропустит — она ловит
+/// обычный случай, а не всякий мыслимый.
+///
+/// Ошибиться она может и в другую сторону: у ссылки бывает числовой
+/// признак подходящей длины. Отказ тогда ложный, но цена его — вопрос
+/// владельца, а цена пропуска — номер у каждого покупателя.
+fn carries_a_phone_number(link: &str) -> bool {
+    let mut digits = 0usize;
+    let mut starts_with_nine = false;
+
+    // Цепочка заканчивается и на последнем символе, поэтому к строке
+    // приписывается заведомо не-цифра: иначе номер в самом конце адреса
+    // остался бы непроверенным.
+    for symbol in link.chars().chain(core::iter::once(' ')) {
+        if symbol.is_ascii_digit() {
+            if digits == 0 {
+                starts_with_nine = symbol == '9';
+            }
+            digits += 1;
+            continue;
+        }
+
+        if digits >= 11 || (digits == 10 && starts_with_nine) {
+            return true;
+        }
+        digits = 0;
+    }
+
+    false
 }
 
 /// Необязательное значение: пустое считается незаданным.
@@ -437,6 +490,64 @@ mod tests {
                 "значение {value} принято за ссылку на перевод"
             );
         }
+    }
+
+    /// Ссылка на QR-код СБП несёт номер прямо в адресе. В приложении банка
+    /// она лежит рядом со ссылкой на перевод, и перепутать их — дело одного
+    /// нажатия; ровно это и случилось при настройке. Такая ссылка видна в
+    /// адресной строке и пересылается дальше, то есть раскрывает номер
+    /// надёжнее, чем прежний текст в счёте.
+    #[test]
+    fn a_link_carrying_the_phone_number_is_refused() {
+        for value in [
+            "https://t.tb.ru/c2c-qr-choose-bank?requisiteNumber=+79001234567&bankCode=100000000004",
+            "https://bank.example/pay?phone=79001234567",
+            "https://bank.example/pay?phone=9001234567",
+            "https://bank.example/89001234567",
+        ] {
+            let mut vars = full();
+            vars.insert(PAY_LINK.to_owned(), value.to_owned());
+            assert!(
+                matches!(
+                    Config::from_map(&vars),
+                    Err(Error::Invalid { name: PAY_LINK, .. })
+                ),
+                "ссылка с номером принята: {value}"
+            );
+        }
+    }
+
+    /// Обратная сторона: обычная ссылка на перевод цифры тоже содержит, и
+    /// отказывать ей проверка не должна.
+    #[test]
+    fn an_ordinary_transfer_link_passes() {
+        for value in [
+            "https://www.tbank.ru/rm/ivanov.ivan1/AbCdE12345",
+            "https://bank.example/rm/abc",
+            "https://bank.example/pay/2026090812",
+        ] {
+            let mut vars = full();
+            vars.insert(PAY_LINK.to_owned(), value.to_owned());
+            assert!(
+                Config::from_map(&vars).is_ok(),
+                "обычная ссылка отвергнута: {value}"
+            );
+        }
+    }
+
+    /// Номер в самом конце адреса — цепочка цифр, которую нечем закрыть.
+    /// Без приписанного разделителя она осталась бы непроверенной.
+    #[test]
+    fn a_phone_number_at_the_very_end_is_still_seen() {
+        let mut vars = full();
+        vars.insert(
+            PAY_LINK.to_owned(),
+            "https://bank.example/pay?phone=79001234567".to_owned(),
+        );
+        assert!(matches!(
+            Config::from_map(&vars),
+            Err(Error::Invalid { name: PAY_LINK, .. })
+        ));
     }
 
     /// Без ссылки бот работает: счёт просто выставляется, а оплату
