@@ -64,6 +64,12 @@ pub struct Subscriber {
     pub telegram_id: i64,
     /// До какого момента действует подписка.
     pub expires_at: Option<i64>,
+    /// Дата, которую в последний раз подтвердила панель.
+    ///
+    /// Совпадает с [`Self::expires_at`] — значит наших неувезённых изменений
+    /// нет, и расхождение с панелью означало бы правку в самой панели.
+    /// Расходится — значит очередь ещё не доехала, и решает она.
+    pub panel_expires_at: Option<i64>,
     /// Когда выдавалась проба. `None` — не выдавалась ни разу.
     pub trial_granted_at: Option<i64>,
     /// Номер в панели.
@@ -155,6 +161,7 @@ impl Store {
              ON CONFLICT (telegram_id) DO UPDATE SET telegram_id = EXCLUDED.telegram_id
              RETURNING telegram_id,
                        FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
+                       FLOOR(EXTRACT(EPOCH FROM panel_expires_at))::bigint,
                        FLOOR(EXTRACT(EPOCH FROM trial_granted_at))::bigint,
                        panel_id, subscription_url,
                        EXISTS (SELECT 1 FROM orders
@@ -166,10 +173,11 @@ impl Store {
         Ok(Subscriber {
             telegram_id: row.try_get(0)?,
             expires_at: row.try_get(1)?,
-            trial_granted_at: row.try_get(2)?,
-            panel_id: row.try_get(3)?,
-            subscription_url: row.try_get(4)?,
-            has_paid: row.try_get(5)?,
+            panel_expires_at: row.try_get(2)?,
+            trial_granted_at: row.try_get(3)?,
+            panel_id: row.try_get(4)?,
+            subscription_url: row.try_get(5)?,
+            has_paid: row.try_get(6)?,
         })
     }
 
@@ -278,6 +286,29 @@ impl Store {
                 SET panel_expires_at = to_timestamp($2::bigint)
               WHERE telegram_id = $1 AND expires_at = to_timestamp($2::bigint)",
             &[&telegram_id, &sent],
+        )?;
+        Ok(())
+    }
+
+    /// Принять за истину то, что записано в панели.
+    ///
+    /// Очередь возит даты **в одну сторону**: от нас к панели. Правка срока
+    /// руками в самой панели до нашей базы не доезжает никак — и кабинет
+    /// показывает «истекла» человеку, у которого VPN работает. Ровно на это
+    /// мы и напоролись.
+    ///
+    /// Ставятся обе даты сразу. `expires_at` — чтобы кабинет говорил правду.
+    /// `panel_expires_at` — чтобы строка не попала в очередь: иначе на
+    /// следующем же круге очередь увезла бы в панель прежнюю дату и отменила
+    /// ручную правку, а через круг мы приняли бы её обратно. Дата качалась бы
+    /// между двумя значениями, и кто прав, не выяснилось бы никогда.
+    pub fn adopt_from_panel(&mut self, telegram_id: i64, expires_at: i64) -> Result<(), Error> {
+        self.client.execute(
+            "UPDATE users
+                SET expires_at = to_timestamp($2::bigint),
+                    panel_expires_at = to_timestamp($2::bigint)
+              WHERE telegram_id = $1",
+            &[&telegram_id, &expires_at],
         )?;
         Ok(())
     }

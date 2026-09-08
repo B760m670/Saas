@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, Wata, YooKassa};
 use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
-use atlas_store::{Settled, Store, Trial};
+use atlas_store::{Settled, Store, Subscriber, Trial};
 use atlas_tg::{next_offset, Incoming, Telegram};
 
 use config::Config;
@@ -243,6 +243,218 @@ fn sync_panel(panel: &Panel, store: &mut Store) {
     }
 }
 
+/// Насколько дата панели должна разойтись с нашей, чтобы считать это
+/// правкой, а не разным округлением.
+///
+/// Мы храним секунды, панель — строку ISO с миллисекундами, и обратный
+/// перевод может отличаться на доли секунды. Без допуска такое отличие
+/// выглядело бы как вечная правка: мы приняли бы её, записали, на следующем
+/// круге снова увидели расхождение — и так без конца.
+const PANEL_DRIFT: i64 = 60;
+
+/// Что панель говорит о человеке сверх того, что знаем мы.
+enum Verdict {
+    /// Расхождений нет — записывать нечего.
+    Same,
+    /// Пользователя в панели больше нет: удалили руками или переставили её.
+    Lost,
+    /// Панель знает о нём другое.
+    Differs {
+        panel_id: i64,
+        subscription_url: String,
+        expires_at: i64,
+    },
+}
+
+/// Сходить в панель и посмотреть, что там на самом деле.
+///
+/// В базу не ходит и её замка не держит: запрос по сети под общим замком
+/// останавливал бы всех остальных на время похода.
+///
+/// Сверяемся только когда **своих** неувезённых изменений нет, то есть
+/// `expires_at` совпадает с `panel_expires_at`. Если они разошлись, работа
+/// уже стоит в очереди, и решает она: оплата важнее ручной правки. Условия
+/// взаимоисключающие, поэтому очередь и сверка не тянут одну дату в разные
+/// стороны.
+fn panel_verdict(panel: &Panel, subscriber: &Subscriber) -> Verdict {
+    if !worth_asking(subscriber) {
+        return Verdict::Same;
+    }
+
+    let telegram_id = subscriber.telegram_id;
+
+    let Ok(request) = panel.find(telegram_id) else {
+        return Verdict::Same;
+    };
+    let Ok(response) = http::send(&request) else {
+        // Панель недоступна — это не повод портить разговор. Покажем то,
+        // что знаем сами, и сверимся при следующем обращении.
+        return Verdict::Same;
+    };
+
+    if response.status == 404 {
+        return Verdict::Lost;
+    }
+
+    if !response.is_ok() {
+        eprintln!(
+            "Сверка с панелью для {telegram_id}: код {}",
+            response.status
+        );
+        return Verdict::Same;
+    }
+
+    let user = match panel.parse_user(&response.body) {
+        Ok(user) => user,
+        Err(error) => {
+            eprintln!("Сверка с панелью для {telegram_id}: {error}");
+            return Verdict::Same;
+        }
+    };
+
+    decide(subscriber, &user)
+}
+
+/// Стоит ли вообще спрашивать панель об этом человеке.
+///
+/// Вынесено отдельно, потому что это правило и есть защита от драки за одну
+/// дату между очередью и сверкой.
+fn worth_asking(subscriber: &Subscriber) -> bool {
+    // Не заведён в панели — сверять не с чем.
+    if subscriber.panel_id.is_none() {
+        return false;
+    }
+
+    // Своё несогласованное изменение — очередь довезёт его сама, и решает
+    // она: оплата важнее ручной правки.
+    subscriber.expires_at == subscriber.panel_expires_at
+}
+
+/// Чем ответ панели отличается от того, что записано у нас.
+///
+/// Чистая функция: ни сети, ни базы. Здесь живёт всё, что стоит проверять
+/// тестом, — остальное вокруг только возит байты.
+fn decide(subscriber: &Subscriber, user: &atlas_panel::User) -> Verdict {
+    let known = subscriber.panel_expires_at.unwrap_or(0);
+    let same_date = (user.expires_at - known).abs() < PANEL_DRIFT;
+    let same_link = subscriber.subscription_url.as_deref() == Some(user.subscription_url.as_str())
+        && subscriber.panel_id == Some(user.id);
+
+    if same_date && same_link {
+        return Verdict::Same;
+    }
+
+    Verdict::Differs {
+        panel_id: user.id,
+        subscription_url: user.subscription_url.clone(),
+        expires_at: user.expires_at,
+    }
+}
+
+/// Записать то, что сказала панель. По сети не ходит.
+fn apply_verdict(store: &mut Store, subscriber: &mut Subscriber, verdict: Verdict) {
+    let telegram_id = subscriber.telegram_id;
+
+    match verdict {
+        Verdict::Same => {}
+
+        // Пользователя удалили в панели руками. Забываем связь: при
+        // следующем обращении бот заведёт его заново с тем же сроком.
+        Verdict::Lost => {
+            eprintln!("Панель потеряла {telegram_id}: заводим заново");
+            if let Err(error) = store.forget_panel_link(telegram_id) {
+                eprintln!("Сброс связи с панелью для {telegram_id}: {error}");
+                return;
+            }
+            subscriber.panel_id = None;
+            subscriber.subscription_url = None;
+            subscriber.panel_expires_at = None;
+        }
+
+        Verdict::Differs {
+            panel_id,
+            subscription_url,
+            expires_at,
+        } => {
+            // Ссылка сменилась — значит пользователя в панели пересоздали.
+            // Наш прежний адрес указывает в пустоту, и человек добавил бы в
+            // приложение подписку, которой нет.
+            if subscriber.subscription_url.as_deref() != Some(subscription_url.as_str())
+                || subscriber.panel_id != Some(panel_id)
+            {
+                eprintln!("Ссылка на подписку {telegram_id} сменилась в панели: запоминаем новую");
+                match store.link_to_panel(telegram_id, panel_id, &subscription_url) {
+                    Ok(()) => {
+                        subscriber.panel_id = Some(panel_id);
+                        subscriber.subscription_url = Some(subscription_url);
+                    }
+                    Err(error) => eprintln!("Запись ссылки для {telegram_id}: {error}"),
+                }
+            }
+
+            let known = subscriber.panel_expires_at.unwrap_or(0);
+            if (expires_at - known).abs() < PANEL_DRIFT {
+                return;
+            }
+
+            eprintln!(
+                "Срок {telegram_id} правили в панели: было {}, стало {} — принимаем",
+                day_month_year(known),
+                day_month_year(expires_at)
+            );
+
+            if let Err(error) = store.adopt_from_panel(telegram_id, expires_at) {
+                eprintln!("Приём даты из панели для {telegram_id}: {error}");
+                return;
+            }
+
+            subscriber.expires_at = Some(expires_at);
+            subscriber.panel_expires_at = Some(expires_at);
+        }
+    }
+}
+
+/// Сверить запись человека с панелью и принять то, что там поправили руками.
+///
+/// Очередь (`sync_panel`) возит даты **в одну сторону**: от нас к панели.
+/// Пока никто не трогает панель руками, этого хватает. Стоит владельцу
+/// продлить кого-нибудь прямо в панели — и мы об этом не узнаём никак:
+/// кабинет показывает «истекла» человеку, у которого VPN работает.
+///
+/// Цена — один запрос к панели на обращение человека. При нынешних числах
+/// это незаметно; когда станет заметно, сверку надо будет двигать в фоновый
+/// круг с отметкой «когда проверяли в последний раз».
+fn reconcile(panel: &Panel, store: &mut Store, subscriber: &mut Subscriber) {
+    let verdict = panel_verdict(panel, subscriber);
+    apply_verdict(store, subscriber, verdict);
+}
+
+/// То же для мини-приложения, где база живёт под общим замком.
+///
+/// Замок берётся дважды и ни разу не держится на время похода в панель:
+/// иначе один медленный ответ панели останавливал бы всех остальных.
+pub fn reconcile_for(
+    panel: &Panel,
+    store: &std::sync::Mutex<Store>,
+    telegram_id: i64,
+) -> Result<Subscriber, String> {
+    let mut subscriber = {
+        let mut guard = store.lock().map_err(|_| "замок базы испорчен".to_owned())?;
+        guard
+            .ensure_subscriber(telegram_id)
+            .map_err(|error| format!("база: {error}"))?
+    };
+
+    let verdict = panel_verdict(panel, &subscriber);
+
+    if !matches!(verdict, Verdict::Same) {
+        let mut guard = store.lock().map_err(|_| "замок базы испорчен".to_owned())?;
+        apply_verdict(&mut guard, &mut subscriber, verdict);
+    }
+
+    Ok(subscriber)
+}
+
 /// Ответить на одно обновление.
 fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(), String> {
     let (config, telegram, panel) = (deps.config, deps.telegram, deps.panel);
@@ -272,6 +484,10 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
     let mut subscriber = store
         .ensure_subscriber(telegram_id)
         .map_err(|error| format!("база: {error}"))?;
+
+    // Сначала сверка, потом всё остальное: срок могли поправить в панели
+    // руками, и без этого человек увидел бы «истекла» при работающем VPN.
+    reconcile(panel, store, &mut subscriber);
 
     // Подписка есть, а ссылки нет — значит панель отказала в тот раз, когда
     // мы заводили человека. Само это не исправится: проба выдаётся один раз,
@@ -876,6 +1092,158 @@ fn excerpt(body: &[u8]) -> String {
     match text.char_indices().nth(LIMIT) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod reconcile_tests {
+    use super::{decide, worth_asking, Verdict, PANEL_DRIFT};
+    use atlas_store::Subscriber;
+
+    const DAY: i64 = 86_400;
+    const NOW: i64 = 1_788_861_600;
+
+    /// Человек, у которого наша дата и дата панели сошлись.
+    fn settled() -> Subscriber {
+        Subscriber {
+            telegram_id: 42,
+            expires_at: Some(NOW),
+            panel_expires_at: Some(NOW),
+            trial_granted_at: Some(NOW - 3 * DAY),
+            panel_id: Some(7),
+            subscription_url: Some("https://panel.example.org/api/sub/AbCdE".to_owned()),
+            has_paid: false,
+        }
+    }
+
+    fn in_panel(expires_at: i64) -> atlas_panel::User {
+        atlas_panel::User {
+            id: 7,
+            uuid: String::new(),
+            short_uuid: "AbCdE".to_owned(),
+            username: "tg_42".to_owned(),
+            telegram_id: Some(42),
+            status: "ACTIVE".to_owned(),
+            expires_at,
+            subscription_url: "https://panel.example.org/api/sub/AbCdE".to_owned(),
+        }
+    }
+
+    /// Ради чего всё это: срок продлили руками в панели. Без приёма этой
+    /// правки кабинет говорит «истекла» человеку, у которого VPN работает.
+    #[test]
+    fn a_date_changed_by_hand_in_the_panel_is_adopted() {
+        let verdict = decide(&settled(), &in_panel(NOW + 22 * DAY));
+        assert!(
+            matches!(verdict, Verdict::Differs { expires_at, .. } if expires_at == NOW + 22 * DAY),
+            "правка в панели не замечена"
+        );
+    }
+
+    /// Своё неувезённое изменение важнее: за него заплатили. Пока очередь не
+    /// доехала, панель не спрашиваем вовсе — иначе двое тянули бы одну дату
+    /// в разные стороны и она качалась бы между двумя значениями.
+    #[test]
+    fn our_own_pending_change_wins_and_the_panel_is_not_asked() {
+        let mut subscriber = settled();
+        subscriber.expires_at = Some(NOW + 30 * DAY);
+        assert!(!worth_asking(&subscriber));
+    }
+
+    /// Не заведён в панели — спрашивать не о чем.
+    #[test]
+    fn somebody_absent_from_the_panel_is_not_asked_about() {
+        let mut subscriber = settled();
+        subscriber.panel_id = None;
+        assert!(!worth_asking(&subscriber));
+    }
+
+    #[test]
+    fn a_settled_subscriber_is_worth_asking_about() {
+        assert!(worth_asking(&settled()));
+    }
+
+    /// Совпало — записывать нечего.
+    #[test]
+    fn the_same_date_and_link_mean_no_work() {
+        assert!(matches!(decide(&settled(), &in_panel(NOW)), Verdict::Same));
+    }
+
+    /// Мы храним секунды, панель — строку с миллисекундами. Без допуска
+    /// обратный перевод дал бы вечную «правку»: приняли, записали, на
+    /// следующем круге снова увидели расхождение — и так без конца.
+    #[test]
+    fn a_difference_smaller_than_the_drift_is_not_a_change() {
+        for shift in [-(PANEL_DRIFT - 1), -1, 0, 1, PANEL_DRIFT - 1] {
+            assert!(
+                matches!(decide(&settled(), &in_panel(NOW + shift)), Verdict::Same),
+                "сдвиг {shift} принят за правку"
+            );
+        }
+    }
+
+    /// А ровно на допуске — уже правка: граница должна быть где-то, и лучше
+    /// ей быть проверенной.
+    #[test]
+    fn a_difference_at_the_drift_is_a_change() {
+        for shift in [-PANEL_DRIFT, PANEL_DRIFT] {
+            assert!(
+                matches!(
+                    decide(&settled(), &in_panel(NOW + shift)),
+                    Verdict::Differs { .. }
+                ),
+                "сдвиг {shift} не принят за правку"
+            );
+        }
+    }
+
+    /// Пользователя пересоздали в панели: дата та же, а ссылка новая. Наш
+    /// прежний адрес указывает в пустоту, и человек добавил бы в приложение
+    /// подписку, которой нет.
+    #[test]
+    fn a_new_subscription_link_is_noticed_even_when_the_date_matches() {
+        let mut user = in_panel(NOW);
+        user.subscription_url = "https://panel.example.org/api/sub/ZZZZZ".to_owned();
+
+        let verdict = decide(&settled(), &user);
+        assert!(
+            matches!(
+                verdict,
+                Verdict::Differs { ref subscription_url, .. }
+                    if subscription_url.ends_with("ZZZZZ")
+            ),
+            "смена ссылки не замечена"
+        );
+    }
+
+    /// И то же самое, когда сменился внутренний номер: продление уходило бы
+    /// не тому.
+    #[test]
+    fn a_new_panel_number_is_noticed_too() {
+        let mut user = in_panel(NOW);
+        user.id = 9;
+
+        let verdict = decide(&settled(), &user);
+        assert!(
+            matches!(verdict, Verdict::Differs { panel_id, .. } if panel_id == 9),
+            "смена номера не замечена"
+        );
+    }
+
+    /// Панель ни разу не подтверждала дату: сравнивать не с чем, и всё, что
+    /// она скажет, — правка. Иначе первый же такой человек остался бы с
+    /// нулём вместо срока.
+    #[test]
+    fn a_date_never_confirmed_by_the_panel_counts_as_a_change() {
+        let mut subscriber = settled();
+        subscriber.expires_at = None;
+        subscriber.panel_expires_at = None;
+
+        assert!(worth_asking(&subscriber));
+        assert!(matches!(
+            decide(&subscriber, &in_panel(NOW)),
+            Verdict::Differs { .. }
+        ));
     }
 }
 

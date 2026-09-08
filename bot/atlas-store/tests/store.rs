@@ -576,3 +576,60 @@ fn the_queue_is_drained_in_portions() {
     };
     assert_eq!(work.len(), 2);
 }
+
+/// Срок правили руками в самой панели. Очередь возит даты только от нас к
+/// панели, поэтому обратную правку надо принимать отдельно — иначе кабинет
+/// показывает «истекла» человеку, у которого VPN работает.
+#[test]
+fn a_date_adopted_from_the_panel_replaces_ours() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+
+    let Ok(()) = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/AbCdE") else {
+        return;
+    };
+    let Ok(Trial::Granted { .. }) = store.grant_trial(42, 3, NOW) else {
+        return;
+    };
+
+    let Ok(()) = store.adopt_from_panel(42, NOW + 22 * DAY) else {
+        return;
+    };
+
+    let Ok(after) = store.ensure_subscriber(42) else {
+        return;
+    };
+    assert_eq!(after.expires_at, Some(NOW + 22 * DAY));
+
+    // И та же дата подтверждённой: иначе строка попала бы в очередь и на
+    // следующем круге увезла бы в панель прежнее значение, отменив правку.
+    assert_eq!(after.panel_expires_at, Some(NOW + 22 * DAY));
+}
+
+/// Принятая дата не должна оставлять работу в очереди. Если оставляет —
+/// очередь и сверка тянут одну дату в разные стороны, и она качается между
+/// двумя значениями бесконечно.
+#[test]
+fn an_adopted_date_leaves_the_queue_empty() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+
+    let Ok(()) = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/AbCdE") else {
+        return;
+    };
+    let Ok(Trial::Granted { .. }) = store.grant_trial(42, 3, NOW) else {
+        return;
+    };
+
+    // До принятия работа есть: проба выдана, а панель о ней не знает.
+    assert_eq!(store.panel_work(10).map(|work| work.len()).ok(), Some(1));
+
+    let Ok(()) = store.adopt_from_panel(42, NOW + 22 * DAY) else {
+        return;
+    };
+    assert_eq!(store.panel_work(10).map(|work| work.len()).ok(), Some(0));
+}

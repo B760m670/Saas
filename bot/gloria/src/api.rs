@@ -491,15 +491,10 @@ fn open_in_app(shared: &Shared, stream: &mut TcpStream, rest: &str) -> Result<()
 
 /// Собрать состояние покупателя.
 fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, String> {
-    let subscriber = {
-        let mut store = shared
-            .store
-            .lock()
-            .map_err(|_| "замок базы испорчен".to_owned())?;
-        store
-            .ensure_subscriber(telegram_id)
-            .map_err(|error| format!("база: {error}"))?
-    };
+    // Со сверкой, а не просто из базы: срок могли поправить в панели руками,
+    // и тогда кабинет показывал бы «истекла» человеку, у которого VPN
+    // работает. Замок базы на время похода в панель не держится.
+    let subscriber = crate::reconcile_for(&shared.panel, &shared.store, telegram_id)?;
 
     let expires_at = subscriber.expires_at;
     let active = subscription::is_active(expires_at, now);
