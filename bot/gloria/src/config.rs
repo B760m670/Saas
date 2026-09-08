@@ -42,10 +42,10 @@ pub struct Config {
     pub squads: Vec<String>,
     /// Кому разрешены админские действия.
     pub admins: Vec<i64>,
-    /// Номер для перевода по СБП, если приём оплаты уже настроен.
-    pub sbp_phone: Option<String>,
-    /// Имя получателя, как его покажет банк плательщика.
-    pub sbp_name: Option<String>,
+    /// Ссылка на перевод — та, что стоит за QR-кодом в банковском
+    /// приложении. Заменяет собой номер телефона: покупатель открывает её
+    /// и видит уже готовую форму перевода, не набирая никаких реквизитов.
+    pub pay_link: Option<String>,
     /// Где слушать мини-приложение. Только петля: наружу выставляет Caddy.
     pub api_addr: String,
     /// Имя бота без «@» — из него строится реферальная ссылка.
@@ -84,8 +84,7 @@ pub const PANEL_TOKEN: &str = "GLORIA_PANEL_TOKEN";
 pub const DATABASE_URL: &str = "GLORIA_DATABASE_URL";
 pub const SQUADS: &str = "GLORIA_SQUADS";
 pub const ADMINS: &str = "GLORIA_ADMINS";
-pub const SBP_PHONE: &str = "GLORIA_SBP_PHONE";
-pub const SBP_NAME: &str = "GLORIA_SBP_NAME";
+pub const PAY_LINK: &str = "GLORIA_PAY_LINK";
 pub const API_ADDR: &str = "GLORIA_API_ADDR";
 pub const BOT_USERNAME: &str = "GLORIA_BOT_USERNAME";
 pub const YOOKASSA_SHOP_ID: &str = "GLORIA_YOOKASSA_SHOP_ID";
@@ -157,6 +156,21 @@ impl Config {
             }
         }
 
+        // Ссылка уходит в кнопку Telegram, а он принимает там только адрес.
+        // Номер телефона или строка вида `+7…`, вписанные по привычке от
+        // прежних переводов по СБП, дали бы отказ Telegram на каждом счёте —
+        // и человек увидел бы не оплату, а «попробуйте позже». Лучше
+        // отказаться при запуске, где ошибка названа по имени.
+        let pay_link = optional(vars, PAY_LINK);
+        if let Some(link) = &pay_link {
+            if !link.starts_with("https://") {
+                return Err(Error::Invalid {
+                    name: PAY_LINK,
+                    why: "нужен адрес https — тот, что стоит за QR-кодом перевода, а не номер",
+                });
+            }
+        }
+
         Ok(Self {
             bot_token: get(BOT_TOKEN)?,
             panel_url,
@@ -164,8 +178,7 @@ impl Config {
             database_url: get(DATABASE_URL)?,
             squads,
             admins,
-            sbp_phone: optional(vars, SBP_PHONE),
-            sbp_name: optional(vars, SBP_NAME),
+            pay_link,
             api_addr: optional(vars, API_ADDR).unwrap_or_else(|| DEFAULT_API_ADDR.to_owned()),
             bot_username: optional(vars, BOT_USERNAME).map(|name| {
                 // «@» люди дописывают по привычке, а в ссылке он лишний.
@@ -177,10 +190,10 @@ impl Config {
         })
     }
 
-    /// Настроен ли приём оплаты переводом.
+    /// Настроен ли приём оплаты переводом по ссылке.
     #[must_use]
     pub fn accepts_transfers(&self) -> bool {
-        self.sbp_phone.is_some() && self.sbp_name.is_some()
+        self.pay_link.is_some()
     }
 
     /// Подключён ли приём оплаты картой и СБП через ЮKassa.
@@ -246,7 +259,9 @@ fn optional(vars: &HashMap<String, String>, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, PANEL_TOKEN, PANEL_URL, SQUADS};
+    use super::{
+        Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, PANEL_TOKEN, PANEL_URL, PAY_LINK, SQUADS,
+    };
     use std::collections::HashMap;
 
     fn full() -> HashMap<String, String> {
@@ -403,6 +418,45 @@ mod tests {
         };
         assert!(config.admins.is_empty());
         assert!(!config.is_admin(42));
+    }
+
+    /// Ссылка на перевод уходит в кнопку Telegram, а туда годится только
+    /// адрес. Номер, вписанный по привычке от прежних переводов по СБП, дал
+    /// бы отказ на каждом счёте — и ошибка вылезла бы у покупателя, а не при
+    /// запуске.
+    #[test]
+    fn a_transfer_link_that_is_not_an_address_is_refused() {
+        for value in ["+79001234567", "79001234567", "http://bank.example/x"] {
+            let mut vars = full();
+            vars.insert(PAY_LINK.to_owned(), value.to_owned());
+            assert!(
+                matches!(
+                    Config::from_map(&vars),
+                    Err(Error::Invalid { name: PAY_LINK, .. })
+                ),
+                "значение {value} принято за ссылку на перевод"
+            );
+        }
+    }
+
+    /// Без ссылки бот работает: счёт просто выставляется, а оплату
+    /// подтверждает владелец вручную.
+    #[test]
+    fn a_transfer_link_is_optional() {
+        let Ok(config) = Config::from_map(&full()) else {
+            return;
+        };
+        assert!(!config.accepts_transfers());
+
+        let mut vars = full();
+        vars.insert(
+            PAY_LINK.to_owned(),
+            "https://bank.example/rm/abc".to_owned(),
+        );
+        let Ok(config) = Config::from_map(&vars) else {
+            return;
+        };
+        assert!(config.accepts_transfers());
     }
 
     /// Секреты не должны попадать в журнал через отладочную печать.
