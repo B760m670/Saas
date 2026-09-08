@@ -16,6 +16,15 @@ SITE=${SITE:-/var/www/gloria}
 # публичному адресу, а витрина — по адресу панели.
 SITE_PUBLIC=${SITE_PUBLIC:-/var/www/gloria-public}
 
+# Реквизиты, которые публикуются в документах, но не хранятся в репозитории.
+# Файл лежит только на сервере и содержит одну строку:
+#
+#     GLORIA_INN=000000000000
+#
+# ИНН попадёт на публичную страницу, но история git — другое дело: оттуда
+# он уже не исчезнет, а репозиторий может стать открытым.
+LEGAL=${LEGAL:-/etc/gloria-legal.env}
+
 cd "$SRC"
 
 echo "== обновляемся"
@@ -42,17 +51,44 @@ install -m 644 site/index.html "$SITE/index.html"
 # же ссылается платёжный сервис, а для него неработающая оферта — повод
 # отключить приём оплаты.
 #
-# Подставлять в них ничего не нужно: имени владельца в документах нет по
-# его решению, а почта и страна размещения вписаны прямо в файлы.
+# Имени владельца в документах нет по его решению; ИНН подставляется здесь,
+# из файла на сервере.
+if [ ! -r "$LEGAL" ]; then
+    echo "нет файла $LEGAL — в документах остался бы {{ИНН}} вместо номера" >&2
+    exit 1
+fi
+. "$LEGAL"
+
+if [ -z "${GLORIA_INN:-}" ]; then
+    echo "в $LEGAL не задан GLORIA_INN" >&2
+    exit 1
+fi
+
+# Подстановка при выкладке, а не при сборке: файлы в репозитории остаются
+# без реквизитов, и следующий git pull ничего не затирает.
+publish_legal() {
+    sed "s/{{ИНН}}/$GLORIA_INN/g" "$1" > "$2.tmp"
+    if grep -q '{{' "$2.tmp"; then
+        echo "в $1 остались неподставленные значения" >&2
+        rm -f "$2.tmp"
+        exit 1
+    fi
+    install -m 644 "$2.tmp" "$2"
+    rm -f "$2.tmp"
+}
+
 install -d -m 755 "$SITE/legal"
-install -m 644 site/legal/* "$SITE/legal/"
+for f in site/legal/*.html; do
+    publish_legal "$f" "$SITE/legal/$(basename "$f")"
+done
+install -m 644 site/legal/legal.css "$SITE/legal/legal.css"
 
 # Витрина: то, что видит человек, открывший адрес в обычном браузере, и то,
 # что смотрит модератор платёжного сервиса. Без неё по адресу открывается
 # личный кабинет, рассчитанный на Telegram, — без подписи он показывает
 # прочерки и выглядит как недоделанный сайт.
 install -d -m 755 "$SITE_PUBLIC"
-install -m 644 site/landing/index.html "$SITE_PUBLIC/index.html"
+publish_legal site/landing/index.html "$SITE_PUBLIC/index.html"
 
 echo "== бот"
 systemctl stop gloria-bot
