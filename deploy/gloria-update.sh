@@ -41,6 +41,27 @@ for m in db/migrations/*.sql; do
 done
 
 echo "== сборка"
+
+# cargo ставится rustup в домашний каталог и в системный PATH не попадает.
+# Через sudo PATH вдобавок подменяется на secure_path из sudoers — и
+# «cargo: not found» вылезает даже у root, у которого он есть. Ищем сами,
+# чтобы скрипт не зависел от того, как его запустили.
+if ! command -v cargo >/dev/null 2>&1; then
+    for dir in "${HOME:-/root}/.cargo/bin" /root/.cargo/bin /usr/local/cargo/bin; do
+        if [ -x "$dir/cargo" ]; then
+            PATH="$dir:$PATH"
+            export PATH
+            break
+        fi
+    done
+fi
+
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "не найден cargo; если он не установлен:" >&2
+    echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
+    exit 1
+fi
+
 ( cd bot && cargo build --release )
 
 echo "== мини-приложение"
