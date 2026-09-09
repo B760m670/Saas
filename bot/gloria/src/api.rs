@@ -92,6 +92,8 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         telegram: Telegram::new(&config.bot_token),
         bot_token: config.bot_token.clone(),
         bot_username: config.bot_username.clone(),
+        pay_link: config.pay_link.clone(),
+        admins: config.admins.clone(),
     };
 
     println!("Мини-приложение слушает {}", config.api_addr);
@@ -116,14 +118,20 @@ pub fn spawn(config: &Config) -> Result<(), String> {
 }
 
 #[derive(Clone)]
-struct Shared {
-    store: Arc<Mutex<Store>>,
+pub(crate) struct Shared {
+    pub(crate) store: Arc<Mutex<Store>>,
     panel: Panel,
     wata: Option<Wata>,
     yookassa: Option<YooKassa>,
-    telegram: Option<Telegram>,
+    pub(crate) telegram: Option<Telegram>,
     bot_token: String,
     bot_username: Option<String>,
+    /// Куда отправлять за переводом. Нет — счёт всё равно выставляется, но
+    /// платить человеку негде, и он это увидит.
+    pub(crate) pay_link: Option<String>,
+    /// Кому сообщать о новом счёте. Подтверждает оплату человек, и узнать о
+    /// счёте он должен сразу, а не когда вспомнит про `/pending`.
+    pub(crate) admins: Vec<i64>,
 }
 
 /// Ответить на одно соединение.
@@ -155,18 +163,27 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         return wata_notice(shared, &mut stream, &request);
     }
 
+    // Счёт из кабинета. Тариф — в пути, а не в теле: разбирать JSON ради
+    // одного короткого имени незачем, а набор символов у него проверен тем,
+    // что тариф с таким именем обязан найтись в витрине.
+    let order_plan = request
+        .path
+        .strip_prefix("/api/order/")
+        .map(str::to_owned)
+        .filter(|plan| !plan.is_empty());
+
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
-    if request.path != "/api/me" && request.path != "/api/reissue" {
+    if request.path != "/api/me" && request.path != "/api/reissue" && order_plan.is_none() {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
 
     // Перевыпуск меняет состояние, поэтому только POST: по ссылке из чата или
     // предзагрузкой браузера он не должен случаться сам собой.
-    let expected = if request.path == "/api/reissue" {
-        "POST"
-    } else {
+    let expected = if request.path == "/api/me" {
         "GET"
+    } else {
+        "POST"
     };
     if request.method != expected {
         return send(&mut stream, 405, r#"{"error":"не тот способ"}"#);
@@ -182,6 +199,16 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         // «строка просрочена» полезна только тому, кто подбирает.
         return send(&mut stream, 401, r#"{"error":"подпись не принята"}"#);
     };
+
+    if let Some(plan) = order_plan {
+        return match crate::open_order_for(shared, verified.user_id(), &plan, now) {
+            Ok(answer) => send(&mut stream, 200, &answer),
+            Err(error) => {
+                eprintln!("Счёт из кабинета: {error}");
+                send(&mut stream, 500, r#"{"error":"счёт не выставился"}"#)
+            }
+        };
+    }
 
     if request.path == "/api/reissue" {
         return match crate::reissue_for(&shared.panel, &shared.store, verified.user_id()) {

@@ -610,6 +610,17 @@ a.btn.off { opacity: 0.45; }
   <button class="btn ghost" data-act="close-sheet">Закрыть</button>
 </div>
 
+<!-- Счёт. Отдельным листом поверх тарифов: человек уже выбрал, и возвращать
+     его к выбору незачем, а «Закрыть» ведёт обратно на главную. -->
+<div class="sheet" id="bill">
+  <div class="grab"></div>
+  <h1 style="font-size:20px;margin-bottom:6px">К оплате</h1>
+  <div class="days" id="bill-sum" style="font-size:34px;margin:6px 0 2px">—</div>
+  <p class="sub" id="bill-note">Счёт готовится…</p>
+  <a class="btn primary" id="bill-pay" style="margin-top:16px">Оплатить</a>
+  <button class="btn ghost" data-act="close-bill">Закрыть</button>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -872,6 +883,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     if (act === 'plans')       { haptic(); return sheet(true); }
     if (act === 'close-sheet') return sheet(false);
+    if (act === 'close-bill')  { bill(false); return go('home', 0); }
     if (act === 'copy-sub')    return copy(state && state.subscriptionUrl, 'Ссылка на подписку');
     if (act === 'copy-ref')    return copy(state && state.referral && state.referral.link, 'Ваша ссылка');
 
@@ -940,21 +952,85 @@ document.addEventListener('DOMContentLoaded', function () {
       var bot = state && state.botUsername;
       if (!bot) return toast('Напишите в поддержку — выставим счёт');
       haptic();
-      tg && tg.openTelegramLink
-        ? tg.openTelegramLink('https://t.me/' + bot + '?start=' + el.dataset.buy)
-        : toast('Откройте бота, чтобы оплатить');
-      return;
+      return order(el.dataset.buy);
     }
   });
 
-  document.getElementById('sheet-bg').addEventListener('click', function () { sheet(false); });
+
+  /* Затемнение общее у обоих листов, поэтому нажатие по нему закрывает оба.
+     Иначе счёт остался бы висеть без затемнения под ним. */
+  document.getElementById('sheet-bg').addEventListener('click', function () {
+    sheet(false);
+    document.getElementById('bill').classList.remove('on');
+  });
+
+  function bill(open) {
+    document.getElementById('bill').classList.toggle('on', open);
+    document.getElementById('sheet-bg').classList.toggle('on', open);
+  }
+
+  /* Выставить счёт и показать сумму здесь же.
+
+     Раньше нажатие тарифа уводило в переписку с ботом, и человек оказывался
+     в двух местах сразу. Теперь счёт выставляет сервер по нашему запросу, а
+     кабинет показывает сумму и кнопку перевода.
+
+     Сумму считает сервер, и это не формальность: она уникальна среди
+     открытых счетов, по ней потом опознаётся платёж. Придуманная страницей
+     совпала бы с чужой или не совпала ни с чем. */
+  function order(plan) {
+    if (!plan) return;
+
+    sheet(false);
+    document.getElementById('bill-sum').textContent = '—';
+    document.getElementById('bill-note').textContent = 'Счёт готовится…';
+    document.getElementById('bill-pay').removeAttribute('href');
+    document.getElementById('bill-pay').classList.add('off');
+    bill(true);
+
+    fetch('/api/order/' + encodeURIComponent(plan), {
+      method: 'POST',
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+    }).then(function (r) {
+      if (!r.ok) throw new Error('счёт не выставился');
+      return r.json();
+    }).then(function (o) {
+      document.getElementById('bill-sum').textContent = o.label || '—';
+      var pay = document.getElementById('bill-pay');
+
+      if (!o.payUrl) {
+        document.getElementById('bill-note').textContent =
+          'Приём оплаты ещё настраивается — напишите в поддержку, и подписку выдадут вручную.';
+        return;
+      }
+
+      /* Сумму человек вводит сам: перевод по ссылке её не несёт. Поэтому она
+         названа дважды — крупно сверху и в строке под ней. */
+      document.getElementById('bill-note').textContent =
+        'Введите сумму ' + (o.label || '') + ' — до копейки, по ней я нахожу ваш платёж. ' +
+        'Счёт действует ' + (o.minutes || 20) + ' минут.';
+
+      pay.classList.remove('off');
+      pay.onclick = function () {
+        haptic();
+        openOut(o.payUrl);
+      };
+    }).catch(function () {
+      document.getElementById('bill-note').textContent =
+        'Счёт не выставился. Попробуйте ещё раз или напишите в поддержку.';
+    });
+  }
 
   /* Открыть тот раздел, который назвали снаружи.
 
      Кнопки в чате бота ведут не в переписку, а сюда: «Продлить» — сразу к
-     тарифам, «Подключить» — сразу к настройке. Раздел приходит в адресе
-     после решётки, потому что кнопка мини-приложения в Telegram несёт
-     обычную ссылку, и ничего, кроме неё, у нас нет.
+     тарифам, «Подключить» — сразу к настройке.
+
+     Раздел приходит в query-строке, а не после решётки. Сначала было
+     наоборот, и не работало: открывая мини-приложение, Telegram дописывает
+     в хеш свои параметры (tgWebAppData и прочие), и наш раздел оттуда
+     пропадал — все кнопки открывали главную. Хеш всё же читается следом,
+     на случай если кабинет открыли прямой ссылкой из браузера.
 
      Вызывается после первой отрисовки: тарифы и настройка показывают срок
      и ссылку, а до ответа сервера их ещё нет.
@@ -962,7 +1038,11 @@ document.addEventListener('DOMContentLoaded', function () {
      Незнакомое имя раздела — не ошибка: человек останется на главной. Это
      единственное разумное поведение для значения, пришедшего снаружи. */
   function route() {
-    var name = (location.hash || '').replace(/^#/, '');
+    var name = '';
+    try {
+      name = new URLSearchParams(location.search).get('s') || '';
+    } catch (e) { /* очень старый браузер — тогда только хеш */ }
+    if (!name) name = (location.hash || '').replace(/^#/, '');
     if (!name) return;
 
     if (name === 'plans')  return sheet(true);

@@ -449,7 +449,7 @@ mod web_app_tests {
         let markup = inline_markup(&keyboard);
 
         assert!(
-            markup.contains(r#""web_app":{"url":"https://gloria.example/#plans"}"#),
+            markup.contains(r#""web_app":{"url":"https://gloria.example/?s=plans"}"#),
             "получилось {markup}"
         );
         // Искать просто `"url"` бесполезно: он есть и внутри `web_app`.
@@ -461,6 +461,14 @@ mod web_app_tests {
         );
         assert!(!markup.contains("callback_data"));
     }
+}
+
+/// Экранирование для вставки в строку JSON.
+///
+/// Открыто наружу: тела JSON собирает не только этот крейт, а второе такое
+/// же экранирование рядом — это второе место, где однажды забудут кавычку.
+pub fn escape_json(value: &str) -> String {
+    json_string(value)
 }
 
 /// Экранирование для вставки в строку JSON.

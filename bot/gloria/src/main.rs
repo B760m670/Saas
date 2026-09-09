@@ -996,6 +996,79 @@ pub fn reissue(panel: &Panel, store: &mut Store, telegram_id: i64) -> Result<Str
     Ok(user.subscription_url)
 }
 
+/// Выставить счёт из кабинета и вернуть его описание страницей.
+///
+/// То же самое, что делает кнопка тарифа в чате, но без ухода в переписку:
+/// человек остаётся в кабинете, видит сумму и нажимает «Оплатить» там же.
+///
+/// Сумма считается **здесь**, а не на странице. Она уникальна среди открытых
+/// счетов, и по ней потом опознаётся платёж; придуманная клиентом совпала бы
+/// с чужой или не совпала ни с чем.
+///
+/// Замок базы берётся дважды и не держится на время похода в Telegram:
+/// извещение владельца идёт по сети, и ждать его всем остальным незачем.
+pub(crate) fn open_order_for(
+    shared: &api::Shared,
+    telegram_id: i64,
+    plan_id: &str,
+    now: i64,
+) -> Result<String, String> {
+    let Some(plan) = catalog::plan(plan_id) else {
+        return Err(format!("тарифа {plan_id} нет в витрине"));
+    };
+
+    let (order_id, amount) = {
+        let mut store = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?;
+
+        let taken = store
+            .taken_amounts(now, catalog::INVOICE_LIFETIME)
+            .map_err(|error| format!("занятые суммы: {error}"))?;
+
+        let amount = invoice::allocate(plan.price, &taken)
+            .map_err(|_| "сейчас слишком много открытых счетов".to_owned())?;
+
+        let order_id = format!("u{telegram_id}-{}-{now}", plan.id);
+        store
+            .open_order(&order_id, telegram_id, &plan.id, plan.days, amount, now)
+            .map_err(|error| format!("счёт: {error}"))?;
+
+        (order_id, amount)
+    };
+
+    // Владелец узнаёт о счёте сразу. Подтверждает оплату он, и счёт живёт
+    // двадцать минут: человек, заплативший и ждущий, за это время успевает
+    // решить, что его обманули.
+    if let Some(telegram) = &shared.telegram {
+        for admin in &shared.admins {
+            tell(
+                telegram,
+                *admin,
+                &format!(
+                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета)\n  подтвердить: /ok {}",
+                    atlas_bot::menu::price_label(amount),
+                    plan.title,
+                    amount.to_decimal(),
+                ),
+            );
+        }
+    }
+
+    let pay = match &shared.pay_link {
+        Some(url) => format!(r#""payUrl":"{}","#, atlas_tg::escape_json(url)),
+        None => String::new(),
+    };
+
+    Ok(format!(
+        r#"{{"amount":"{}","label":"{}",{pay}"minutes":{},"orderId":"{order_id}"}}"#,
+        amount.to_decimal(),
+        atlas_bot::menu::price_label(amount),
+        catalog::INVOICE_LIFETIME / 60,
+    ))
+}
+
 /// То же, что [`reissue`], но под общим замком базы — для мини-приложения.
 ///
 /// Замок держится только на записи результата, а не на походе в панель:

@@ -178,18 +178,29 @@ impl Button {
 
     /// Кнопка, открывающая кабинет на заданном разделе.
     ///
-    /// Раздел уходит в адрес после решётки: у кнопки мини-приложения нет
-    /// ничего, кроме ссылки, и передать им нечего больше. Разбирает его
-    /// `route()` в `site/index.html`.
+    /// Раздел уходит **в query-строку**, а не после решётки. Сначала было
+    /// наоборот, и не работало: открывая мини-приложение, Telegram дописывает
+    /// в хеш свои параметры (`tgWebAppData` и прочие), и наш раздел оттуда
+    /// пропадал. В их документации об этом не сказано; выяснилось это на
+    /// живом телефоне — все кнопки открывали главную.
+    ///
+    /// Query-строку Telegram не трогает, поэтому раздел до страницы доезжает.
+    /// Разбирает его `route()` в `site/index.html`.
     pub fn app(label: impl Into<String>, base: &str, section: &str) -> Self {
         let base = base.trim_end_matches('#');
+
+        let url = if section.is_empty() {
+            base.to_owned()
+        } else {
+            // У адреса уже может быть свой вопросительный знак — например,
+            // если кабинет выложен с параметром версии.
+            let sep = if base.contains('?') { '&' } else { '?' };
+            format!("{base}{sep}s={section}")
+        };
+
         Self {
             label: label.into(),
-            press: Press::App(if section.is_empty() {
-                base.to_owned()
-            } else {
-                format!("{base}#{section}")
-            }),
+            press: Press::App(url),
         }
     }
 
@@ -538,13 +549,25 @@ mod tests {
         assert_eq!(before, seen.len(), "два раздела совпали: {seen:?}");
     }
 
-    /// Решётка в адресе не должна удваиваться: `.../#` плюс `#plans` дало бы
-    /// `.../##plans`, и раздел не нашёлся бы.
+    /// Раздел уходит в query-строку, а не в хеш: хеш Telegram затирает
+    /// своими параметрами, и раздел до страницы не доезжает.
     #[test]
-    fn a_base_ending_with_a_hash_does_not_double_it() {
-        let button = Button::app("Продлить", "https://gloria.example/#", "plans");
+    fn the_section_goes_into_the_query_not_the_hash() {
+        let button = Button::app("Продлить", APP, "plans");
         assert!(
-            matches!(&button.press, Press::App(url) if url == "https://gloria.example/#plans"),
+            matches!(&button.press, Press::App(url) if url == "https://gloria.example/?s=plans"),
+            "получилось {:?}",
+            button.press
+        );
+    }
+
+    /// У адреса может быть свой вопросительный знак — тогда раздел
+    /// дописывается через «&», иначе получился бы второй «?».
+    #[test]
+    fn an_address_that_already_has_a_query_gets_an_ampersand() {
+        let button = Button::app("Продлить", "https://gloria.example/?v=7", "plans");
+        assert!(
+            matches!(&button.press, Press::App(url) if url == "https://gloria.example/?v=7&s=plans"),
             "получилось {:?}",
             button.press
         );
