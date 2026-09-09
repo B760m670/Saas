@@ -161,7 +161,12 @@ pub struct Button {
 }
 
 impl Button {
-    fn new(label: impl Into<String>, action: Action) -> Self {
+    /// Кнопка-действие: нажатие вернётся боту перепиской.
+    ///
+    /// Открыта наружу вместе с [`Button::link`] и [`Button::app`]: клавиатуру
+    /// собирает не только этот крейт — напоминания об окончании подписки
+    /// строит `gloria`, и кнопка «Продлить» нужна ему такой же.
+    pub fn new(label: impl Into<String>, action: Action) -> Self {
         Self {
             label: label.into(),
             press: Press::Act(action),

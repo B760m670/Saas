@@ -263,6 +263,17 @@ fn remind(deps: &Deps<'_>, store: &mut Store) {
         }
     };
 
+    // Одна кнопка на все три сообщения: с кабинетом она ведёт прямо к
+    // тарифам, без него — открывает их же перепиской.
+    let renew = match &deps.config.miniapp_url {
+        Some(base) => Keyboard {
+            rows: vec![vec![Button::app("Продлить", base, "plans")]],
+        },
+        None => Keyboard {
+            rows: vec![vec![Button::new("Продлить", Action::Plans)]],
+        },
+    };
+
     for item in due {
         let Some(text) = reminder_text(&item) else {
             // Вид из базы, которого мы не знаем. Молча пропускаем: гадать,
@@ -271,7 +282,7 @@ fn remind(deps: &Deps<'_>, store: &mut Store) {
             continue;
         };
 
-        tell(deps.telegram, item.telegram_id, &text);
+        tell_with(deps.telegram, item.telegram_id, &text, Some(&renew));
 
         if let Err(error) = store.mark_reminded(item.telegram_id, &item.kind, item.expires_at) {
             eprintln!("Отметка напоминания для {}: {error}", item.telegram_id);
@@ -281,31 +292,23 @@ fn remind(deps: &Deps<'_>, store: &mut Store) {
 
 /// Что написать человеку. `None` — вид напоминания нам неизвестен.
 ///
-/// Тексты короткие и без уговоров. Человек и так знает, чем пользуется;
-/// задача сообщения — назвать дату и не заставлять искать, где продлить.
+/// Одна строка на сообщение. Человек знает, чем пользуется, и объяснять
+/// ему здесь, что оплаченные дни прибавляются к оставшимся, незачем: он про
+/// них не думал, пока мы не начали рассказывать.
+///
+/// Что делать, говорит кнопка, а не текст. Раньше в каждом стояло
+/// «продлите» — совет без единого способа им воспользоваться.
+///
+/// «Сегодня» и «завтра» не используются: окна отмерены сутками, а не
+/// календарными днями, и часового пояса человека мы не знаем. Названная
+/// дата верна при любом поясе.
 fn reminder_text(item: &Reminder) -> Option<String> {
     let until = day_month_year(item.expires_at);
 
     Some(match item.kind.as_str() {
-        "before_3d" => format!(
-            "Подписка заканчивается {until} — через три дня.\n\n\
-             Продлите заранее, и перерыва не будет: оплаченные дни \
-             прибавляются к оставшимся, а не начинаются заново."
-        ),
-
-        // «Сегодня» здесь было бы неправдой: окно — это последние сутки до
-        // окончания, а не календарный день, и часового пояса человека мы не
-        // знаем. Дата с оговоркой точна при любом поясе.
-        "last_day" => format!(
-            "Подписка заканчивается {until} — меньше чем через сутки.\n\n\
-             Продлите сейчас, и перерыва не будет: ключ прежний, \
-             перенастраивать ничего не нужно."
-        ),
-        "after_3d" => "Прошло три дня без подписки.\n\n\
-             Если сервис не подошёл — напишите, что было не так: \
-             это полезнее любого отзыва. А если просто забыли, \
-             продлить можно в один шаг."
-            .to_owned(),
+        "before_3d" => format!("Подписка заканчивается {until} — через три дня."),
+        "last_day" => format!("Подписка заканчивается {until}, меньше чем через сутки."),
+        "after_3d" => format!("Подписка закончилась {until}."),
         _ => return None,
     })
 }
@@ -1273,7 +1276,12 @@ fn unix_now() -> i64 {
 /// подписка уже продлена, деньги уже зачислены. Не дошло — строка в
 /// журнал, а не откат.
 fn tell(telegram: &Telegram, chat_id: i64, text: &str) {
-    match telegram.send_message(chat_id, text, None) {
+    tell_with(telegram, chat_id, text, None);
+}
+
+/// То же, но с кнопками под сообщением.
+fn tell_with(telegram: &Telegram, chat_id: i64, text: &str, keyboard: Option<&Keyboard>) {
+    match telegram.send_message(chat_id, text, keyboard) {
         Ok(request) => {
             if let Err(error) = http::send(&request) {
                 eprintln!(
