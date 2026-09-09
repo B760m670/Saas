@@ -516,12 +516,6 @@ a.btn.off { opacity: 0.45; }
   <p class="sub" id="set-id">—</p>
 
   <h2>Уведомления</h2>
-  <div class="row" data-act="toggle-notify" role="button" tabindex="0">
-    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
-    <span class="body"><span class="title">Напоминать об окончании</span><span class="hint">За 3 дня и в день окончания</span></span>
-    <span class="switch on" id="sw-notify"></span>
-  </div>
-
   <h2>Подписка</h2>
   <button class="row" data-act="reissue">
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 0 1 15.5-6.2M21 12a9 9 0 0 1-15.5 6.2"/><path d="M18 3v5h-5M6 21v-5h5"/></svg>
@@ -628,7 +622,6 @@ a.btn.off { opacity: 0.45; }
      GET  /api/me       → состояние подписки, рефералы, настройки
      POST /api/trial    → включить пробный период
      POST /api/reissue  → перевыпустить ссылку
-     POST /api/settings → сохранить настройки
    Подлинность запроса сервер проверяет по initData (core/atlas-telegram).
    Ни один экран не решает ничего сам: всё, что показано, приходит с сервера. */
 document.addEventListener('DOMContentLoaded', function () {
@@ -736,8 +729,6 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('renew').classList.toggle('primary', expired);
     document.getElementById('setup-btn').classList.toggle('primary', !expired);
 
-    var notify = !s.settings || s.settings.notify !== false;
-    document.getElementById('sw-notify').classList.toggle('on', notify);
   }
 
   function copy(text, what) {
@@ -901,13 +892,6 @@ document.addEventListener('DOMContentLoaded', function () {
       return window.open(SUPPORT, '_blank');
     }
 
-    if (act === 'toggle-notify') {
-      var sw = document.getElementById('sw-notify');
-      sw.classList.toggle('on');
-      haptic('light');
-      return toast(sw.classList.contains('on') ? 'Напоминания включены' : 'Напоминания выключены');
-    }
-
     if (act === 'setup') { haptic(); return setup('where'); }
     if (act === 'step')  { haptic('select'); return setup(el.dataset.to, el.dataset.app); }
     if (act === 'back')  { haptic('select'); return back(); }
@@ -1062,7 +1046,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }).catch(function () {
     /* Сервер не ответил. Выдуманные числа на их месте выглядели бы как
        настоящие, поэтому здесь пусто: прочерки и погашенные кнопки. */
-    return { status: null, subscriptionUrl: null, referral: {}, settings: {} };
+    return { status: null, subscriptionUrl: null, referral: {} };
   }).then(function (data) {
     state = data;
     render();

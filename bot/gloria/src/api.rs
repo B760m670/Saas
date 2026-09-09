@@ -565,7 +565,6 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
             "paying": 0,
             "bonusDays": 0,
         },
-        "settings": { "notify": true },
     })
     .to_string())
 }

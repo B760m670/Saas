@@ -674,3 +674,97 @@ fn a_date_in_the_past_never_enters_the_queue() {
         Some(0)
     );
 }
+
+/// Напоминание за три дня — самый дешёвый способ продлить подписку: человек
+/// просто забывает. Проверяем, что оно вообще попадает в очередь и что не
+/// попадает дважды.
+#[test]
+fn a_reminder_is_due_once_and_then_marked() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 30, NOW) else {
+        return;
+    };
+
+    // За трое суток до окончания.
+    let moment = expires_at - 2 * DAY;
+    let Ok(due) = store.due_reminders(moment, 10) else {
+        return;
+    };
+    assert_eq!(due.len(), 1, "ждали одно напоминание, получили {due:?}");
+    assert!(
+        due.iter()
+            .any(|r| r.kind == "before_3d" && r.expires_at == expires_at),
+        "не то напоминание: {due:?}"
+    );
+
+    let Ok(()) = store.mark_reminded(42, "before_3d", expires_at) else {
+        return;
+    };
+    assert_eq!(
+        store.due_reminders(moment, 10).map(|d| d.len()).ok(),
+        Some(0)
+    );
+
+    // Повторная отметка не должна падать: два круга могут пересечься.
+    assert!(store.mark_reminded(42, "before_3d", expires_at).is_ok());
+}
+
+/// Продливший подписку получает новый набор напоминаний, а не молчание
+/// из-за отметки от прошлого срока. Дата входит в ключ ровно поэтому.
+#[test]
+fn extending_the_subscription_starts_a_new_set_of_reminders() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 3, NOW) else {
+        return;
+    };
+    let Ok(()) = store.mark_reminded(42, "before_3d", expires_at) else {
+        return;
+    };
+
+    // Оплата продлевает срок — и прежняя отметка к нему уже не относится.
+    let Ok(()) = store.open_order("u42-d30-1", 42, "d30", 30, rub(19_899), NOW) else {
+        return;
+    };
+    let Ok(Settled::Extended { expires_at: longer }) =
+        store.settle("u42-d30-1", "manual", "ref-1", rub(19_899), "{}", NOW)
+    else {
+        return;
+    };
+
+    let Ok(due) = store.due_reminders(longer - 2 * DAY, 10) else {
+        return;
+    };
+    assert!(
+        due.iter()
+            .any(|r| r.kind == "before_3d" && r.expires_at == longer),
+        "после продления напоминание не появилось: {due:?}"
+    );
+}
+
+/// Нижняя граница окон — не мелочь. Без неё первый же круг после выкладки
+/// разослал бы «ваша подписка истекла» всем, кто уходил хоть год назад.
+#[test]
+fn a_long_expired_subscription_is_not_reminded_about() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 3, NOW) else {
+        return;
+    };
+
+    assert_eq!(
+        store
+            .due_reminders(expires_at + 30 * DAY, 10)
+            .map(|d| d.len())
+            .ok(),
+        Some(0),
+        "напомнили тому, кто ушёл месяц назад"
+    );
+}

@@ -95,6 +95,18 @@ pub struct PanelWork {
     pub expires_at: i64,
 }
 
+/// Кому и о чём пора напомнить.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reminder {
+    /// Кому.
+    pub telegram_id: i64,
+    /// Какое из трёх: `before_3d`, `on_expiry`, `after_3d`.
+    pub kind: String,
+    /// К какому сроку относится. Входит в отметку об отправке: продливший
+    /// человек получает новый набор напоминаний, а не молчание.
+    pub expires_at: i64,
+}
+
 /// Чем кончилась попытка выдать пробу.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trial {
@@ -320,6 +332,93 @@ impl Store {
                     panel_expires_at = to_timestamp($2::bigint)
               WHERE telegram_id = $1",
             &[&telegram_id, &expires_at],
+        )?;
+        Ok(())
+    }
+
+    /// Кому пора напомнить об окончании подписки.
+    ///
+    /// Три вида, и у каждого своё окно:
+    ///
+    /// | Вид | Когда |
+    /// |---|---|
+    /// | `before_3d` | срок наступит в ближайшие трое суток |
+    /// | `on_expiry` | срок истёк, но меньше суток назад |
+    /// | `after_3d`  | истёк от трёх до четырёх суток назад |
+    ///
+    /// **Окна ограничены с обеих сторон** намеренно. Без нижней границы
+    /// первый же круг после выкладки разослал бы «ваша подписка истекла»
+    /// всем, кто когда-либо уходил, — годовой давности в том числе.
+    ///
+    /// Уже отправленное отсеивается по `reminders_sent`, причём вместе с
+    /// датой окончания: продливший подписку получает новый набор
+    /// напоминаний, а не молчание из-за отметки от прошлого срока.
+    ///
+    /// О времени суток отдельно: тревожить человека ночью не хочется, и
+    /// здесь этого не происходит само собой. Дата окончания — это момент
+    /// покупки плюс срок, а окна открываются ровно за трое суток и ровно в
+    /// момент истечения, то есть в тот же час, когда человек когда-то
+    /// покупал. Час покупки обычно не ночной.
+    pub fn due_reminders(&mut self, now: i64, limit: i64) -> Result<Vec<Reminder>, Error> {
+        let rows = self.client.query(
+            "SELECT u.telegram_id,
+                    k.kind,
+                    FLOOR(EXTRACT(EPOCH FROM u.expires_at))::bigint
+               FROM users u
+               CROSS JOIN (VALUES ('before_3d'), ('on_expiry'), ('after_3d')) AS k(kind)
+              WHERE u.expires_at IS NOT NULL
+                AND CASE k.kind
+                      WHEN 'before_3d' THEN
+                           u.expires_at >  to_timestamp($1::bigint)
+                       AND u.expires_at <= to_timestamp($1::bigint) + interval '3 days'
+                      WHEN 'on_expiry' THEN
+                           u.expires_at <= to_timestamp($1::bigint)
+                       AND u.expires_at >  to_timestamp($1::bigint) - interval '1 day'
+                      ELSE
+                           u.expires_at <= to_timestamp($1::bigint) - interval '3 days'
+                       AND u.expires_at >  to_timestamp($1::bigint) - interval '4 days'
+                    END
+                AND NOT EXISTS (
+                      SELECT 1 FROM reminders_sent r
+                       WHERE r.telegram_id = u.telegram_id
+                         AND r.kind = k.kind
+                         AND r.expires_at = u.expires_at)
+              ORDER BY u.telegram_id, k.kind
+              LIMIT $2",
+            &[&now, &limit],
+        )?;
+
+        rows.iter()
+            .map(|row| {
+                Ok(Reminder {
+                    telegram_id: row.try_get(0)?,
+                    kind: row.try_get(1)?,
+                    expires_at: row.try_get(2)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Запомнить, что напоминание отправлено.
+    ///
+    /// Ставится **после** отправки, а не до. Не дошло сообщение — отметки
+    /// нет, и следующий круг попробует снова. Обратный порядок терял бы
+    /// напоминание молча, а напоминание за три дня — самый дешёвый способ
+    /// продлить подписку: человек просто забывает.
+    ///
+    /// Повторная отметка не ошибка: ключ составной, и `ON CONFLICT` гасит
+    /// гонку между двумя кругами.
+    pub fn mark_reminded(
+        &mut self,
+        telegram_id: i64,
+        kind: &str,
+        expires_at: i64,
+    ) -> Result<(), Error> {
+        self.client.execute(
+            "INSERT INTO reminders_sent (telegram_id, kind, expires_at)
+             VALUES ($1, $2, to_timestamp($3::bigint))
+             ON CONFLICT DO NOTHING",
+            &[&telegram_id, &kind, &expires_at],
         )?;
         Ok(())
     }

@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, Wata, YooKassa};
 use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
-use atlas_store::{Settled, Store, Subscriber, Trial};
+use atlas_store::{Reminder, Settled, Store, Subscriber, Trial};
 use atlas_tg::{next_offset, Command, Incoming, Scope, Telegram};
 
 use config::Config;
@@ -172,6 +172,7 @@ fn run(deps: &Deps<'_>, store: &mut Store) {
         offset = next_offset(&batch, offset);
 
         sync_panel(deps.panel, store);
+        remind(deps, store);
     }
 }
 
@@ -234,6 +235,74 @@ fn announce(config: &Config, telegram: &Telegram) {
     if let Some(url) = &config.miniapp_url {
         tell("Кнопка меню", telegram.set_menu_button("Открыть VPN", url));
     }
+}
+
+/// Сколько напоминаний отправляем за круг.
+///
+/// Предел нужен по той же причине, что и у очереди панели: после долгого
+/// простоя накопившееся не должно превратиться в сотню запросов подряд,
+/// пока обновления Telegram не читаются.
+const REMIND_PER_ROUND: i64 = 20;
+
+/// Напомнить тем, у кого срок подходит или уже вышел.
+///
+/// Переключателя у этого нет и не будет. Напоминаний три за весь срок, и
+/// каждое — о собственной подписке человека, а не рассылка. «Не сообщайте
+/// мне, что подписка кончается» осознанно не выбирают, зато выключить
+/// случайно и остаться без предупреждения легко. Общий выключатель у
+/// человека и так есть: отключить звук боту или заблокировать его.
+///
+/// Отметка ставится **после** отправки. Не дошло — следующий круг
+/// попробует снова; обратный порядок терял бы напоминание молча.
+fn remind(deps: &Deps<'_>, store: &mut Store) {
+    let due = match store.due_reminders(unix_now(), REMIND_PER_ROUND) {
+        Ok(due) => due,
+        Err(error) => {
+            eprintln!("Напоминания: {error}");
+            return;
+        }
+    };
+
+    for item in due {
+        let Some(text) = reminder_text(&item) else {
+            // Вид из базы, которого мы не знаем. Молча пропускаем: гадать,
+            // что написать человеку, хуже, чем не написать ничего.
+            eprintln!("Напоминание {} неизвестного вида", item.kind);
+            continue;
+        };
+
+        tell(deps.telegram, item.telegram_id, &text);
+
+        if let Err(error) = store.mark_reminded(item.telegram_id, &item.kind, item.expires_at) {
+            eprintln!("Отметка напоминания для {}: {error}", item.telegram_id);
+        }
+    }
+}
+
+/// Что написать человеку. `None` — вид напоминания нам неизвестен.
+///
+/// Тексты короткие и без уговоров. Человек и так знает, чем пользуется;
+/// задача сообщения — назвать дату и не заставлять искать, где продлить.
+fn reminder_text(item: &Reminder) -> Option<String> {
+    let until = day_month_year(item.expires_at);
+
+    Some(match item.kind.as_str() {
+        "before_3d" => format!(
+            "Подписка заканчивается {until} — через три дня.\n\n\
+             Продлите заранее, и перерыва не будет: оплаченные дни \
+             прибавляются к оставшимся, а не начинаются заново."
+        ),
+        "on_expiry" => format!(
+            "Подписка закончилась сегодня, {until}. VPN больше не подключается.\n\n\
+             Продлите — ключ прежний, перенастраивать ничего не нужно."
+        ),
+        "after_3d" => "Прошло три дня без подписки.\n\n\
+             Если сервис не подошёл — напишите, что было не так: \
+             это полезнее любого отзыва. А если просто забыли, \
+             продлить можно в один шаг."
+            .to_owned(),
+        _ => return None,
+    })
 }
 
 /// Сколько человек за один круг увозим в панель.
