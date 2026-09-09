@@ -68,6 +68,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0002_panel_sync.sql"),
         "\n",
         include_str!("../../../db/migrations/0003_last_day_reminder.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0004_reminder_days.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -691,18 +693,18 @@ fn a_reminder_is_due_once_and_then_marked() {
     };
 
     // За трое суток до окончания.
-    let moment = expires_at - 2 * DAY;
+    let moment = expires_at - DAY;
     let Ok(due) = store.due_reminders(moment, 10) else {
         return;
     };
     assert_eq!(due.len(), 1, "ждали одно напоминание, получили {due:?}");
     assert!(
         due.iter()
-            .any(|r| r.kind == "before_3d" && r.expires_at == expires_at),
+            .any(|r| r.kind == "day_before" && r.expires_at == expires_at),
         "не то напоминание: {due:?}"
     );
 
-    let Ok(()) = store.mark_reminded(42, "before_3d", expires_at) else {
+    let Ok(()) = store.mark_reminded(42, "day_before", expires_at) else {
         return;
     };
     assert_eq!(
@@ -711,7 +713,7 @@ fn a_reminder_is_due_once_and_then_marked() {
     );
 
     // Повторная отметка не должна падать: два круга могут пересечься.
-    assert!(store.mark_reminded(42, "before_3d", expires_at).is_ok());
+    assert!(store.mark_reminded(42, "day_before", expires_at).is_ok());
 }
 
 /// Продливший подписку получает новый набор напоминаний, а не молчание
@@ -725,7 +727,7 @@ fn extending_the_subscription_starts_a_new_set_of_reminders() {
     let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 3, NOW) else {
         return;
     };
-    let Ok(()) = store.mark_reminded(42, "before_3d", expires_at) else {
+    let Ok(()) = store.mark_reminded(42, "day_before", expires_at) else {
         return;
     };
 
@@ -739,12 +741,12 @@ fn extending_the_subscription_starts_a_new_set_of_reminders() {
         return;
     };
 
-    let Ok(due) = store.due_reminders(longer - 2 * DAY, 10) else {
+    let Ok(due) = store.due_reminders(longer - DAY, 10) else {
         return;
     };
     assert!(
         due.iter()
-            .any(|r| r.kind == "before_3d" && r.expires_at == longer),
+            .any(|r| r.kind == "day_before" && r.expires_at == longer),
         "после продления напоминание не появилось: {due:?}"
     );
 }
@@ -785,11 +787,11 @@ fn the_last_reminder_arrives_before_the_subscription_ends() {
     };
 
     // За двенадцать часов до окончания — подписка ещё работает.
-    let Ok(due) = store.due_reminders(expires_at - DAY / 2, 10) else {
+    let Ok(due) = store.due_reminders(expires_at - 3600, 10) else {
         return;
     };
     assert!(
-        due.iter().any(|r| r.kind == "last_day"),
+        due.iter().any(|r| r.kind == "same_day"),
         "в последний день не напомнили: {due:?}"
     );
 
@@ -816,7 +818,7 @@ fn two_reminders_never_come_due_at_the_same_moment() {
         return;
     };
 
-    for hours_left in [1, 12, 23, 25, 47, 71] {
+    for hours_left in [1, 2, 12, 23, 24, 25, 30, 47] {
         let moment = expires_at - hours_left * 3600;
         let Ok(due) = store.due_reminders(moment, 10) else {
             return;
