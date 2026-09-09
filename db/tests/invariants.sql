@@ -115,17 +115,32 @@ UPDATE users SET invited_by = 1001 WHERE telegram_id = 1002;
 -- --- напоминания -----------------------------------------------------------
 
 INSERT INTO reminders_sent (telegram_id, kind, expires_at)
-VALUES (1001, 'before_3d', '2026-09-01T00:00:00Z');
+VALUES (1001, 'day_before', '2026-09-01T00:00:00Z');
 
 SELECT must_fail(
     $q$INSERT INTO reminders_sent (telegram_id, kind, expires_at)
-       VALUES (1001, 'before_3d', '2026-09-01T00:00:00Z')$q$,
+       VALUES (1001, 'day_before', '2026-09-01T00:00:00Z')$q$,
     'повторная отправка того же напоминания');
 
 -- Главное в этой таблице: после продления тот же вид напоминания обязан
 -- отправиться заново — уже к новому сроку.
 INSERT INTO reminders_sent (telegram_id, kind, expires_at)
-VALUES (1001, 'before_3d', '2026-12-01T00:00:00Z');
+VALUES (1001, 'day_before', '2026-12-01T00:00:00Z');
+
+-- Все три вида обязаны приниматься. Проверка стоит здесь потому, что уже
+-- подвела: виды переименовали в миграции, а этот файл остался с прежними
+-- именами — и «схема базы» упала не на самой схеме, а на своих же
+-- проверках.
+INSERT INTO reminders_sent (telegram_id, kind, expires_at)
+VALUES (1001, 'same_day', '2026-09-01T00:00:00Z'),
+       (1001, 'after_3d', '2026-09-01T00:00:00Z');
+
+-- А чужой вид не принимается: имена в схеме и в коде обязаны совпадать, и
+-- ограничение — единственное место, где это проверяется само.
+SELECT must_fail(
+    $q$INSERT INTO reminders_sent (telegram_id, kind, expires_at)
+       VALUES (1001, 'before_3d', '2026-09-01T00:00:00Z')$q$,
+    'напоминание неизвестного вида');
 
 -- --- записи не удаляются ---------------------------------------------------
 
