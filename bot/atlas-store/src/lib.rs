@@ -100,7 +100,7 @@ pub struct PanelWork {
 pub struct Reminder {
     /// Кому.
     pub telegram_id: i64,
-    /// Какое из трёх: `before_3d`, `on_expiry`, `after_3d`.
+    /// Какое из трёх: `before_3d`, `last_day`, `after_3d`.
     pub kind: String,
     /// К какому сроку относится. Входит в отметку об отправке: продливший
     /// человек получает новый набор напоминаний, а не молчание.
@@ -342,9 +342,13 @@ impl Store {
     ///
     /// | Вид | Когда |
     /// |---|---|
-    /// | `before_3d` | срок наступит в ближайшие трое суток |
-    /// | `on_expiry` | срок истёк, но меньше суток назад |
+    /// | `before_3d` | до окончания от одних до трёх суток |
+    /// | `last_day`  | до окончания меньше суток |
     /// | `after_3d`  | истёк от трёх до четырёх суток назад |
+    ///
+    /// **Окна не пересекаются**, и это не педантизм: человек, у которого до
+    /// конца остались часы, иначе получил бы два сообщения подряд — «через
+    /// три дня» и «меньше суток» разом.
     ///
     /// **Окна ограничены с обеих сторон** намеренно. Без нижней границы
     /// первый же круг после выкладки разослал бы «ваша подписка истекла»
@@ -354,26 +358,31 @@ impl Store {
     /// датой окончания: продливший подписку получает новый набор
     /// напоминаний, а не молчание из-за отметки от прошлого срока.
     ///
+    /// Ни одно из трёх не уходит **после** того, как VPN перестал
+    /// подключаться, кроме последнего. Сообщение об уже случившемся
+    /// рассказывает человеку то, что он и так заметил сам; предупреждение
+    /// до окончания — это возможность продлить без перерыва.
+    ///
     /// О времени суток отдельно: тревожить человека ночью не хочется, и
     /// здесь этого не происходит само собой. Дата окончания — это момент
-    /// покупки плюс срок, а окна открываются ровно за трое суток и ровно в
-    /// момент истечения, то есть в тот же час, когда человек когда-то
-    /// покупал. Час покупки обычно не ночной.
+    /// покупки плюс срок, а окна открываются за целое число суток до неё,
+    /// то есть в тот же час, когда человек когда-то покупал. Час покупки
+    /// обычно не ночной.
     pub fn due_reminders(&mut self, now: i64, limit: i64) -> Result<Vec<Reminder>, Error> {
         let rows = self.client.query(
             "SELECT u.telegram_id,
                     k.kind,
                     FLOOR(EXTRACT(EPOCH FROM u.expires_at))::bigint
                FROM users u
-               CROSS JOIN (VALUES ('before_3d'), ('on_expiry'), ('after_3d')) AS k(kind)
+               CROSS JOIN (VALUES ('before_3d'), ('last_day'), ('after_3d')) AS k(kind)
               WHERE u.expires_at IS NOT NULL
                 AND CASE k.kind
                       WHEN 'before_3d' THEN
-                           u.expires_at >  to_timestamp($1::bigint)
+                           u.expires_at >  to_timestamp($1::bigint) + interval '1 day'
                        AND u.expires_at <= to_timestamp($1::bigint) + interval '3 days'
-                      WHEN 'on_expiry' THEN
-                           u.expires_at <= to_timestamp($1::bigint)
-                       AND u.expires_at >  to_timestamp($1::bigint) - interval '1 day'
+                      WHEN 'last_day' THEN
+                           u.expires_at >  to_timestamp($1::bigint)
+                       AND u.expires_at <= to_timestamp($1::bigint) + interval '1 day'
                       ELSE
                            u.expires_at <= to_timestamp($1::bigint) - interval '3 days'
                        AND u.expires_at >  to_timestamp($1::bigint) - interval '4 days'

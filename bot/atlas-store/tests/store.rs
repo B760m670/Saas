@@ -66,6 +66,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0001_init.sql"),
         "\n",
         include_str!("../../../db/migrations/0002_panel_sync.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0003_last_day_reminder.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -767,4 +769,61 @@ fn a_long_expired_subscription_is_not_reminded_about() {
         Some(0),
         "напомнили тому, кто ушёл месяц назад"
     );
+}
+
+/// Последнее напоминание уходит, **пока подписка ещё действует**. Сообщение
+/// после того, как VPN перестал подключаться, рассказывает человеку то, что
+/// он и так только что заметил сам.
+#[test]
+fn the_last_reminder_arrives_before_the_subscription_ends() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 30, NOW) else {
+        return;
+    };
+
+    // За двенадцать часов до окончания — подписка ещё работает.
+    let Ok(due) = store.due_reminders(expires_at - DAY / 2, 10) else {
+        return;
+    };
+    assert!(
+        due.iter().any(|r| r.kind == "last_day"),
+        "в последний день не напомнили: {due:?}"
+    );
+
+    // А сразу после окончания напоминать уже не о чем: следующее — только
+    // через три дня.
+    let Ok(after) = store.due_reminders(expires_at + 60, 10) else {
+        return;
+    };
+    assert!(
+        after.is_empty(),
+        "написали человеку сразу после отключения: {after:?}"
+    );
+}
+
+/// Окна не пересекаются: у человека, которому осталось несколько часов, не
+/// должно прийти два сообщения подряд — «через три дня» и «меньше суток».
+#[test]
+fn two_reminders_never_come_due_at_the_same_moment() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 30, NOW) else {
+        return;
+    };
+
+    for hours_left in [1, 12, 23, 25, 47, 71] {
+        let moment = expires_at - hours_left * 3600;
+        let Ok(due) = store.due_reminders(moment, 10) else {
+            return;
+        };
+        assert!(
+            due.len() <= 1,
+            "за {hours_left} ч до конца пришло бы сразу несколько: {due:?}"
+        );
+    }
 }
