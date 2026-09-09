@@ -404,14 +404,19 @@ fn inline_markup(keyboard: &Keyboard) -> String {
             let buttons = row
                 .iter()
                 .map(|button| {
-                    // Кнопка-ссылка уводит человека наружу, и нажатие к нам
-                    // не возвращается вовсе. Поле у Telegram для этого
-                    // другое, и прислать оба он не даст.
+                    // Три разных поля, и Telegram не примет двух сразу.
+                    // Кнопка-ссылка уводит наружу, и нажатие к нам не
+                    // возвращается. Кнопка мини-приложения открывает кабинет
+                    // внутри Telegram — с подписью, по которой мы узнаём, кто
+                    // пришёл; обычная ссылка открылась бы браузером, без неё.
                     let press = match &button.press {
                         Press::Act(action) => {
                             format!(r#""callback_data":"{}""#, json_string(&action.encode()))
                         }
                         Press::Open(url) => format!(r#""url":"{}""#, json_string(url)),
+                        Press::App(url) => {
+                            format!(r#""web_app":{{"url":"{}"}}"#, json_string(url))
+                        }
                     };
                     format!(r#"{{"text":"{}",{press}}}"#, json_string(&button.label))
                 })
@@ -422,6 +427,40 @@ fn inline_markup(keyboard: &Keyboard) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(r#"{{"inline_keyboard":[{rows}]}}"#)
+}
+
+#[cfg(test)]
+mod web_app_tests {
+    use super::inline_markup;
+    use atlas_bot::{Button, Keyboard};
+
+    /// Кнопка мини-приложения уходит полем `web_app`, а не `url`. Через
+    /// `url` Telegram открыл бы кабинет браузером — без подписи, по которой
+    /// мы узнаём, кто пришёл, и без входа.
+    #[test]
+    fn an_app_button_goes_as_web_app() {
+        let keyboard = Keyboard {
+            rows: vec![vec![Button::app(
+                "Продлить",
+                "https://gloria.example/",
+                "plans",
+            )]],
+        };
+        let markup = inline_markup(&keyboard);
+
+        assert!(
+            markup.contains(r#""web_app":{"url":"https://gloria.example/#plans"}"#),
+            "получилось {markup}"
+        );
+        // Искать просто `"url"` бесполезно: он есть и внутри `web_app`.
+        // Обычная ссылка отличается тем, что поле лежит на верхнем уровне,
+        // сразу за подписью кнопки.
+        assert!(
+            !markup.contains(r#"","url":"#),
+            "адрес ушёл и как обычная ссылка: {markup}"
+        );
+        assert!(!markup.contains("callback_data"));
+    }
 }
 
 /// Экранирование для вставки в строку JSON.
@@ -650,7 +689,7 @@ mod tests {
     #[test]
     fn a_message_carries_its_keyboard() {
         let Some(telegram) = telegram() else { return };
-        let Ok(request) = telegram.send_message(42, "Подписка активна", Some(&main_menu()))
+        let Ok(request) = telegram.send_message(42, "Подписка активна", Some(&main_menu(None)))
         else {
             return;
         };
@@ -789,7 +828,7 @@ mod tests {
     /// нажимается, а бот молчит.
     #[test]
     fn what_goes_into_a_button_comes_back_understood() {
-        for button in main_menu().buttons() {
+        for button in main_menu(None).buttons() {
             let Some(action) = button.action() else {
                 continue;
             };

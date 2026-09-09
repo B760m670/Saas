@@ -232,7 +232,7 @@ fn announce(config: &Config, telegram: &Telegram) {
     // умолчанию Telegram показывает там список команд, и это лучше, чем
     // кнопка, ведущая в никуда.
     if let Some(url) = &config.miniapp_url {
-        tell("Кнопка меню", telegram.set_menu_button("Кабинет", url));
+        tell("Кнопка меню", telegram.set_menu_button("Открыть VPN", url));
     }
 }
 
@@ -582,6 +582,7 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         expires_at: subscriber.expires_at,
         trial_used: subscriber.trial_granted_at.is_some(),
         subscription_url: subscriber.subscription_url.as_deref(),
+        app_url: config.miniapp_url.as_deref(),
         now,
     };
 

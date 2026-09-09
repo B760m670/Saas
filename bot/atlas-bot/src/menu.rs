@@ -144,6 +144,13 @@ pub enum Press {
     Act(Action),
     /// Человек уйдёт по ссылке. Например, на страницу оплаты.
     Open(String),
+    /// Откроется мини-приложение — сразу на нужном разделе.
+    ///
+    /// Отличается от [`Press::Open`] не адресом, а тем, чем Telegram его
+    /// открывает: кабинет запускается внутри Telegram и получает подпись
+    /// (`initData`), по которой мы узнаём, кто пришёл. Обычная ссылка
+    /// открылась бы браузером, без подписи и без входа.
+    App(String),
 }
 
 /// Кнопка: что написано и что произойдёт.
@@ -169,12 +176,29 @@ impl Button {
         }
     }
 
-    /// Действие, если кнопка его несёт. У кнопки-ссылки его нет.
+    /// Кнопка, открывающая кабинет на заданном разделе.
+    ///
+    /// Раздел уходит в адрес после решётки: у кнопки мини-приложения нет
+    /// ничего, кроме ссылки, и передать им нечего больше. Разбирает его
+    /// `route()` в `site/index.html`.
+    pub fn app(label: impl Into<String>, base: &str, section: &str) -> Self {
+        let base = base.trim_end_matches('#');
+        Self {
+            label: label.into(),
+            press: Press::App(if section.is_empty() {
+                base.to_owned()
+            } else {
+                format!("{base}#{section}")
+            }),
+        }
+    }
+
+    /// Действие, если кнопка его несёт. У кнопок-ссылок его нет.
     #[must_use]
     pub fn action(&self) -> Option<&Action> {
         match &self.press {
             Press::Act(action) => Some(action),
-            Press::Open(_) => None,
+            Press::Open(_) | Press::App(_) => None,
         }
     }
 }
@@ -194,14 +218,35 @@ impl Keyboard {
 
 /// Главное меню. По кнопке в строке: на узком экране две в ряд слипаются,
 /// и промахнуться мимо нужной легче, чем кажется.
+///
+/// Когда адрес кабинета известен, все четыре ведут **в кабинет**, каждая в
+/// свой раздел. Переписка с ботом при этом не нужна: срок, тарифы,
+/// настройка и поддержка живут в одном месте, а не разбросаны между чатом
+/// и приложением. Второе место всегда отстаёт от первого — мы это уже
+/// проходили, когда кабинет показывал «Истекла» при работающем VPN.
+///
+/// Без адреса остаются прежние кнопки с перепиской. Это не запасной путь на
+/// всякий случай, а рабочее состояние: `GLORIA_MINIAPP_URL` необязателен, и
+/// бот без него обязан оставаться полезным.
 #[must_use]
-pub fn main_menu() -> Keyboard {
+pub fn main_menu(app: Option<&str>) -> Keyboard {
+    let Some(base) = app else {
+        return Keyboard {
+            rows: vec![
+                vec![Button::new("Моя подписка", Action::Subscription)],
+                vec![Button::new("Продлить", Action::Plans)],
+                vec![Button::new("Подключить", Action::Connect)],
+                vec![Button::new("Помощь", Action::Help)],
+            ],
+        };
+    };
+
     Keyboard {
         rows: vec![
-            vec![Button::new("Моя подписка", Action::Subscription)],
-            vec![Button::new("Продлить", Action::Plans)],
-            vec![Button::new("Подключить", Action::Connect)],
-            vec![Button::new("Помощь", Action::Help)],
+            vec![Button::app("Моя подписка", base, "")],
+            vec![Button::app("Продлить", base, "plans")],
+            vec![Button::app("Подключить", base, "setup")],
+            vec![Button::app("Помощь", base, "help")],
         ],
     }
 }
@@ -277,10 +322,13 @@ fn symbol(amount: Money) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_menu, main_menu, plan_label, plans_menu, price_label, Action, Device, Keyboard,
-        Unknown, CALLBACK_LIMIT,
+        connect_menu, main_menu, plan_label, plans_menu, price_label, Action, Button, Device,
+        Keyboard, Press, Unknown, CALLBACK_LIMIT,
     };
     use atlas_billing::{Currency, Money, Plan};
+
+    /// Адрес кабинета в тестах. Настоящий берётся из настроек.
+    const APP: &str = "https://gloria.example/";
 
     fn plan(id: &str, title: &str, days: u32, rubles: u64) -> Option<Plan> {
         Some(Plan {
@@ -304,7 +352,12 @@ mod tests {
         let Some(base) = base() else {
             return Vec::new();
         };
-        vec![main_menu(), connect_menu(), plans_menu(&showcase(), base)]
+        vec![
+            main_menu(None),
+            main_menu(Some(APP)),
+            connect_menu(),
+            plans_menu(&showcase(), base),
+        ]
     }
 
     /// Кнопка с полем длиннее 64 байт не уходит к покупателю вовсе, и
@@ -450,9 +503,66 @@ mod tests {
     /// оно и есть верх.
     #[test]
     fn the_main_menu_has_no_way_back() {
-        assert!(!main_menu()
+        for menu in [main_menu(None), main_menu(Some(APP))] {
+            assert!(!menu.buttons().any(|b| b.action() == Some(&Action::Home)));
+        }
+    }
+
+    /// Когда адрес кабинета известен, все кнопки главного меню ведут в
+    /// него — и ни одна не возвращается боту перепиской.
+    #[test]
+    fn with_an_app_the_main_menu_leads_only_into_it() {
+        let menu = main_menu(Some(APP));
+        assert!(
+            menu.buttons().all(|b| matches!(b.press, Press::App(_))),
+            "в меню осталась кнопка, ведущая в переписку"
+        );
+        assert!(menu.buttons().all(|b| b.action().is_none()));
+    }
+
+    /// Каждая ведёт в **свой** раздел, а не все на главную: иначе человек,
+    /// нажавший «Продлить», окажется там же, где нажавший «Помощь».
+    #[test]
+    fn each_button_opens_its_own_section() {
+        let menu = main_menu(Some(APP));
+        let mut seen: Vec<&str> = menu
             .buttons()
-            .any(|b| b.action() == Some(&Action::Home)));
+            .filter_map(|b| match &b.press {
+                Press::App(url) => Some(url.as_str()),
+                _ => None,
+            })
+            .collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(before, seen.len(), "два раздела совпали: {seen:?}");
+    }
+
+    /// Решётка в адресе не должна удваиваться: `.../#` плюс `#plans` дало бы
+    /// `.../##plans`, и раздел не нашёлся бы.
+    #[test]
+    fn a_base_ending_with_a_hash_does_not_double_it() {
+        let button = Button::app("Продлить", "https://gloria.example/#", "plans");
+        assert!(
+            matches!(&button.press, Press::App(url) if url == "https://gloria.example/#plans"),
+            "получилось {:?}",
+            button.press
+        );
+    }
+
+    /// Пустой раздел — это главная, и лишней решётки в адресе быть не должно.
+    #[test]
+    fn an_empty_section_leaves_the_address_alone() {
+        let button = Button::app("Моя подписка", APP, "");
+        assert!(matches!(&button.press, Press::App(url) if url == APP));
+    }
+
+    /// Без адреса кабинета остаются прежние кнопки с перепиской: переменная
+    /// необязательна, и бот без неё обязан оставаться полезным.
+    #[test]
+    fn without_an_app_the_menu_still_talks_to_the_bot() {
+        let menu = main_menu(None);
+        assert!(menu.buttons().all(|b| b.action().is_some()));
     }
 
     #[test]

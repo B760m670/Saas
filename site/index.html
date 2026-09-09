@@ -357,7 +357,7 @@ a.btn.off { opacity: 0.45; }
     <div class="until" id="st-until">загружаем…</div>
     <div style="margin-top:14px"><span class="badge warn" id="st-badge">проверяем</span></div>
     <div class="chips">
-      <span class="chip" id="st-devices">— из 4 устройств</span>
+      <span class="chip" id="st-devices">— из 3 устройств</span>
       <span class="chip">Безлимитный трафик</span>
     </div>
     <button class="btn" id="renew" data-act="plans" style="margin-top:18px">Продлить</button>
@@ -692,9 +692,10 @@ document.addEventListener('DOMContentLoaded', function () {
       : (s.status === 'expired' ? 'Не активна' : 'Активна');
 
     /* Сколько устройств занято, знает панель, а не бот. Пока он этого не
-       спрашивает, честнее сказать «до четырёх», чем «0 из 4» тому, у кого
-       их два. */
-    var limit = s.deviceLimit || 4;
+       спрашивает, честнее сказать «до трёх», чем «0 из 3» тому, у кого их
+       два. Запасное число обязано совпадать с `catalog::DEVICES`: оно
+       показывается, когда сервер не ответил, и разойдясь — соврёт. */
+    var limit = s.deviceLimit || 3;
     var word = plural(limit, 'устройства', 'устройств', 'устройств');
     document.getElementById('st-devices').textContent =
       s.devices == null ? 'до ' + limit + ' ' + word
@@ -948,6 +949,29 @@ document.addEventListener('DOMContentLoaded', function () {
 
   document.getElementById('sheet-bg').addEventListener('click', function () { sheet(false); });
 
+  /* Открыть тот раздел, который назвали снаружи.
+
+     Кнопки в чате бота ведут не в переписку, а сюда: «Продлить» — сразу к
+     тарифам, «Подключить» — сразу к настройке. Раздел приходит в адресе
+     после решётки, потому что кнопка мини-приложения в Telegram несёт
+     обычную ссылку, и ничего, кроме неё, у нас нет.
+
+     Вызывается после первой отрисовки: тарифы и настройка показывают срок
+     и ссылку, а до ответа сервера их ещё нет.
+
+     Незнакомое имя раздела — не ошибка: человек останется на главной. Это
+     единственное разумное поведение для значения, пришедшего снаружи. */
+  function route() {
+    var name = (location.hash || '').replace(/^#/, '');
+    if (!name) return;
+
+    if (name === 'plans')  return sheet(true);
+    if (name === 'setup')  return setup('where');
+    if (name === 'help')   return go('help');
+    if (name === 'ref')    return go('ref');
+    if (name === 'set')    return go('set');
+  }
+
   /* Состояние. Пока сервера нет — заглушка с видимым предупреждением: без
      него легко принять придуманные числа за настоящие и удивиться позже. */
   fetch('/api/me', {
@@ -962,6 +986,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }).then(function (data) {
     state = data;
     render();
+    route();
   });
 });
 </script>

@@ -12,7 +12,7 @@
 use atlas_billing::subscription;
 
 use crate::catalog;
-use crate::menu::{connect_menu, main_menu, plans_menu, Action, Device, Keyboard};
+use crate::menu::{connect_menu, main_menu, plans_menu, Action, Button, Device, Keyboard};
 
 /// Что бот собирается сделать помимо ответа.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +43,8 @@ pub struct View<'a> {
     pub trial_used: bool,
     /// Ссылка на подписку, если она уже выдана.
     pub subscription_url: Option<&'a str>,
+    /// Адрес кабинета. Есть — кнопки ведут в него, а не в переписку.
+    pub app_url: Option<&'a str>,
     /// Текущий момент.
     pub now: i64,
 }
@@ -117,7 +119,7 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
                     catalog::TRIAL_DAYS,
                     plural(i64::from(catalog::TRIAL_DAYS), "день", "дня", "дней")
                 ),
-                keyboard: Some(main_menu()),
+                keyboard: Some(main_menu(view.app_url)),
             },
             Effect::GrantTrial,
         ),
@@ -128,11 +130,11 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
         // Раньше `/help` показывал экран подписки: команда есть, а помощи
         // по ней нет — худший вид обещания.
         "/connect" => (connect_screen(view), Effect::None),
-        "/help" => (help_screen(), Effect::None),
+        "/help" => (help_screen(view), Effect::None),
         _ => (
             Reply {
                 text: "Не понял. Вот что я умею:".to_owned(),
-                keyboard: Some(main_menu()),
+                keyboard: Some(main_menu(view.app_url)),
             },
             Effect::None,
         ),
@@ -147,7 +149,7 @@ pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
         Action::Plans => (plans_screen(), Effect::None),
         Action::Connect => (connect_screen(view), Effect::None),
         Action::ConnectTo(device) => (device_screen(*device, view), Effect::None),
-        Action::Help => (help_screen(), Effect::None),
+        Action::Help => (help_screen(view), Effect::None),
         Action::Buy(plan) => buy(plan),
     }
 }
@@ -165,17 +167,20 @@ fn subscription_screen(view: &View<'_>) -> Reply {
         "Подписки пока нет.".to_owned()
     };
 
-    // Ссылка показывается всегда, а не только при действующей подписке:
-    // человек, у которого она уже вставлена в приложение, не должен искать
-    // её заново (docs/14-bot.md §7).
-    let link = match view.subscription_url {
-        Some(url) => format!("\n\nВаша ссылка — одна на все устройства:\n<code>{url}</code>"),
-        None => String::new(),
+    // Ссылка нужна в переписке ровно до тех пор, пока её негде показать
+    // иначе. Есть кабинет — она живёт там, вместе с кнопкой «скопировать» и
+    // переходом прямо в приложение. Дублировать её в чат значит завести
+    // второе место для одного и того же; второе всегда отстаёт от первого.
+    let link = match (view.app_url, view.subscription_url) {
+        (None, Some(url)) => {
+            format!("\n\nВаша ссылка — одна на все устройства:\n<code>{url}</code>")
+        }
+        _ => String::new(),
     };
 
     Reply {
         text: format!("{head}{link}"),
-        keyboard: Some(main_menu()),
+        keyboard: Some(main_menu(view.app_url)),
     }
 }
 
@@ -189,6 +194,19 @@ fn plans_screen() -> Reply {
 }
 
 fn connect_screen(view: &View<'_>) -> Reply {
+    // Есть кабинет — настройка живёт там: мастер по шагам, кнопка перехода
+    // прямо в приложение и ссылка рядом. Повторять это переписке нечем.
+    if let Some(base) = view.app_url {
+        return Reply {
+            text: "Настройка занимает минуту: выберите устройство, \
+                   установите приложение и подтвердите."
+                .to_owned(),
+            keyboard: Some(Keyboard {
+                rows: vec![vec![Button::app("Настроить", base, "setup")]],
+            }),
+        };
+    }
+
     let text = match view.subscription_url {
         Some(url) => format!("Выберите устройство. Ссылка одна на все:\n<code>{url}</code>"),
         None => "Выберите устройство.".to_owned(),
@@ -226,14 +244,14 @@ fn device_screen(device: Device, view: &View<'_>) -> Reply {
     }
 }
 
-fn help_screen() -> Reply {
+fn help_screen(view: &View<'_>) -> Reply {
     Reply {
         text: "Напишите @GloriaVPNSupport — отвечает человек.\n\n\
                Частое: во время региональных ограничений мобильного интернета \
                не работает ни один VPN, включая наш, — ограничение стоит в сети \
                оператора. Дома по Wi-Fi и на проводном всё продолжает работать."
             .to_owned(),
-        keyboard: Some(main_menu()),
+        keyboard: Some(main_menu(view.app_url)),
     }
 }
 
@@ -276,6 +294,7 @@ mod tests {
             expires_at: None,
             trial_used: false,
             subscription_url: None,
+            app_url: None,
             now: NOW,
         }
     }
@@ -285,6 +304,7 @@ mod tests {
             expires_at: Some(NOW + 10 * DAY),
             trial_used: true,
             subscription_url: Some(LINK),
+            app_url: None,
             now: NOW,
         }
     }
@@ -294,6 +314,7 @@ mod tests {
             expires_at: Some(NOW - DAY),
             trial_used: true,
             subscription_url: Some(LINK),
+            app_url: None,
             now: NOW,
         }
     }
@@ -550,6 +571,7 @@ mod tests {
             expires_at: Some(NOW + DAY + DAY / 2),
             trial_used: true,
             subscription_url: None,
+            app_url: None,
             now: NOW,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -566,6 +588,7 @@ mod tests {
             expires_at: Some(granted_at + 3 * DAY),
             trial_used: true,
             subscription_url: None,
+            app_url: None,
             now: granted_at + 10 * 60,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -581,6 +604,7 @@ mod tests {
             expires_at: Some(NOW + 1800),
             trial_used: true,
             subscription_url: None,
+            app_url: None,
             now: NOW,
         };
         assert!(view.is_active());
