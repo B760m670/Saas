@@ -1005,7 +1005,7 @@ fn admin(
         "/revoke" => {
             let Some(who) = parts.next().and_then(|w| w.parse::<i64>().ok()) else {
                 return Ok(Some(
-                    "Укажите номер: <code>/revoke 123456789</code>".to_owned(),
+                    "Укажите номер: <code>/revoke</code> <i>номер</i>".to_owned(),
                 ));
             };
 
@@ -1026,13 +1026,20 @@ fn admin(
             Ok(Some(format!("Перевыпущено для {who}.")))
         }
 
+        // Числа в подсказках намеренно заменены на «сумма» и «номер».
+        // Пример вида «/ok 198.99» выглядит как настоящая сумма и является
+        // ею: первый счёт по месячному тарифу получает ровно этот хвост,
+        // `allocate` берёт ближайший свободный. Скопированный из подсказки
+        // пример закрывает чужой живой счёт — так и вышло на первом же
+        // настоящем подтверждении.
         "/ok" => {
             let Some(sum) = parts.next() else {
                 return Ok(Some(
                     "Укажите сумму — ту, что пришла в банк:\n\n\
-                     <code>/ok 198.97</code>\n\
-                     <code>/ok 199 8870255420</code> — если сумма не сошлась\n\n\
-                     Готовые команды есть в /pending, их можно нажать и скопировать."
+                     <code>/ok</code> <i>сумма</i>\n\
+                     <code>/ok</code> <i>сумма номер</i> — если сумма не сошлась\n\n\
+                     Готовые команды с настоящими числами есть в /pending: \
+                     нажатие по ним копирует строку целиком."
                         .to_owned(),
                 ));
             };
@@ -1040,7 +1047,8 @@ fn admin(
                 atlas_billing::Money::parse_decimal(sum, atlas_billing::Currency::Rub)
             else {
                 return Ok(Some(
-                    "Сумма не разобралась. Пример: <code>/ok 198.97</code>".to_owned(),
+                    "Сумма не разобралась. Ожидается число: <code>/ok</code> <i>сумма</i>"
+                        .to_owned(),
                 ));
             };
 
@@ -1053,7 +1061,9 @@ fn admin(
             if let Some(who) = who {
                 let Some(who) = who.parse::<i64>().ok() else {
                     return Ok(Some(
-                        "Номер не разобрался. Пример: <code>/ok 200 123456789</code>".to_owned(),
+                        "Номер не разобрался. Ожидается число: \
+                         <code>/ok</code> <i>сумма номер</i>"
+                            .to_owned(),
                     ));
                 };
 
@@ -1264,9 +1274,16 @@ fn settle_order(
     }
 
     Ok(match settled {
-        Settled::Extended { expires_at } => {
-            format!("Зачислено. Подписка до {}.", day_month_year(expires_at))
-        }
+        // Ответ называет закрытый счёт, а не просто «зачислено». Владелец
+        // подтверждает по числу из выписки, и число это может совпасть с
+        // чужим — со старым счётом того же тарифа, например. Тогда ошибка
+        // видна сразу, а не всплывает в учёте через месяц.
+        Settled::Extended { expires_at } => format!(
+            "Зачислено <b>{}</b> · от {buyer} · счёт <code>{order_id}</code>\n\
+             Подписка до {}.",
+            atlas_bot::menu::price_label(paid),
+            day_month_year(expires_at)
+        ),
         Settled::AlreadyCounted => "Этот платёж уже был учтён.".to_owned(),
         Settled::OrderAlreadyPaid => "Счёт уже закрыт другим платежом.".to_owned(),
         Settled::Underpaid => format!(
