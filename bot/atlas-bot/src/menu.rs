@@ -92,24 +92,6 @@ pub enum Action {
     /// и то, что человек отправил, — разные числа, и весь смысл вопроса в
     /// том, что второе нам неизвестно.
     Sent(u64),
-    /// Кнопка владельца: зачислить этот заказ этой суммой.
-    ///
-    /// Единственное действие, которое **делает деньги**, и потому единственное,
-    /// которое проверяется не только разбором. Нажатие приходит от клиента, а
-    /// клиент бывает изменённым: право на него даёт список владельцев в
-    /// настройках, а не сам факт, что кнопка пришла.
-    ///
-    /// Заказ назван номером, а не суммой. Сумма ищет счёт и может найти
-    /// чужой — так уже вышло: подтверждение по «198.99» закрыло старый счёт
-    /// другого человека, потому что первый хвост месячного тарифа у всех
-    /// один. Номер заказа не совпадает ни с чьим.
-    Confirm {
-        /// Какой заказ.
-        order: String,
-        /// Сколько пришло в банк, копейками. Это может отличаться от счёта:
-        /// человек округлил, и в выписке лежит его число, а не наше.
-        minor: u64,
-    },
     /// «Отправил другую сумму» — ту, которой нет среди готовых.
     ///
     /// Готовых три, и они покрывают почти всё: счёт, целые рубли, следующая
@@ -152,7 +134,6 @@ impl Action {
             Self::Paid(minor) => format!("paid:{minor}"),
             Self::Sent(minor) => format!("sent:{minor}"),
             Self::SentOther => "other".to_owned(),
-            Self::Confirm { order, minor } => format!("ok:{order}:{minor}"),
         }
     }
 
@@ -172,27 +153,6 @@ impl Action {
             return Device::parse(code)
                 .map(Self::ConnectTo)
                 .ok_or(Unknown::NoSuchAction);
-        }
-
-        if let Some(rest) = data.strip_prefix("ok:") {
-            // Номер заказа и сумма разделены двоеточием, а сам номер его не
-            // содержит — это проверено и здесь, и ограничением в схеме.
-            // Иначе одна строка разбиралась бы на два разных заказа.
-            let Some((order, minor)) = rest.rsplit_once(':') else {
-                return Err(Unknown::NoSuchAction);
-            };
-            if order.is_empty()
-                || order.len() > 64
-                || !order
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            {
-                return Err(Unknown::NoSuchAction);
-            }
-            return parse_claim(minor).map(|minor| Self::Confirm {
-                order: order.to_owned(),
-                minor,
-            });
         }
 
         if let Some(minor) = data.strip_prefix("paid:") {
@@ -704,60 +664,6 @@ mod tests {
         ] {
             assert_eq!(parse(text), None, "принято: {text:?}");
         }
-    }
-
-    /// Кнопка зачисления несёт номер заказа, а он длинный. Поле длиннее 64
-    /// байт Telegram не принимает вовсе, и заметно это не по ошибке, а по
-    /// тому, что у владельца под счётом нет кнопки.
-    #[test]
-    fn the_confirm_button_fits_telegram() {
-        // Самый длинный номер, какой умеет получиться: 19 цифр Telegram —
-        // предел, который сам Telegram обещает, — плюс тариф и время.
-        let order = format!("u{}-d365-{}", "9".repeat(19), "9".repeat(10));
-        let action = Action::Confirm {
-            order: order.clone(),
-            minor: 100_000_000,
-        };
-
-        let data = action.encode();
-        assert!(
-            data.len() <= CALLBACK_LIMIT,
-            "кнопка зачисления несёт {} байт: {data}",
-            data.len()
-        );
-        assert_eq!(Action::decode(&data), Ok(action));
-    }
-
-    /// Номер заказа приходит обратно от клиента и идёт прямо в зачисление.
-    /// Обычный клиент вернёт наше, изменённый — что угодно.
-    #[test]
-    fn a_tampered_confirm_button_is_refused() {
-        for data in [
-            "ok:",
-            "ok::100",
-            "ok:order-1:",
-            "ok:order-1",
-            "ok:order-1:0",
-            "ok:order-1:-5",
-            "ok:заказ:100",
-            "ok:order 1:100",
-            "ok:order;drop:100",
-            "ok:order-1:100000001",
-        ] {
-            assert!(
-                Action::decode(data).is_err(),
-                "принято зачисление из {data:?}"
-            );
-        }
-
-        // А обычный номер проходит, и двоеточие внутри суммы его не рвёт.
-        assert_eq!(
-            Action::decode("ok:u42-d30-1789072382:19899"),
-            Ok(Action::Confirm {
-                order: "u42-d30-1789072382".to_owned(),
-                minor: 19_899
-            })
-        );
     }
 
     #[test]

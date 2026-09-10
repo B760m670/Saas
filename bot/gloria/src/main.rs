@@ -623,31 +623,13 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         let _ = http::send(&telegram.answer_callback(callback_id, None));
     }
 
-    // Кнопка подтверждения — тоже владельца, и тоже в обход разговора.
-    //
-    // Право на неё даёт список владельцев, а не то, что нажатие пришло: поле
-    // кнопки приходит от клиента, а клиент бывает изменённым. Нажатие от
-    // постороннего разбирается дальше как обычное и покажет ему меню.
-    if let Incoming::Button { data, .. } = incoming {
-        if config.is_admin(telegram_id) {
-            if let Ok(Action::Confirm { order, minor }) = Action::decode(data) {
-                let answer = confirm_order(telegram, store, &order, minor, now)?;
-                let request = telegram
-                    .send_message(incoming.chat(), &answer, None)
-                    .map_err(|error| format!("сообщение: {error}"))?;
-                http::send(&request).map_err(|error| format!("отправка: {error}"))?;
-                return Ok(());
-            }
-        }
-    }
-
     // Админские команды идут в обход обычного разговора: они не про
     // подписку, а про чужие платежи, и показывать их всем нельзя.
     if let Incoming::Message { text, .. } = incoming {
         if config.is_admin(telegram_id) {
             if let Some(answer) = admin(telegram, panel, store, text, now)? {
                 let request = telegram
-                    .send_message(incoming.chat(), &answer.text, answer.keyboard.as_ref())
+                    .send_message(incoming.chat(), &answer, None)
                     .map_err(|error| format!("сообщение: {error}"))?;
                 http::send(&request).map_err(|error| format!("отправка: {error}"))?;
                 return Ok(());
@@ -886,16 +868,16 @@ fn apply(
             // Владелец узнаёт о счёте сразу, а не когда вспомнит про
             // /pending. Счёт живёт двадцать минут: человек, заплативший и
             // ждущий, за это время успевает решить, что его обманули.
-            notify_admins_with(
+            notify_admins(
                 config,
                 telegram,
                 &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id}\n\
-                     Зачислять после того, как деньги видны в банке.",
+                    "Счёт <b>{}</b> · {} · от {telegram_id}\n  \
+                     подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
                     plan.title,
+                    amount.to_decimal(),
                 ),
-                Some(&confirm_button(&order_id, amount)),
             );
 
             // Сначала пробуем открыть страницу оплаты. Не вышло — счёт
@@ -953,14 +935,10 @@ fn apply(
                 .mark_claimed(telegram_id, sent, now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("база: {error}"))?;
 
-            notify_admins_with(
+            notify_admins(
                 config,
                 telegram,
                 &claim_text(telegram_id, found.as_ref(), sent),
-                found
-                    .as_ref()
-                    .map(|(order_id, _)| confirm_button(order_id, sent))
-                    .as_ref(),
             );
             Ok(None)
         }
@@ -978,7 +956,7 @@ fn admin(
     store: &mut Store,
     text: &str,
     now: i64,
-) -> Result<Option<Extra>, String> {
+) -> Result<Option<String>, String> {
     let mut parts = text.split_whitespace();
     let command = parts.next().unwrap_or("").split('@').next().unwrap_or("");
 
@@ -989,11 +967,10 @@ fn admin(
                 .map_err(|error| format!("база: {error}"))?;
 
             if pending.is_empty() {
-                return Ok(Some("Открытых счетов нет.".to_owned().into()));
+                return Ok(Some("Открытых счетов нет.".to_owned()));
             }
 
             let mut answer = String::from("Ожидают оплаты:\n");
-            let mut rows: Vec<Vec<Button>> = Vec::new();
             for order in pending {
                 // Названная покупателем сумма — то, что ищется в выписке,
                 // и она же идёт в готовую команду. Наша стоит рядом только
@@ -1013,39 +990,22 @@ fn admin(
                 };
 
                 answer.push_str(&format!(
-                    "\n<b>{}</b> · {} · {}{note}",
+                    "\n<b>{}</b> · {} · {}{note}\n  \
+                     подтвердить: <code>/ok {} {}</code>",
                     atlas_bot::menu::price_label(search),
                     order.plan,
                     order.telegram_id,
+                    search.to_decimal(),
+                    order.telegram_id,
                 ));
-
-                // Кнопка на каждый счёт, и в надписи — номер покупателя.
-                // Одной суммы мало: у двоих может совпасть и она, а по
-                // номеру владелец видит, кого зачисляет.
-                rows.push(vec![Button::new(
-                    format!(
-                        "Зачислить {} · {}",
-                        atlas_bot::menu::price_label(search),
-                        order.telegram_id
-                    ),
-                    Action::Confirm {
-                        order: order.id.clone(),
-                        minor: search.minor(),
-                    },
-                )]);
             }
-            Ok(Some(Extra {
-                text: answer,
-                keyboard: Some(Keyboard { rows }),
-            }))
+            Ok(Some(answer))
         }
 
         "/revoke" => {
             let Some(who) = parts.next().and_then(|w| w.parse::<i64>().ok()) else {
                 return Ok(Some(
-                    "Укажите номер: <code>/revoke</code> <i>номер</i>"
-                        .to_owned()
-                        .into(),
+                    "Укажите номер: <code>/revoke</code> <i>номер</i>".to_owned(),
                 ));
             };
 
@@ -1063,7 +1023,7 @@ fn admin(
                 ),
             );
 
-            Ok(Some(format!("Перевыпущено для {who}.").into()))
+            Ok(Some(format!("Перевыпущено для {who}.")))
         }
 
         // Числа в подсказках намеренно заменены на «сумма» и «номер».
@@ -1078,10 +1038,9 @@ fn admin(
                     "Укажите сумму — ту, что пришла в банк:\n\n\
                      <code>/ok</code> <i>сумма</i>\n\
                      <code>/ok</code> <i>сумма номер</i> — если сумма не сошлась\n\n\
-                     В /pending под каждым счётом стоит кнопка — \
-                     нажатие зачисляет без набора."
-                        .to_owned()
-                        .into(),
+                     Готовые команды с настоящими числами есть в /pending: \
+                     нажатие по ним копирует строку целиком."
+                        .to_owned(),
                 ));
             };
             let Some(amount) =
@@ -1089,8 +1048,7 @@ fn admin(
             else {
                 return Ok(Some(
                     "Сумма не разобралась. Ожидается число: <code>/ok</code> <i>сумма</i>"
-                        .to_owned()
-                        .into(),
+                        .to_owned(),
                 ));
             };
 
@@ -1105,8 +1063,7 @@ fn admin(
                     return Ok(Some(
                         "Номер не разобрался. Ожидается число: \
                          <code>/ok</code> <i>сумма номер</i>"
-                            .to_owned()
-                            .into(),
+                            .to_owned(),
                     ));
                 };
 
@@ -1132,11 +1089,11 @@ fn admin(
                 };
 
                 let Some((order_id, invoiced)) = found else {
-                    return Ok(Some(format!("У {who} нет открытого счёта.").into()));
+                    return Ok(Some(format!("У {who} нет открытого счёта.")));
                 };
 
                 return settle_order(telegram, store, &order_id, who, invoiced, amount, now)
-                    .map(|answer| Some(answer.into()));
+                    .map(Some);
             }
 
             let found = store
@@ -1144,7 +1101,7 @@ fn admin(
                 .map_err(|error| format!("база: {error}"))?;
             if let Some((order_id, buyer)) = found {
                 return settle_order(telegram, store, &order_id, buyer, amount, amount, now)
-                    .map(|answer| Some(answer.into()));
+                    .map(Some);
             }
 
             // Счёта на такую сумму нет — но кто-то мог сказать, что отправил
@@ -1160,16 +1117,16 @@ fn admin(
                 .map_err(|error| format!("база: {error}"))?;
 
             match claiming.as_slice() {
-                [] => Ok(Some(Extra::from(format!(
+                [] => Ok(Some(format!(
                     "Открытого счёта на {} нет, и столько никто не говорил, \
                      что отправил.\n\nПосмотрите /pending — там видно, кто ждёт \
                      и сколько назвал.",
                     atlas_bot::menu::price_label(amount)
-                )))),
+                ))),
 
                 [(order_id, buyer, invoiced)] => {
                     settle_order(telegram, store, order_id, *buyer, *invoiced, amount, now)
-                        .map(|answer| Some(answer.into()))
+                        .map(Some)
                 }
 
                 // Сказавших несколько — решает человек. Взять первого молча
@@ -1178,32 +1135,17 @@ fn admin(
                 several => {
                     let mut answer = format!(
                         "Столько сказали, что отправили, {} человек. \
-                         Выберите, кому зачислить:\n",
+                         Уточните, кому зачислить:\n",
                         several.len()
                     );
-                    let mut rows: Vec<Vec<Button>> = Vec::new();
-
-                    for (order_id, buyer, invoiced) in several {
+                    for (_, buyer, invoiced) in several {
                         answer.push_str(&format!(
-                            "\n{buyer} · счёт был на {}",
+                            "\n{buyer} · счёт был на {}\n  <code>/ok {} {buyer}</code>",
                             atlas_bot::menu::price_label(*invoiced),
+                            amount.to_decimal(),
                         ));
-                        rows.push(vec![Button::new(
-                            format!(
-                                "Зачислить {} · {buyer}",
-                                atlas_bot::menu::price_label(amount)
-                            ),
-                            Action::Confirm {
-                                order: order_id.clone(),
-                                minor: amount.minor(),
-                            },
-                        )]);
                     }
-
-                    Ok(Some(Extra {
-                        text: answer,
-                        keyboard: Some(Keyboard { rows }),
-                    }))
+                    Ok(Some(answer))
                 }
             }
         }
@@ -1233,14 +1175,10 @@ fn claim_typed(
         return Ok(false);
     }
 
-    notify_admins_with(
+    notify_admins(
         deps.config,
         deps.telegram,
         &claim_text(telegram_id, found.as_ref(), sent),
-        found
-            .as_ref()
-            .map(|(order_id, _)| confirm_button(order_id, sent))
-            .as_ref(),
     );
 
     tell(
@@ -1254,36 +1192,6 @@ fn claim_typed(
     );
 
     Ok(true)
-}
-
-/// Зачислить по нажатию кнопки — то есть по номеру заказа.
-///
-/// Отличие от `/ok <сумма>` не в удобстве, а в точности. Сумма ищет счёт
-/// и может найти чужой: хвосты у всех тарифов начинаются с одного и того
-/// же, и подтверждение по «198.99» однажды закрыло старый счёт другого
-/// человека. Номер заказа не совпадает ни с чьим.
-fn confirm_order(
-    telegram: &Telegram,
-    store: &mut Store,
-    order_id: &str,
-    minor: u64,
-    now: i64,
-) -> Result<String, String> {
-    let paid = Money::from_minor(minor, atlas_billing::Currency::Rub);
-
-    let found = store
-        .pending_order(order_id)
-        .map_err(|error| format!("база: {error}"))?;
-
-    // Закрытый заказ — обычное дело, а не сбой: кнопка остаётся в переписке
-    // навсегда, и нажать её второй раз через неделю проще, чем кажется.
-    let Some((buyer, invoiced)) = found else {
-        return Ok(format!(
-            "Счёт <code>{order_id}</code> уже закрыт или его больше нет.              Ничего не изменилось."
-        ));
-    };
-
-    settle_order(telegram, store, order_id, buyer, invoiced, paid, now)
 }
 
 /// Что получает владелец, когда покупатель говорит «я оплатил».
@@ -1488,16 +1396,16 @@ pub(crate) fn open_order_for(
     // быстро решает, что его обманули.
     if let Some(telegram) = &shared.telegram {
         for admin in &shared.admins {
-            tell_with(
+            tell(
                 telegram,
                 *admin,
                 &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета)\n\
-                     Зачислять после того, как деньги видны в банке.",
+                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета)\n  \
+                     подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
                     plan.title,
+                    amount.to_decimal(),
                 ),
-                Some(&confirm_button(&order_id, amount)),
             );
         }
     }
@@ -1541,13 +1449,9 @@ pub(crate) fn claim_paid_for(
     };
 
     let text = claim_text(telegram_id, found.as_ref(), sent);
-    let keyboard = found
-        .as_ref()
-        .map(|(order_id, _)| confirm_button(order_id, sent));
-
     if let Some(telegram) = &shared.telegram {
         for admin in &shared.admins {
-            tell_with(telegram, *admin, &text, keyboard.as_ref());
+            tell(telegram, *admin, &text);
         }
     }
 
@@ -1716,35 +1620,8 @@ fn tell_with(telegram: &Telegram, chat_id: i64, text: &str, keyboard: Option<&Ke
 
 /// Сказать то же самое всем владельцам.
 fn notify_admins(config: &Config, telegram: &Telegram, text: &str) {
-    notify_admins_with(config, telegram, text, None);
-}
-
-/// То же с кнопками под сообщением.
-fn notify_admins_with(
-    config: &Config,
-    telegram: &Telegram,
-    text: &str,
-    keyboard: Option<&Keyboard>,
-) {
     for admin in &config.admins {
-        tell_with(telegram, *admin, text, keyboard);
-    }
-}
-
-/// Кнопка «зачислить этот заказ этой суммой».
-///
-/// Всё, что владелец делает руками, сводится к одному нажатию: ни суммы, ни
-/// номера набирать не нужно, а ошибиться заказом нечем — он назван номером,
-/// а не суммой, которая бывает общей у разных счетов.
-fn confirm_button(order_id: &str, paid: Money) -> Keyboard {
-    Keyboard {
-        rows: vec![vec![Button::new(
-            format!("Зачислить {}", atlas_bot::menu::price_label(paid)),
-            Action::Confirm {
-                order: order_id.to_owned(),
-                minor: paid.minor(),
-            },
-        )]],
+        tell(telegram, *admin, text);
     }
 }
 

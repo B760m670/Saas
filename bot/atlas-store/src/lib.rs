@@ -644,35 +644,6 @@ impl Store {
         })
     }
 
-    /// Кому выставлен открытый счёт и на сколько.
-    ///
-    /// Для кнопки подтверждения: она называет заказ номером, а всё
-    /// остальное — кому сообщить и с чем сравнить пришедшее — берётся здесь.
-    ///
-    /// Закрытый заказ не возвращается: подтверждать его второй раз нечем, а
-    /// «не нашёлся» владелец прочтёт правильнее, чем повторное «зачислено».
-    pub fn pending_order(&mut self, order_id: &str) -> Result<Option<(i64, Money)>, Error> {
-        let row = self.client.query_opt(
-            "SELECT telegram_id, amount_minor, currency FROM orders
-              WHERE id = $1 AND status = 'pending'",
-            &[&order_id],
-        )?;
-
-        let Some(row) = row else {
-            return Ok(None);
-        };
-
-        let minor: i64 = row.try_get(1)?;
-        let currency: String = row.try_get(2)?;
-        let Some(currency) = Currency::parse(&currency) else {
-            return Err(Error::Inconsistent("валюта заказа неизвестна"));
-        };
-        let minor =
-            u64::try_from(minor).map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
-
-        Ok(Some((row.try_get(0)?, Money::from_minor(minor, currency))))
-    }
-
     /// Найти счета, по которым покупатель **сказал**, что отправил столько.
     ///
     /// Второй способ опознать платёж, и нужен он ровно там, где отказывает
