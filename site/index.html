@@ -181,6 +181,10 @@ button { font: inherit; color: inherit; }
 a.btn { text-decoration: none; }
 a.btn.off { opacity: 0.45; }
 
+/* Нажатая «Я оплатил». Выключается, а не прячется: исчезнувшая кнопка
+   читается как сбой, и по ней жмут второй раз. */
+.btn:disabled { opacity: 0.45; }
+
 /* Шаги мастера. Показан ровно один: остальные не спрятаны прозрачностью, а
    убраны из потока — иначе прокрутка ниже упиралась бы в пустоту. */
 .step { display: none; }
@@ -612,6 +616,9 @@ a.btn.off { opacity: 0.45; }
   <div class="days" id="bill-sum" style="font-size:34px;margin:6px 0 2px">—</div>
   <p class="sub" id="bill-note">Счёт готовится…</p>
   <a class="btn primary" id="bill-pay" style="margin-top:16px">Оплатить</a>
+  <!-- Появляется только вместе со ссылкой на перевод: без неё платить негде,
+       и говорить «я оплатил» не о чем. -->
+  <button class="btn ghost" id="bill-paid" data-act="paid" hidden>Я оплатил</button>
   <button class="btn ghost" data-act="close-bill">Закрыть</button>
 </div>
 
@@ -904,6 +911,27 @@ document.addEventListener('DOMContentLoaded', function () {
       return openOut(app.site);
     }
 
+    if (act === 'paid') {
+      /* Подписку это не включает: о переводе программе никто не сообщает,
+         знает о нём только владелец счёта. Кнопка сокращает ожидание — он
+         узнаёт о переводе сразу, а не когда сам заглянет в список счетов.
+         Поэтому и ответ один на все случаи, и повторное нажатие безвредно. */
+      haptic();
+      el.disabled = true;
+      fetch('/api/paid', {
+        method: 'POST',
+        headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      }).then(function (r) {
+        if (!r.ok) throw new Error('отказ');
+        document.getElementById('bill-note').textContent =
+          'Спасибо. Проверю перевод и включу подписку — придёт сообщение в чат.';
+      }).catch(function () {
+        el.disabled = false;
+        toast('Не вышло — попробуйте ещё раз');
+      });
+      return;
+    }
+
     if (act === 'reissue') {
       /* Спрашиваем прежде, чем делать: старая ссылка умрёт сразу, и на всех
          устройствах придётся добавлять заново. Нажать это по ошибке легко —
@@ -970,6 +998,8 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('bill-note').textContent = 'Счёт готовится…';
     document.getElementById('bill-pay').removeAttribute('href');
     document.getElementById('bill-pay').classList.add('off');
+    document.getElementById('bill-paid').hidden = true;
+    document.getElementById('bill-paid').disabled = false;
     bill(true);
 
     fetch('/api/order/' + encodeURIComponent(plan), {
@@ -992,7 +1022,9 @@ document.addEventListener('DOMContentLoaded', function () {
          названа дважды — крупно сверху и в строке под ней. */
       document.getElementById('bill-note').textContent =
         'Введите сумму ' + (o.label || '') + ' — до копейки, по ней я нахожу ваш платёж. ' +
-        'Счёт действует ' + (o.minutes || 20) + ' минут.';
+        'Счёт действует ' + (o.life || 'сутки') + '. После перевода нажмите «Я оплатил».';
+
+      document.getElementById('bill-paid').hidden = false;
 
       pay.classList.remove('off');
       pay.onclick = function () {

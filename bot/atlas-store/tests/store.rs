@@ -335,6 +335,49 @@ fn a_payment_finds_its_order_by_the_amount_alone() {
     );
 }
 
+/// Запасной выход: сумма не сошлась, и счёт ищется по человеку.
+///
+/// Округлил 198,63 до 200 — совпадения нет, деньги пришли, зачислить их
+/// нечему. Тогда владелец закрывает счёт по номеру покупателя.
+#[test]
+fn an_invoice_can_be_found_by_its_buyer_when_the_amount_does_not_match() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    subscriber(&mut store, 43);
+
+    let _ = store.open_order("older", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("newer", 42, "d90", 90, rub(49_899), NOW + 60);
+    let _ = store.open_order("someone-else", 43, "d30", 30, rub(19_898), NOW);
+
+    // Берётся самый свежий: по нему человек и платил — тот у него на экране.
+    assert_eq!(
+        store.pending_order_of(42, NOW + 60, LIFETIME).ok(),
+        Some(Some(("newer".to_owned(), rub(49_899)))),
+        "найден не последний счёт покупателя"
+    );
+
+    // У того, кто ничего не выставлял, счёта нет — и выдумывать его нельзя.
+    assert_eq!(store.pending_order_of(44, NOW, LIFETIME).ok(), Some(None));
+
+    // Оплаченный счёт больше не открыт.
+    let _ = store.settle("newer", "manual", "m-1", rub(50_000), "{}", NOW + 60);
+    assert_eq!(
+        store.pending_order_of(42, NOW + 60, LIFETIME).ok(),
+        Some(Some(("older".to_owned(), rub(19_899)))),
+        "закрытый счёт всё ещё считается открытым"
+    );
+
+    // Просроченный — тоже: подтверждать его нечем.
+    assert_eq!(
+        store
+            .pending_order_of(42, NOW + LIFETIME + 61, LIFETIME)
+            .ok(),
+        Some(None)
+    );
+}
+
 #[test]
 fn a_payment_for_an_unknown_order_is_reported() {
     let Some((mut store, _lock)) = store() else {

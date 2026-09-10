@@ -174,7 +174,11 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
 
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
-    if request.path != "/api/me" && request.path != "/api/reissue" && order_plan.is_none() {
+    if request.path != "/api/me"
+        && request.path != "/api/reissue"
+        && request.path != "/api/paid"
+        && order_plan.is_none()
+    {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
 
@@ -208,6 +212,19 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
                 send(&mut stream, 500, r#"{"error":"счёт не выставился"}"#)
             }
         };
+    }
+
+    // «Я оплатил». Подписку это не включает и включать не может: о переводе
+    // программе никто не сообщает, знает о нём владелец счёта. Всё, что здесь
+    // происходит, — он узнаёт об этом сейчас, а не когда заглянет в
+    // `/pending`. Поэтому и ответ один на все случаи: человеку сказать нечего
+    // сверх «проверю».
+    if request.path == "/api/paid" {
+        if let Err(error) = crate::claim_paid_for(shared, verified.user_id(), now) {
+            eprintln!("«Я оплатил» от {}: {error}", verified.user_id());
+            return send(&mut stream, 500, r#"{"error":"внутренняя ошибка"}"#);
+        }
+        return send(&mut stream, 200, r#"{"ok":true}"#);
     }
 
     if request.path == "/api/reissue" {

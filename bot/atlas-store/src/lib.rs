@@ -593,6 +593,49 @@ impl Store {
         })
     }
 
+    /// Найти открытый счёт человека — когда сумма не сошлась.
+    ///
+    /// Обычный путь один: заплатили 198,63 — значит заплатил тот, кому мы
+    /// назвали 198,63. Но человек может отправить 200 «по-хорошему», округлив
+    /// вверх, или 199 по памяти. Тогда совпадения нет, деньги пришли, а
+    /// зачислить их нечему.
+    ///
+    /// Это запасной выход для владельца: он видит в `/pending`, кто ждёт, и
+    /// закрывает счёт по номеру человека, а не по сумме.
+    ///
+    /// Берётся **самый свежий** открытый счёт: если человек нажимал тариф
+    /// дважды, платил он, скорее всего, по последнему — тот и висит у него
+    /// на экране.
+    pub fn pending_order_of(
+        &mut self,
+        telegram_id: i64,
+        now: i64,
+        lifetime: i64,
+    ) -> Result<Option<(String, Money)>, Error> {
+        let row = self.client.query_opt(
+            "SELECT id, amount_minor, currency FROM orders
+              WHERE status = 'pending' AND telegram_id = $1
+                AND created_at > to_timestamp($2::bigint)
+              ORDER BY created_at DESC
+              LIMIT 1",
+            &[&telegram_id, &(now - lifetime)],
+        )?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let minor: i64 = row.try_get(1)?;
+        let currency: String = row.try_get(2)?;
+        let Some(currency) = Currency::parse(&currency) else {
+            return Err(Error::Inconsistent("валюта заказа неизвестна"));
+        };
+        let minor =
+            u64::try_from(minor).map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
+
+        Ok(Some((row.try_get(0)?, Money::from_minor(minor, currency))))
+    }
+
     /// Пересоздать схему. **Только для тестов.**
     ///
     /// Метод отказывается работать, если имя базы не содержит `test`. Это не

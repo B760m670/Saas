@@ -908,6 +908,18 @@ fn apply(
 
             Ok(Some(transfer_invoice(config, amount)))
         }
+
+        flow::Effect::ClaimPaid => {
+            // Программа о зачислении не знает: банк ей не сообщает. Знает
+            // владелец счёта — и вся кнопка в том, чтобы он узнал сейчас, а
+            // не когда сам заглянет в /pending.
+            let found = store
+                .pending_order_of(telegram_id, now, catalog::INVOICE_LIFETIME)
+                .map_err(|error| format!("база: {error}"))?;
+
+            notify_admins(config, telegram, &claim_text(telegram_id, found.as_ref()));
+            Ok(None)
+        }
     }
 }
 
@@ -981,6 +993,30 @@ fn admin(
                 return Ok(Some("Сумма не разобралась. Пример: /ok 198.99".to_owned()));
             };
 
+            // Второй, необязательный довод — номер человека. Обычно он не
+            // нужен: сумма уникальна среди открытых счетов, по ней счёт и
+            // находится. Нужен он тогда, когда сумма не сошлась: человек
+            // округлил 198,63 до 200 или отправил 199 по памяти. Деньги
+            // пришли, совпадения нет, и без этого выхода зачислить их нечем.
+            let who = parts.next();
+            if let Some(who) = who {
+                let Some(who) = who.parse::<i64>().ok() else {
+                    return Ok(Some(
+                        "Номер не разобрался. Пример: /ok 200 123456789".to_owned(),
+                    ));
+                };
+
+                let found = store
+                    .pending_order_of(who, now, catalog::INVOICE_LIFETIME)
+                    .map_err(|error| format!("база: {error}"))?;
+                let Some((order_id, invoiced)) = found else {
+                    return Ok(Some(format!("У {who} нет открытого счёта.")));
+                };
+
+                return settle_order(telegram, store, &order_id, who, invoiced, amount, now)
+                    .map(Some);
+            }
+
             let found = store
                 .order_by_amount(amount, now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("база: {error}"))?;
@@ -990,38 +1026,91 @@ fn admin(
                 ));
             };
 
-            // Номер платежа собирается из суммы и времени: повторное
-            // подтверждение того же счёта упрётся в UNIQUE и не продлит
-            // подписку дважды.
-            let reference = format!("{}-{order_id}", amount.minor());
-            let settled = store
-                .settle(&order_id, "manual", &reference, amount, "{}", now)
-                .map_err(|error| format!("зачисление: {error}"))?;
-
-            // Покупателя извещаем сами. Он заплатил и ждёт; тишина после
-            // платежа читается как «деньги пропали», и следующим сообщением
-            // будет обращение в поддержку.
-            if let Settled::Extended { expires_at } = settled {
-                let text = format!(
-                    "Оплата получена. Подписка продлена до {}.\n\n                     Ничего перенастраивать не нужно — ключ прежний,                      приложение подхватит новый срок само.",
-                    day_month_year(expires_at)
-                );
-                tell(telegram, buyer, &text);
-            }
-
-            Ok(Some(match settled {
-                Settled::Extended { expires_at } => {
-                    format!("Зачислено. Подписка до {}.", day_month_year(expires_at))
-                }
-                Settled::AlreadyCounted => "Этот платёж уже был учтён.".to_owned(),
-                Settled::OrderAlreadyPaid => "Счёт уже закрыт другим платежом.".to_owned(),
-                Settled::Underpaid => "Сумма меньше выставленной — не зачислено.".to_owned(),
-                Settled::NoSuchOrder => "Такого заказа нет.".to_owned(),
-            }))
+            settle_order(telegram, store, &order_id, buyer, amount, amount, now).map(Some)
         }
 
         _ => Ok(None),
     }
+}
+
+/// Что получает владелец, когда покупатель говорит «я оплатил».
+///
+/// Сообщение содержит готовую команду, а не приглашение её вспомнить:
+/// подтверждение — то единственное, что владелец делает руками, и делает он
+/// это с телефона. Вторая команда — на случай, когда сумма не сошлась:
+/// человек округлил хвост или отправил цену по памяти.
+///
+/// Счёта может и не быть: истёк или кнопка нажата из старого сообщения.
+/// Владельцу это всё равно сообщается — деньги-то могли прийти, — но
+/// подтверждать тогда нечего, и готовых команд нет.
+fn claim_text(telegram_id: i64, order: Option<&(String, Money)>) -> String {
+    let Some((order_id, amount)) = order else {
+        return format!(
+            "{telegram_id} говорит, что оплатил, но открытого счёта у него нет. \
+             Если перевод был — попросите выставить счёт заново."
+        );
+    };
+
+    format!(
+        "<b>{}</b> · от {telegram_id} · счёт <code>{order_id}</code>\n\
+         Человек говорит, что перевёл. Проверьте поступление.\n  \
+         подтвердить: /ok {}\n  \
+         если сумма не сошлась: /ok <i>сколько пришло</i> {telegram_id}",
+        atlas_bot::menu::price_label(*amount),
+        amount.to_decimal(),
+    )
+}
+
+/// Закрыть счёт полученной суммой и рассказать об этом обеим сторонам.
+///
+/// `invoiced` — сумма, которую мы назвали, `paid` — та, что пришла. Обычно
+/// это одно и то же число; расходятся они только на запасном пути, когда
+/// счёт найден по номеру человека, а не по сумме. Обе нужны: зачисляется
+/// пришедшая, а в отказе «меньше выставленной» надо назвать выставленную —
+/// иначе владельцу нечего сравнивать.
+fn settle_order(
+    telegram: &Telegram,
+    store: &mut Store,
+    order_id: &str,
+    buyer: i64,
+    invoiced: Money,
+    paid: Money,
+    now: i64,
+) -> Result<String, String> {
+    // Номер платежа собирается из суммы и времени: повторное
+    // подтверждение того же счёта упрётся в UNIQUE и не продлит
+    // подписку дважды.
+    let reference = format!("{}-{order_id}", paid.minor());
+    let settled = store
+        .settle(order_id, "manual", &reference, paid, "{}", now)
+        .map_err(|error| format!("зачисление: {error}"))?;
+
+    // Покупателя извещаем сами. Он заплатил и ждёт; тишина после
+    // платежа читается как «деньги пропали», и следующим сообщением
+    // будет обращение в поддержку.
+    if let Settled::Extended { expires_at } = settled {
+        let text = format!(
+            "Оплата получена. Подписка продлена до {}.\n\n\
+             Ничего перенастраивать не нужно — ключ прежний, \
+             приложение подхватит новый срок само.",
+            day_month_year(expires_at)
+        );
+        tell(telegram, buyer, &text);
+    }
+
+    Ok(match settled {
+        Settled::Extended { expires_at } => {
+            format!("Зачислено. Подписка до {}.", day_month_year(expires_at))
+        }
+        Settled::AlreadyCounted => "Этот платёж уже был учтён.".to_owned(),
+        Settled::OrderAlreadyPaid => "Счёт уже закрыт другим платежом.".to_owned(),
+        Settled::Underpaid => format!(
+            "Пришло {}, а выставлено {} — не зачислено.",
+            atlas_bot::menu::price_label(paid),
+            atlas_bot::menu::price_label(invoiced),
+        ),
+        Settled::NoSuchOrder => "Такого заказа нет.".to_owned(),
+    })
 }
 
 /// Перевыпустить ссылку на подписку.
@@ -1120,9 +1209,9 @@ pub(crate) fn open_order_for(
         (order_id, amount)
     };
 
-    // Владелец узнаёт о счёте сразу. Подтверждает оплату он, и счёт живёт
-    // двадцать минут: человек, заплативший и ждущий, за это время успевает
-    // решить, что его обманули.
+    // Владелец узнаёт о счёте сразу, а не когда вспомнит про `/pending`:
+    // подтверждает оплату он, и человек, заплативший и ждущий, довольно
+    // быстро решает, что его обманули.
     if let Some(telegram) = &shared.telegram {
         for admin in &shared.admins {
             tell(
@@ -1144,11 +1233,40 @@ pub(crate) fn open_order_for(
     };
 
     Ok(format!(
-        r#"{{"amount":"{}","label":"{}",{pay}"minutes":{},"orderId":"{order_id}"}}"#,
+        r#"{{"amount":"{}","label":"{}",{pay}"life":"{}","orderId":"{order_id}"}}"#,
         amount.to_decimal(),
         atlas_bot::menu::price_label(amount),
-        catalog::INVOICE_LIFETIME / 60,
+        atlas_tg::escape_json(&catalog::invoice_lifetime_label()),
     ))
+}
+
+/// То же, что кнопка «Я оплатил» в чате, но нажатая в кабинете.
+///
+/// Оплата теперь начинается в кабинете, и возвращать человека в переписку
+/// ради одной кнопки незачем: сказать «перевёл» он должен там же, где платил.
+pub(crate) fn claim_paid_for(
+    shared: &api::Shared,
+    telegram_id: i64,
+    now: i64,
+) -> Result<(), String> {
+    let found = {
+        let mut store = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?;
+        store
+            .pending_order_of(telegram_id, now, catalog::INVOICE_LIFETIME)
+            .map_err(|error| format!("база: {error}"))?
+    };
+
+    let text = claim_text(telegram_id, found.as_ref());
+    if let Some(telegram) = &shared.telegram {
+        for admin in &shared.admins {
+            tell(telegram, *admin, &text);
+        }
+    }
+
+    Ok(())
 }
 
 /// То же, что [`reissue`], но под общим замком базы — для мини-приложения.
@@ -1255,10 +1373,22 @@ fn transfer_invoice(config: &Config, amount: atlas_billing::Money) -> Extra {
              Нажмите «Оплатить» — откроется ваше банковское приложение. \
              Введите сумму <b>{sum}</b>: она должна совпасть до копейки, по ней \
              я нахожу ваш платёж.\n\n\
-             Счёт действует 20 минут. Подписка включится после проверки перевода."
+             Счёт действует {}. После перевода нажмите «Я оплатил».",
+            catalog::invoice_lifetime_label()
         ),
+        // Вторая кнопка есть только здесь, на ручном пути. У счёта от
+        // платёжного сервиса она была бы лишней и вредной: там о зачислении
+        // сообщает сам сервис, и нажимать человеку нечего.
+        //
+        // Толку от неё ровно столько, сколько от звонка в дверь: подписку она
+        // не включает и включать не может — банк программе о переводе не
+        // сообщает. Она сокращает ожидание, потому что владелец узнаёт о
+        // переводе сразу, а не когда сам заглянет в /pending.
         keyboard: Some(Keyboard {
-            rows: vec![vec![Button::link("Оплатить", link.clone())]],
+            rows: vec![
+                vec![Button::link("Оплатить", link.clone())],
+                vec![Button::new("Я оплатил", Action::Paid)],
+            ],
         }),
     }
 }

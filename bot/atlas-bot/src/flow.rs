@@ -23,6 +23,8 @@ pub enum Effect {
     GrantTrial,
     /// Выставить счёт по тарифу.
     OpenOrder { plan: String },
+    /// Человек говорит, что перевёл. Владельцу — сходить в банк.
+    ClaimPaid,
 }
 
 /// Ответ покупателю.
@@ -151,6 +153,19 @@ pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
         Action::ConnectTo(device) => (device_screen(*device, view), Effect::None),
         Action::Help => (help_screen(view), Effect::None),
         Action::Buy(plan) => buy(plan),
+
+        // Доступа это не даёт: проверить перевод может только тот, у кого
+        // перед глазами выписка. Обещать срок не будем — обещание, которое
+        // некому исполнить ночью, хуже честного «проверю».
+        Action::Paid => (
+            Reply {
+                text: "Спасибо. Проверю перевод и включу подписку — \
+                       придёт сообщение."
+                    .to_owned(),
+                keyboard: None,
+            },
+            Effect::ClaimPaid,
+        ),
     }
 }
 
@@ -460,6 +475,19 @@ mod tests {
             Effect::OpenOrder {
                 plan: "d365".to_owned()
             }
+        );
+    }
+
+    /// «Я оплатил» никого не подключает: подписку включает подтверждение
+    /// владельца, увидевшего поступление. Если бы нажатие само что-то
+    /// продлевало, доступ раздавался бы по одному нажатию.
+    #[test]
+    fn saying_you_paid_does_not_grant_anything() {
+        let (reply, effect) = on_action(&Action::Paid, &expired());
+        assert_eq!(effect, Effect::ClaimPaid);
+        assert!(
+            !reply.text.is_empty(),
+            "нажатие осталось без ответа — человек решит, что кнопка не работает"
         );
     }
 

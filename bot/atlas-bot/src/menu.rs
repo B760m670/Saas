@@ -74,6 +74,13 @@ pub enum Action {
     Help,
     /// Назад в главное меню.
     Home,
+    /// «Я оплатил» под счётом.
+    ///
+    /// Доступа **не даёт**: подтвердить перевод может только владелец, у
+    /// которого перед глазами выписка. Нажатие лишь сообщает ему, что пора
+    /// заглянуть в банк, — без него он узнаёт о счёте в момент выставления и
+    /// дальше гадает, заплатили или нет.
+    Paid,
 }
 
 /// Почему нажатие нельзя принять.
@@ -101,6 +108,7 @@ impl Action {
             Self::ConnectTo(device) => format!("dev:{}", device.code()),
             Self::Help => "help".to_owned(),
             Self::Home => "home".to_owned(),
+            Self::Paid => "paid".to_owned(),
         }
     }
 
@@ -126,6 +134,7 @@ impl Action {
             "sub" => Ok(Self::Subscription),
             "plans" => Ok(Self::Plans),
             "conn" => Ok(Self::Connect),
+            "paid" => Ok(Self::Paid),
             "help" => Ok(Self::Help),
             "home" => Ok(Self::Home),
             _ => Err(Unknown::NoSuchAction),
@@ -443,6 +452,14 @@ mod tests {
                 "принято имя тарифа из {data:?}"
             );
         }
+    }
+
+    /// «Я оплатил» стоит не в этих меню, а под счётом, который собирает
+    /// `gloria`, — и обход клавиатур её не проверяет. Проверяем отдельно:
+    /// не разобравшееся нажатие выглядит как молчащая кнопка.
+    #[test]
+    fn the_i_have_paid_button_survives_the_round_trip() {
+        assert_eq!(Action::decode(&Action::Paid.encode()), Ok(Action::Paid));
     }
 
     #[test]
