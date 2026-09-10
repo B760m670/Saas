@@ -1119,11 +1119,15 @@ document.addEventListener('DOMContentLoaded', function () {
     return minor > 0 && minor <= 100000000 ? minor : 0;
   }
 
-  /* Варианты «сколько вы отправили»: сам счёт, целые рубли и следующая
-     сотня. Те же три, что показывает чат, и по тому же правилу — 198,62
-     округляют до 199 или до 200, третьего способа ошибиться в ту же
-     сторону нет. Повторы убираются: у счёта на ровные 200 все три
-     совпали бы, и человек увидел бы одну кнопку трижды. */
+  /* Варианты «сколько вы отправили»: сам счёт и следующая сотня. Те же
+     две, что показывает чат, и по тому же правилу.
+
+     Целых рублей здесь нет намеренно: на экране у человека стоит 198,62,
+     а 199 — цена тарифа, которую надо вспомнить. Отправивший именно её
+     впишет её руками, а кнопка стоила бы внимания всех остальных.
+
+     Повторы убираются: у счёта на ровные 200 обе совпали бы, и человек
+     увидел бы одну кнопку дважды. */
   function sentOptions(minor) {
     var box = document.getElementById('bill-sent-options');
     box.innerHTML = '';
@@ -1137,7 +1141,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (!minor) return;
 
     var seen = {};
-    [minor, roundUp(minor, 100), roundUp(minor, 10000)].forEach(function (value) {
+    [minor, roundUp(minor, 10000)].forEach(function (value) {
       if (seen[value]) return;
       seen[value] = true;
 
