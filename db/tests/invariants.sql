@@ -85,9 +85,21 @@ SELECT must_fail(
         WHERE id = 'order-1'$q$,
     'заявление об оплате раньше выставления счёта');
 
--- А в свой срок — сколько угодно раз: человек, нажавший дважды, всё ещё ждёт.
-UPDATE orders SET claimed_at = now() WHERE id = 'order-1';
-UPDATE orders SET claimed_at = now() WHERE id = 'order-1';
+-- Сумма без нажатия — испорченная запись: приходят они вместе.
+SELECT must_fail(
+    $q$UPDATE orders SET claimed_minor = 20000 WHERE id = 'order-1'$q$,
+    'названная сумма без самого заявления');
+
+-- Ноль и отрицательное — не «перевёл мало», а испорченное число.
+SELECT must_fail(
+    $q$UPDATE orders SET claimed_at = now(), claimed_minor = 0
+        WHERE id = 'order-1'$q$,
+    'заявление о переводе нуля');
+
+-- А в свой срок — сколько угодно раз: ошибшийся кнопкой вправе поправиться,
+-- и верным считается последнее сказанное.
+UPDATE orders SET claimed_at = now(), claimed_minor = 20000 WHERE id = 'order-1';
+UPDATE orders SET claimed_at = now(), claimed_minor = 19900 WHERE id = 'order-1';
 
 -- --- оплаченный заказ знает время оплаты ----------------------------------
 

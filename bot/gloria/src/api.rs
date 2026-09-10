@@ -16,7 +16,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atlas_billing::{subscription, Callback, PaymentStatus, Wata, YooKassa};
+use atlas_billing::{subscription, Callback, Money, PaymentStatus, Wata, YooKassa};
 use atlas_bot::catalog;
 use atlas_panel::Panel;
 use atlas_store::{Settled, Store};
@@ -172,15 +172,29 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         .map(str::to_owned)
         .filter(|plan| !plan.is_empty());
 
+    // «Я оплатил» вместе с названной суммой. Сумма в пути по той же причине,
+    // что и тариф: разбирать JSON ради одного числа незачем, а проверена она
+    // тем же разбором, что и число из кнопки в чате.
+    let claimed = request
+        .path
+        .strip_prefix("/api/paid/")
+        .map(atlas_bot::menu::parse_claim);
+
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
     if request.path != "/api/me"
         && request.path != "/api/reissue"
-        && request.path != "/api/paid"
+        && claimed.is_none()
         && order_plan.is_none()
     {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
+
+    let claimed = match claimed {
+        Some(Ok(minor)) => Some(minor),
+        Some(Err(_)) => return send(&mut stream, 400, r#"{"error":"сумма не разобралась"}"#),
+        None => None,
+    };
 
     // Перевыпуск меняет состояние, поэтому только POST: по ссылке из чата или
     // предзагрузкой браузера он не должен случаться сам собой.
@@ -217,10 +231,12 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     // «Я оплатил». Подписку это не включает и включать не может: о переводе
     // программе никто не сообщает, знает о нём владелец счёта. Всё, что здесь
     // происходит, — он узнаёт об этом сейчас, а не когда заглянет в
-    // `/pending`. Поэтому и ответ один на все случаи: человеку сказать нечего
-    // сверх «проверю».
-    if request.path == "/api/paid" {
-        if let Err(error) = crate::claim_paid_for(shared, verified.user_id(), now) {
+    // `/pending`, и узнаёт вместе с суммой, по которой платёж ищется в
+    // выписке. Ответ один на все случаи: человеку сказать нечего сверх
+    // «проверю».
+    if let Some(minor) = claimed {
+        let sent = Money::from_minor(minor, atlas_billing::Currency::Rub);
+        if let Err(error) = crate::claim_paid_for(shared, verified.user_id(), sent, now) {
             eprintln!("«Я оплатил» от {}: {error}", verified.user_id());
             return send(&mut stream, 500, r#"{"error":"внутренняя ошибка"}"#);
         }

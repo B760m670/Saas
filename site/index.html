@@ -619,6 +619,17 @@ a.btn.off { opacity: 0.45; }
   <!-- Появляется только вместе со ссылкой на перевод: без неё платить негде,
        и говорить «я оплатил» не о чем. -->
   <button class="btn ghost" id="bill-paid" data-act="paid" hidden>Я оплатил</button>
+
+  <!-- Сколько человек отправил на самом деле.
+       Платёж опознаётся по сумме, а отправить он вправе не то, что
+       выставлено: 198,62 округляют до 199 или до 200. Знает отправленное
+       только он, и спрашивается это одним нажатием. Кнопки заполняет
+       скрипт — суммы считаются от счёта. -->
+  <div id="bill-sent" hidden>
+    <p class="sub" style="margin-top:14px">Какую сумму вы отправили?</p>
+    <div id="bill-sent-options"></div>
+  </div>
+
   <button class="btn ghost" data-act="close-bill">Закрыть</button>
 </div>
 
@@ -912,21 +923,35 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     if (act === 'paid') {
-      /* Подписку это не включает: о переводе программе никто не сообщает,
-         знает о нём только владелец счёта. Кнопка сокращает ожидание — он
-         узнаёт о переводе сразу, а не когда сам заглянет в список счетов.
-         Поэтому и ответ один на все случаи, и повторное нажатие безвредно. */
+      /* Сразу отправить «оплатил» нельзя: непонятно, что искать в выписке.
+         Банк сообщает владельцу сумму и не сообщает отправителя, а человек
+         вправе прислать не то, что выставлено. Поэтому сначала вопрос. */
       haptic();
-      el.disabled = true;
-      fetch('/api/paid', {
+      el.hidden = true;
+      document.getElementById('bill-sent').hidden = false;
+      return;
+    }
+
+    if (act === 'sent') {
+      /* Подписку это не включает: о переводе программе никто не сообщает,
+         знает о нём только владелец счёта. Нажатие сокращает ожидание — он
+         узнаёт о переводе сразу, а не когда сам заглянет в список счетов, и
+         узнаёт вместе с суммой, по которой платёж найдётся. */
+      haptic();
+      var options = document.getElementById('bill-sent-options');
+      options.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+
+      fetch('/api/paid/' + encodeURIComponent(el.dataset.minor), {
         method: 'POST',
         headers: { 'X-Init-Data': (tg && tg.initData) || '' }
       }).then(function (r) {
         if (!r.ok) throw new Error('отказ');
+        document.getElementById('bill-sent').hidden = true;
         document.getElementById('bill-note').textContent =
-          'Спасибо. Проверю перевод и включу подписку — придёт сообщение в чат.';
+          'Спасибо. Найду перевод на ' + el.textContent +
+          ' и включу подписку — придёт сообщение в чат.';
       }).catch(function () {
-        el.disabled = false;
+        options.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
         toast('Не вышло — попробуйте ещё раз');
       });
       return;
@@ -1000,6 +1025,7 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('bill-pay').classList.add('off');
     document.getElementById('bill-paid').hidden = true;
     document.getElementById('bill-paid').disabled = false;
+    sentOptions(0);
     bill(true);
 
     fetch('/api/order/' + encodeURIComponent(plan), {
@@ -1025,6 +1051,7 @@ document.addEventListener('DOMContentLoaded', function () {
         'Счёт действует ' + (o.life || 'сутки') + '. После перевода нажмите «Я оплатил».';
 
       document.getElementById('bill-paid').hidden = false;
+      sentOptions(o.minor);
 
       pay.classList.remove('off');
       pay.onclick = function () {
@@ -1035,6 +1062,46 @@ document.addEventListener('DOMContentLoaded', function () {
       document.getElementById('bill-note').textContent =
         'Счёт не выставился. Попробуйте ещё раз или напишите в поддержку.';
     });
+  }
+
+  /* Варианты «сколько вы отправили»: сам счёт, целые рубли и следующая
+     сотня. Те же три, что показывает чат, и по тому же правилу — 198,62
+     округляют до 199 или до 200, третьего способа ошибиться в ту же
+     сторону нет. Повторы убираются: у счёта на ровные 200 все три
+     совпали бы, и человек увидел бы одну кнопку трижды. */
+  function sentOptions(minor) {
+    var box = document.getElementById('bill-sent-options');
+    box.innerHTML = '';
+    document.getElementById('bill-sent').hidden = true;
+
+    if (!minor) return;
+
+    var seen = {};
+    [minor, roundUp(minor, 100), roundUp(minor, 10000)].forEach(function (value) {
+      if (seen[value]) return;
+      seen[value] = true;
+
+      var b = document.createElement('button');
+      b.className = 'btn ghost';
+      b.dataset.act = 'sent';
+      b.dataset.minor = value;
+      b.textContent = money(value) + (value === minor ? ' — как в счёте' : '');
+      box.appendChild(b);
+    });
+  }
+
+  function roundUp(minor, step) {
+    var tail = minor % step;
+    return tail === 0 ? minor : minor + (step - tail);
+  }
+
+  /* Копейки показываются, только если они есть: «200,00 ₽» рядом с
+     «198,62 ₽» читается как две разные по устройству суммы. */
+  function money(minor) {
+    var rubles = Math.floor(minor / 100);
+    var kopeks = minor % 100;
+    var tail = kopeks ? ',' + String(kopeks).padStart(2, '0') : '';
+    return rubles + tail + ' ₽';
   }
 
   /* Открыть тот раздел, который назвали снаружи.

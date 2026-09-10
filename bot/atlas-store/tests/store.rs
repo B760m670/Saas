@@ -72,6 +72,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0004_reminder_days.sql"),
         "\n",
         include_str!("../../../db/migrations/0005_claimed_orders.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0006_claimed_amount.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -464,13 +466,18 @@ fn whoever_says_they_paid_comes_first() {
         quiet.first().map(|order| order.id.as_str()),
         Some("waits-2")
     );
-    assert!(quiet.iter().all(|order| !order.claimed));
+    assert!(quiet.iter().all(|order| order.claimed.is_none()));
 
     // Отмечается самый свежий счёт человека — тот же, что нашёл бы
-    // запасной выход `/ok <сумма> <номер>`.
+    // запасной выход `/ok <сумма> <номер>`. Названная сумма при этом своя:
+    // человек округлил 198,99 до 200, и в выписке будет она.
     assert_eq!(
-        expect(store.mark_claimed(42, NOW + 30, LIFETIME), "отметка"),
-        Some(("waits-1".to_owned(), rub(19_899)))
+        expect(
+            store.mark_claimed(42, rub(20_000), NOW + 30, LIFETIME),
+            "отметка"
+        ),
+        Some(("waits-1".to_owned(), rub(19_899))),
+        "возвращается не наш счёт, а что-то другое"
     );
 
     let claimed = expect(store.pending_orders(NOW + 40, LIFETIME), "список счетов");
@@ -479,9 +486,14 @@ fn whoever_says_they_paid_comes_first() {
         Some("waits-1"),
         "нажавший «Я оплатил» не поднялся наверх"
     );
-    assert!(claimed.first().is_some_and(|order| order.claimed));
+    // Владельцу нужна названная сумма — по ней он ищет в выписке.
+    assert_eq!(
+        claimed.first().and_then(|order| order.claimed),
+        Some(rub(20_000)),
+        "названная сумма не дошла до списка"
+    );
     assert!(
-        claimed.get(1).is_some_and(|order| !order.claimed),
+        claimed.get(1).is_some_and(|order| order.claimed.is_none()),
         "пометка досталась чужому счёту"
     );
 
@@ -492,19 +504,26 @@ fn whoever_says_they_paid_comes_first() {
         "нажатие кнопки выдало подписку — доступ раздаётся по одному нажатию"
     );
 
-    // Нажавшему нечего отмечать дважды, но нажать он может: счёт тот же.
+    // Ошибся кнопкой — нажал ещё раз. Верно последнее сказанное: иначе
+    // исправить оговорку было бы нечем.
     assert_eq!(
         expect(
-            store.mark_claimed(42, NOW + 50, LIFETIME),
+            store.mark_claimed(42, rub(19_900), NOW + 50, LIFETIME),
             "повторная отметка"
         ),
         Some(("waits-1".to_owned(), rub(19_899)))
+    );
+    let corrected = expect(store.pending_orders(NOW + 55, LIFETIME), "список счетов");
+    assert_eq!(
+        corrected.first().and_then(|order| order.claimed),
+        Some(rub(19_900)),
+        "поправленная сумма не заменила прежнюю"
     );
 
     // У того, кто ничего не выставлял, отмечать нечего.
     assert_eq!(
         expect(
-            store.mark_claimed(44, NOW + 60, LIFETIME),
+            store.mark_claimed(44, rub(19_900), NOW + 60, LIFETIME),
             "отметка без счёта"
         ),
         None

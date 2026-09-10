@@ -9,10 +9,12 @@
 //! возвращаются описанием, а исполняет их вызывающий. Иначе проверить «что
 //! именно бот собирался сделать» можно было бы только по последствиям.
 
-use atlas_billing::subscription;
+use atlas_billing::{subscription, Currency, Money};
 
 use crate::catalog;
-use crate::menu::{connect_menu, main_menu, plans_menu, Action, Button, Device, Keyboard};
+use crate::menu::{
+    connect_menu, main_menu, plans_menu, price_label, Action, Button, Device, Keyboard,
+};
 
 /// Что бот собирается сделать помимо ответа.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,8 +25,12 @@ pub enum Effect {
     GrantTrial,
     /// Выставить счёт по тарифу.
     OpenOrder { plan: String },
-    /// Человек говорит, что перевёл. Владельцу — сходить в банк.
-    ClaimPaid,
+    /// Человек говорит, что перевёл, и называет отправленную сумму.
+    ///
+    /// Сумма здесь — **его слова**, а не наш счёт: весь смысл в том, что он
+    /// мог отправить не то, что мы выставили. Проверяет её владелец по
+    /// выписке, зачисляется она только его командой.
+    ClaimPaid { minor: u64 },
 }
 
 /// Ответ покупателю.
@@ -154,18 +160,85 @@ pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
         Action::Help => (help_screen(view), Effect::None),
         Action::Buy(plan) => buy(plan),
 
+        Action::Paid(minor) => (paid_screen(*minor), Effect::None),
+
         // Доступа это не даёт: проверить перевод может только тот, у кого
         // перед глазами выписка. Обещать срок не будем — обещание, которое
         // некому исполнить ночью, хуже честного «проверю».
-        Action::Paid => (
+        Action::Sent(minor) => (
             Reply {
-                text: "Спасибо. Проверю перевод и включу подписку — \
+                text: "Спасибо. Найду перевод и включу подписку — \
                        придёт сообщение."
                     .to_owned(),
                 keyboard: None,
             },
-            Effect::ClaimPaid,
+            Effect::ClaimPaid { minor: *minor },
         ),
+    }
+}
+
+/// Что человек мог отправить, если выставлено `minor` копеек.
+///
+/// Ровно то, чем счёт отличается от круглого числа: сама сумма, целые рубли
+/// и следующая сотня. Больше вариантов не нужно — 198,62 округляют до 199
+/// или до 200, третьего способа ошибиться в ту же сторону нет.
+///
+/// Порядок от точного к грубому, повторы убраны: у счёта на ровные 200 все
+/// три совпали бы, и человек увидел бы одну кнопку трижды.
+fn claim_options(minor: u64) -> Vec<u64> {
+    let mut options = vec![minor, round_up(minor, 100), round_up(minor, 10_000)];
+    options.dedup();
+    options
+}
+
+/// Округлить вверх до кратного `step`.
+fn round_up(minor: u64, step: u64) -> u64 {
+    match minor % step {
+        0 => minor,
+        tail => minor.saturating_add(step - tail),
+    }
+}
+
+/// Экран «сколько вы отправили».
+///
+/// # Зачем вообще спрашивать
+///
+/// Платёж опознаётся по сумме: 198,62 назвали ровно одному. Это работает,
+/// пока человек вводит названное, — а он вправе отправить 199 или 200,
+/// и тогда его перевод не совпадает ни с одним счётом.
+///
+/// Знает отправленное только он сам. Банк сообщает владельцу сумму и не
+/// сообщает, кто её отправил; мы знаем, кто нажал, и не знаем сколько.
+/// Вопрос сводит эти две половины вместе, и стоит он один тап.
+///
+/// Кнопки, а не ввод числа: набранное руками пришлось бы разбирать,
+/// переспрашивать и ловить «двести рублей» словами.
+fn paid_screen(minor: u64) -> Reply {
+    // Рубли здесь заданы прямо: кнопка «Я оплатил» стоит только под счётом
+    // на перевод, а перевод у нас рублёвый. Появится счёт в другой валюте —
+    // валюту придётся везти в самой кнопке.
+    let money = |minor| Money::from_minor(minor, Currency::Rub);
+
+    let rows = claim_options(minor)
+        .into_iter()
+        .map(|option| {
+            let label = if option == minor {
+                format!("{} — как в счёте", price_label(money(option)))
+            } else {
+                price_label(money(option))
+            };
+            vec![Button::new(label, Action::Sent(option))]
+        })
+        .collect();
+
+    Reply {
+        text: "Какую сумму вы отправили?\n\n\
+               Банк сообщает мне только сумму перевода, не имя отправителя. \
+               По ней я и нахожу, чей платёж, — поэтому важно, \
+               что вы отправили, а не что было в счёте.\n\n\
+               Если сумма другая — напишите @GloriaVPNSupport, разберёмся вручную."
+            .to_owned(),
+        keyboard: Some(Keyboard { rows }),
     }
 }
 
@@ -297,7 +370,7 @@ fn buy(plan_id: &str) -> (Reply, Effect) {
 
 #[cfg(test)]
 mod tests {
-    use super::{on_action, on_message, plural, Effect, View};
+    use super::{claim_options, on_action, on_message, paid_screen, plural, Effect, View};
     use crate::menu::{Action, Device};
 
     const NOW: i64 = 1_760_000_000;
@@ -483,12 +556,49 @@ mod tests {
     /// продлевало, доступ раздавался бы по одному нажатию.
     #[test]
     fn saying_you_paid_does_not_grant_anything() {
-        let (reply, effect) = on_action(&Action::Paid, &expired());
-        assert_eq!(effect, Effect::ClaimPaid);
+        let (_, asked) = on_action(&Action::Paid(19_899), &expired());
+        assert_eq!(asked, Effect::None, "вопрос о сумме что-то сделал");
+
+        let (reply, effect) = on_action(&Action::Sent(20_000), &expired());
+        assert_eq!(effect, Effect::ClaimPaid { minor: 20_000 });
         assert!(
             !reply.text.is_empty(),
             "нажатие осталось без ответа — человек решит, что кнопка не работает"
         );
+    }
+
+    /// Названная сумма — **слова покупателя**, и до владельца она обязана
+    /// доехать нетронутой. Подставить вместо неё наш счёт значило бы
+    /// отправить его искать в выписке то, чего там нет.
+    #[test]
+    fn the_named_sum_is_the_one_the_person_pressed() {
+        for minor in [19_899_u64, 19_900, 20_000] {
+            let (_, effect) = on_action(&Action::Sent(minor), &expired());
+            assert_eq!(effect, Effect::ClaimPaid { minor });
+        }
+    }
+
+    /// Вопрос «сколько вы отправили» обязан предлагать ровно то, чем люди
+    /// ошибаются: сам счёт, целые рубли и следующую сотню.
+    #[test]
+    fn the_question_offers_the_ways_people_round() {
+        assert_eq!(claim_options(19_899), vec![19_899, 19_900, 20_000]);
+        assert_eq!(claim_options(49_863), vec![49_863, 49_900, 50_000]);
+
+        // Ровный счёт округлять некуда — одна кнопка вместо трёх одинаковых.
+        assert_eq!(claim_options(20_000), vec![20_000]);
+        assert_eq!(claim_options(19_900), vec![19_900, 20_000]);
+    }
+
+    /// Экран без кнопок — тупик: человек уже перевёл деньги и сказать об
+    /// этом ему нечем.
+    #[test]
+    fn the_question_always_has_buttons() {
+        for minor in [19_899_u64, 19_900, 20_000, 129_000] {
+            let reply = paid_screen(minor);
+            let buttons = reply.keyboard.map_or(0, |keys| keys.buttons().count());
+            assert!(buttons > 0, "у счёта на {minor} копеек нет ответов");
+        }
     }
 
     /// Цены меняются, а старая кнопка остаётся у человека в переписке. Нажав

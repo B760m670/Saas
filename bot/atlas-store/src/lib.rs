@@ -142,10 +142,16 @@ pub struct Pending {
     pub plan: String,
     /// Сумма, по которой платёж узнаётся в уведомлении банка.
     pub amount: Money,
-    /// Сказал ли покупатель, что уже перевёл. Не подтверждение оплаты:
-    /// поступление видит только владелец счёта. Нужно, когда сумма в
-    /// выписке круглая и по ней счёт не находится.
-    pub claimed: bool,
+    /// Сколько покупатель говорит, что отправил. `None` — молчит.
+    ///
+    /// Не подтверждение оплаты: поступление видит только владелец счёта.
+    /// Нужно, когда отправлено не выставленное — по нашей сумме такой
+    /// платёж не находится, а по названной находится сразу.
+    ///
+    /// Может расходиться с [`Self::amount`], и в этом весь смысл. Может
+    /// быть и `None` при уже нажатой кнопке: так выглядят отметки,
+    /// поставленные до того, как сумму начали спрашивать.
+    pub claimed: Option<Money>,
 }
 
 /// Разобрать строку вида «номер, сумма, валюта» в номер и сумму.
@@ -162,6 +168,25 @@ fn named_order(row: Row) -> Result<(String, Money), Error> {
         u64::try_from(minor).map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
 
     Ok((row.try_get(0)?, Money::from_minor(minor, currency)))
+}
+
+/// Названная покупателем сумма из строки `/pending`.
+///
+/// Нажатие без суммы (отметка, поставленная до того, как её начали
+/// спрашивать) отвечает `None` — так же, как отсутствие нажатия. Для
+/// владельца это одно и то же: подсказки нет, ищет он сам.
+fn claimed_amount(row: &Row, currency: Currency) -> Result<Option<Money>, Error> {
+    if !row.try_get::<_, bool>(5)? {
+        return Ok(None);
+    }
+
+    let Some(minor) = row.try_get::<_, Option<i64>>(6)? else {
+        return Ok(None);
+    };
+    let minor =
+        u64::try_from(minor).map_err(|_| Error::Inconsistent("названная сумма отрицательна"))?;
+
+    Ok(Some(Money::from_minor(minor, currency)))
 }
 
 /// Хранилище.
@@ -512,7 +537,7 @@ impl Store {
     pub fn pending_orders(&mut self, now: i64, lifetime: i64) -> Result<Vec<Pending>, Error> {
         let rows = self.client.query(
             "SELECT id, telegram_id, plan, amount_minor, currency,
-                    claimed_at IS NOT NULL
+                    claimed_at IS NOT NULL, claimed_minor
                FROM orders
               WHERE status = 'pending' AND created_at > to_timestamp($1::bigint)
               ORDER BY claimed_at DESC NULLS LAST, created_at DESC
@@ -534,7 +559,7 @@ impl Store {
                 telegram_id: row.try_get(1)?,
                 plan: row.try_get(2)?,
                 amount: Money::from_minor(minor, currency),
-                claimed: row.try_get(5)?,
+                claimed: claimed_amount(&row, currency)?,
             });
         }
         Ok(pending)
@@ -650,36 +675,50 @@ impl Store {
         row.map(named_order).transpose()
     }
 
-    /// Отметить, что покупатель сказал «я оплатил».
+    /// Отметить, что покупатель сказал «я оплатил», и сколько отправил.
     ///
     /// Отметка **не подтверждение**: нажимает её покупатель, а поступление
     /// видит только владелец счёта. Она нужна там, где перестаёт работать
-    /// уникальный хвост копеек, — когда сумму ввели по памяти.
+    /// уникальный хвост копеек, — когда отправили не то, что выставлено.
     ///
     /// Хвост отвечает на вопрос «чей платёж», пока сумма совпадает до
     /// копейки. Круглые 199 или 200 не принадлежат никому намеренно: иначе
     /// платёж по памяти зачислился бы чужому заказу. Такой перевод уходит в
-    /// ручной разбор — и вот там отметка сужает круг подозреваемых до тех,
-    /// кто прямо сейчас говорит, что перевёл.
+    /// ручной разбор — и там нужно знать, кто сколько отправил.
+    ///
+    /// Одного «я оплатил» для этого мало. Если двое нажали, а в выписке
+    /// лежат 200 и 199, отметка говорит, что оба ждут, и молчит о том, кто
+    /// из них кто. Поэтому вместе с ней хранится `sent` — **слова
+    /// покупателя** о том, сколько он отправил. Знает это только он: банк
+    /// сообщает владельцу сумму и не сообщает отправителя.
+    ///
+    /// Возвращается счёт с **нашей** суммой, а не с названной: расхождение
+    /// между ними и есть то, ради чего всё это заведено.
     ///
     /// Отмечается тот же счёт, что вернул бы [`Store::pending_order_of`], —
-    /// самый свежий открытый. Повторное нажатие переставляет время: человек,
-    /// нажавший дважды, всё ещё ждёт, и в списке он должен быть свежим.
+    /// самый свежий открытый. Повторное нажатие переставляет и время, и
+    /// сумму: человек, ошибшийся кнопкой, вправе нажать ещё раз, и верным
+    /// считается последнее сказанное.
     pub fn mark_claimed(
         &mut self,
         telegram_id: i64,
+        sent: Money,
         now: i64,
         lifetime: i64,
     ) -> Result<Option<(String, Money)>, Error> {
+        let minor = i64::try_from(sent.minor())
+            .map_err(|_| Error::Inconsistent("названная сумма не помещается в BIGINT"))?;
+
         let row = self.client.query_opt(
-            "UPDATE orders SET claimed_at = to_timestamp($2::bigint)
+            "UPDATE orders
+                SET claimed_at = to_timestamp($2::bigint), claimed_minor = $4
               WHERE id = (SELECT id FROM orders
                            WHERE status = 'pending' AND telegram_id = $1
                              AND created_at > to_timestamp($3::bigint)
                            ORDER BY created_at DESC
                            LIMIT 1)
           RETURNING id, amount_minor, currency",
-            &[&telegram_id, &now, &(now - lifetime)],
+            &[&telegram_id, &now, &(now - lifetime), &minor],
         )?;
 
         row.map(named_order).transpose()

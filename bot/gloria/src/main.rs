@@ -674,7 +674,9 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
             Ok(action) => flow::on_action(&action, &view),
             // Нажатие, которого мы не понимаем, — либо старая кнопка, либо
             // изменённый клиент. И то и другое лечится показом меню.
-            Err(Unknown::NoSuchAction | Unknown::BadPlanName) => flow::on_message("", &view),
+            Err(Unknown::NoSuchAction | Unknown::BadPlanName | Unknown::BadAmount) => {
+                flow::on_message("", &view)
+            }
         },
     };
 
@@ -909,15 +911,20 @@ fn apply(
             Ok(Some(transfer_invoice(config, amount)))
         }
 
-        flow::Effect::ClaimPaid => {
+        flow::Effect::ClaimPaid { minor } => {
             // Программа о зачислении не знает: банк ей не сообщает. Знает
             // владелец счёта — и вся кнопка в том, чтобы он узнал сейчас, а
             // не когда сам заглянет в /pending.
+            let sent = Money::from_minor(*minor, atlas_billing::Currency::Rub);
             let found = store
-                .mark_claimed(telegram_id, now, catalog::INVOICE_LIFETIME)
+                .mark_claimed(telegram_id, sent, now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("база: {error}"))?;
 
-            notify_admins(config, telegram, &claim_text(telegram_id, found.as_ref()));
+            notify_admins(
+                config,
+                telegram,
+                &claim_text(telegram_id, found.as_ref(), sent),
+            );
             Ok(None)
         }
     }
@@ -950,21 +957,30 @@ fn admin(
 
             let mut answer = String::from("Ожидают оплаты:\n");
             for order in pending {
-                // Пометка стоит у тех, кто нажал «Я оплатил», и они же идут
-                // первыми. Это единственная зацепка, когда в выписке круглая
-                // сумма: по ней счёт не находится, зато находится тот, кто
-                // прямо сейчас говорит, что перевёл.
-                let claim = if order.claimed {
-                    " ✔ сказал, что оплатил"
-                } else {
-                    ""
+                // Названная покупателем сумма — то, что ищется в выписке,
+                // и она же идёт в готовую команду. Наша стоит рядом только
+                // затем, чтобы владелец видел расхождение, а не гадал,
+                // почему числа разные.
+                let (search, note) = match order.claimed {
+                    Some(sent) if sent != order.amount => (
+                        sent,
+                        format!(
+                            " ✔ говорит: <b>{}</b> (счёт {})",
+                            atlas_bot::menu::price_label(sent),
+                            atlas_bot::menu::price_label(order.amount),
+                        ),
+                    ),
+                    Some(sent) => (sent, " ✔ говорит, что отправил".to_owned()),
+                    None => (order.amount, String::new()),
                 };
+
                 answer.push_str(&format!(
-                    "\n<code>{}</code> · {} · {}{claim}\n  подтвердить: /ok {}",
-                    atlas_bot::menu::price_label(order.amount),
+                    "\n<code>{}</code> · {} · {}{note}\n  подтвердить: /ok {} {}",
+                    atlas_bot::menu::price_label(search),
                     order.plan,
                     order.telegram_id,
-                    order.amount.to_decimal(),
+                    search.to_decimal(),
+                    order.telegram_id,
                 ));
             }
             Ok(Some(answer))
@@ -1044,29 +1060,43 @@ fn admin(
 
 /// Что получает владелец, когда покупатель говорит «я оплатил».
 ///
-/// Сообщение содержит готовую команду, а не приглашение её вспомнить:
-/// подтверждение — то единственное, что владелец делает руками, и делает он
-/// это с телефона. Вторая команда — на случай, когда сумма не сошлась:
-/// человек округлил хвост или отправил цену по памяти.
+/// `sent` — сумма, которую назвал сам покупатель. Именно она ищется в
+/// выписке и именно она стоит в готовой команде: наш счёт владельцу здесь
+/// не нужен, он его уже видел при выставлении.
+///
+/// Команда даётся готовой, а не приглашением её вспомнить: подтверждение —
+/// то единственное, что владелец делает руками, и делает он это с телефона.
 ///
 /// Счёта может и не быть: истёк или кнопка нажата из старого сообщения.
 /// Владельцу это всё равно сообщается — деньги-то могли прийти, — но
-/// подтверждать тогда нечего, и готовых команд нет.
-fn claim_text(telegram_id: i64, order: Option<&(String, Money)>) -> String {
-    let Some((order_id, amount)) = order else {
+/// подтверждать тогда нечего, и готовой команды нет.
+fn claim_text(telegram_id: i64, order: Option<&(String, Money)>, sent: Money) -> String {
+    let label = atlas_bot::menu::price_label(sent);
+
+    let Some((order_id, invoiced)) = order else {
         return format!(
-            "{telegram_id} говорит, что оплатил, но открытого счёта у него нет. \
+            "{telegram_id} говорит, что отправил <b>{label}</b>, \
+             но открытого счёта у него нет. \
              Если перевод был — попросите выставить счёт заново."
         );
     };
 
+    // Расхождение называется вслух. Иначе владелец, помнящий счёт на 198,62,
+    // ищет в выписке 198,62 и не находит ничего: человек отправил 200.
+    let mismatch = if *invoiced == sent {
+        String::new()
+    } else {
+        format!(
+            "\nСчёт был на {} — округлил.",
+            atlas_bot::menu::price_label(*invoiced)
+        )
+    };
+
     format!(
-        "<b>{}</b> · от {telegram_id} · счёт <code>{order_id}</code>\n\
-         Человек говорит, что перевёл. Проверьте поступление.\n  \
-         подтвердить: /ok {}\n  \
-         если сумма не сошлась: /ok <i>сколько пришло</i> {telegram_id}",
-        atlas_bot::menu::price_label(*amount),
-        amount.to_decimal(),
+        "Ищите в выписке <b>{label}</b> · от {telegram_id} · \
+         счёт <code>{order_id}</code>{mismatch}\n  \
+         подтвердить: /ok {} {telegram_id}",
+        sent.to_decimal(),
     )
 }
 
@@ -1241,9 +1271,14 @@ pub(crate) fn open_order_for(
         None => String::new(),
     };
 
+    // `minor` — то же число в копейках. Из него кабинет строит варианты
+    // «сколько вы отправили», ровно как их строит чат: считать их на
+    // сервере и везти списком значило бы завести второе место, где живёт
+    // одно правило округления.
     Ok(format!(
-        r#"{{"amount":"{}","label":"{}",{pay}"life":"{}","orderId":"{order_id}"}}"#,
+        r#"{{"amount":"{}","minor":{},"label":"{}",{pay}"life":"{}","orderId":"{order_id}"}}"#,
         amount.to_decimal(),
+        amount.minor(),
         atlas_bot::menu::price_label(amount),
         atlas_tg::escape_json(&catalog::invoice_lifetime_label()),
     ))
@@ -1256,6 +1291,7 @@ pub(crate) fn open_order_for(
 pub(crate) fn claim_paid_for(
     shared: &api::Shared,
     telegram_id: i64,
+    sent: Money,
     now: i64,
 ) -> Result<(), String> {
     let found = {
@@ -1264,11 +1300,11 @@ pub(crate) fn claim_paid_for(
             .lock()
             .map_err(|_| "замок базы испорчен".to_owned())?;
         store
-            .mark_claimed(telegram_id, now, catalog::INVOICE_LIFETIME)
+            .mark_claimed(telegram_id, sent, now, catalog::INVOICE_LIFETIME)
             .map_err(|error| format!("база: {error}"))?
     };
 
-    let text = claim_text(telegram_id, found.as_ref());
+    let text = claim_text(telegram_id, found.as_ref(), sent);
     if let Some(telegram) = &shared.telegram {
         for admin in &shared.admins {
             tell(telegram, *admin, &text);
@@ -1396,7 +1432,7 @@ fn transfer_invoice(config: &Config, amount: atlas_billing::Money) -> Extra {
         keyboard: Some(Keyboard {
             rows: vec![
                 vec![Button::link("Оплатить", link.clone())],
-                vec![Button::new("Я оплатил", Action::Paid)],
+                vec![Button::new("Я оплатил", Action::Paid(amount.minor()))],
             ],
         }),
     }
