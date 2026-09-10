@@ -14,7 +14,7 @@ pub mod flow;
 pub mod menu;
 
 pub use catalog::{plan, plans};
-pub use flow::{on_action, on_message, Effect, Reply, View};
+pub use flow::{gigabytes, on_action, on_message, Effect, Reply, View};
 pub use menu::{
     connect_menu, main_menu, plan_label, plans_menu, Action, Button, Device, Keyboard, Press,
     Unknown, CALLBACK_LIMIT,

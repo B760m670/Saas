@@ -374,7 +374,10 @@ a.btn.off { opacity: 0.45; }
     <div style="margin-top:14px"><span class="badge warn" id="st-badge">проверяем</span></div>
     <div class="chips">
       <span class="chip" id="st-devices">— из 3 устройств</span>
-      <span class="chip">Безлимитный трафик</span>
+      <!-- Подпись меняется: у пробы трафик ограничен, у подписки нет.
+           Обещать безлимит тому, у кого пять гигабайт, — обман, который
+           вскроется ровно в тот момент, когда VPN отключится. -->
+      <span class="chip" id="st-traffic">Безлимитный трафик</span>
     </div>
     <button class="btn" id="renew" data-act="plans" style="margin-top:18px">Продлить</button>
   </div>
@@ -722,11 +725,21 @@ document.addEventListener('DOMContentLoaded', function () {
     var known = !!s.status;
     var left = Number(s.daysLeft) || 0;
 
+    /* У пробы предел не в днях, а в гигабайтах: трафик кончится раньше
+       срока, VPN отключится, а «осталось 13 дней» будет обещать неделю.
+       Поэтому пока идёт проба, крупно стоит остаток трафика, а дни не
+       называются вовсе. Число присылает сервер, считает его панель. */
+    var onTrial = s.status === 'trial' && s.trialLeft != null;
+
     document.getElementById('st-days').textContent =
       !known ? '—' : (s.status === 'expired' ? 'Истекла'
-                                             : left + ' ' + plural(left, 'день', 'дня', 'дней'));
+        : (onTrial ? s.trialLeft
+                   : left + ' ' + plural(left, 'день', 'дня', 'дней')));
+
     document.getElementById('st-until').textContent =
-      !known ? '' : (s.status === 'expired' ? 'Продлите, чтобы продолжить' : 'до ' + s.expiresAt);
+      !known ? '' : (s.status === 'expired' ? 'Продлите, чтобы продолжить'
+        : (onTrial ? 'из ' + (s.trialTotal || '5 ГБ') + ' на пробу'
+                   : 'до ' + s.expiresAt));
 
     var badge = document.getElementById('st-badge');
     badge.hidden = !known;
@@ -738,6 +751,9 @@ document.addEventListener('DOMContentLoaded', function () {
        спрашивает, честнее сказать «до трёх», чем «0 из 3» тому, у кого их
        два. Запасное число обязано совпадать с `catalog::DEVICES`: оно
        показывается, когда сервер не ответил, и разойдясь — соврёт. */
+    document.getElementById('st-traffic').textContent =
+      onTrial ? (s.trialTotal || '5 ГБ') + ' на пробу' : 'Безлимитный трафик';
+
     var limit = s.deviceLimit || 3;
     var word = plural(limit, 'устройства', 'устройств', 'устройств');
     document.getElementById('st-devices').textContent =

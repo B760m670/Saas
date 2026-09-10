@@ -53,6 +53,13 @@ pub struct View<'a> {
     pub subscription_url: Option<&'a str>,
     /// Адрес кабинета. Есть — кнопки ведут в него, а не в переписку.
     pub app_url: Option<&'a str>,
+    /// Сколько трафика осталось у пробы, байт. `None` — потолка нет.
+    ///
+    /// У пробы предел не в днях, а в гигабайтах, и показывать ей дни
+    /// значит врать: трафик кончится раньше срока, VPN отключится, а экран
+    /// будет обещать ещё неделю. Ровно та же ложь, что была с датой,
+    /// поправленной в панели руками.
+    pub trial_left: Option<u64>,
     /// Текущий момент.
     pub now: i64,
 }
@@ -122,10 +129,9 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
         "/start" if !view.trial_used => (
             Reply {
                 text: format!(
-                    "Подписка на {} {} уже включена — платить пока не нужно.\n\n\
+                    "{} на пробу уже включены — платить пока не нужно.\n\n\
                      Нажмите «Подключить», и я покажу, что делать дальше.",
-                    catalog::TRIAL_DAYS,
-                    plural(i64::from(catalog::TRIAL_DAYS), "день", "дня", "дней")
+                    gigabytes(catalog::TRIAL_BYTES)
                 ),
                 keyboard: Some(main_menu(view.app_url)),
             },
@@ -175,6 +181,27 @@ pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
             },
             Effect::ClaimPaid { minor: *minor },
         ),
+    }
+}
+
+/// Байты словами: «4,3 ГБ».
+///
+/// Один знак после запятой, и не из скупости: «4,28 ГБ» человек всё равно
+/// читает как «около четырёх», а лишние цифры выглядят точностью, которой
+/// у счётчика трафика нет.
+///
+/// Гигабайт здесь двоичный — тот же, каким его считает панель. Иначе наши
+/// пять гигабайт не сошлись бы с её пятью.
+#[must_use]
+pub fn gigabytes(bytes: u64) -> String {
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    let whole = bytes / GIB;
+    let tenths = (bytes % GIB) * 10 / GIB;
+    if tenths == 0 {
+        format!("{whole} ГБ")
+    } else {
+        format!("{whole},{tenths} ГБ")
     }
 }
 
@@ -282,7 +309,22 @@ fn other_amount_screen(view: &View<'_>) -> Reply {
 }
 
 fn subscription_screen(view: &View<'_>) -> Reply {
-    let head = if view.is_active() {
+    // У пробы своя мера. Пока она идёт, дни не называются вовсе: человек
+    // упрётся в гигабайты гораздо раньше, чем в дату, и число дней ввело бы
+    // его в заблуждение ровно в тот момент, когда VPN перестал работать.
+    let head = if let Some(left) = view.trial_left.filter(|_| view.is_active()) {
+        if left == 0 {
+            "Пробные гигабайты закончились.\n\n\
+             Дальше — подписка: трафик без ограничений."
+                .to_owned()
+        } else {
+            format!(
+                "Пробный доступ: осталось {} из {}.",
+                gigabytes(left),
+                gigabytes(catalog::TRIAL_BYTES)
+            )
+        }
+    } else if view.is_active() {
         let days = view.days_left();
         format!(
             "Подписка активна: осталось {days} {}.",
@@ -425,6 +467,7 @@ mod tests {
             trial_used: false,
             subscription_url: None,
             app_url: None,
+            trial_left: None,
             now: NOW,
         }
     }
@@ -435,6 +478,7 @@ mod tests {
             trial_used: true,
             subscription_url: Some(LINK),
             app_url: None,
+            trial_left: None,
             now: NOW,
         }
     }
@@ -445,6 +489,7 @@ mod tests {
             trial_used: true,
             subscription_url: Some(LINK),
             app_url: None,
+            trial_left: None,
             now: NOW,
         }
     }
@@ -456,7 +501,8 @@ mod tests {
     fn the_first_start_turns_the_trial_on_without_asking() {
         let (reply, effect) = on_message("/start", &newcomer());
         assert_eq!(effect, Effect::GrantTrial);
-        assert!(reply.text.contains("3 дня"), "{}", reply.text);
+        // Проба называется гигабайтами, а не днями: её предел — трафик.
+        assert!(reply.text.contains("5 ГБ"), "{}", reply.text);
     }
 
     #[test]
@@ -677,6 +723,51 @@ mod tests {
         }
     }
 
+    /// У пробы предел в гигабайтах, и показывать ей дни — врать: трафик
+    /// кончится раньше срока, VPN отключится, а экран будет обещать неделю.
+    #[test]
+    fn a_trial_is_measured_in_gigabytes_not_days() {
+        let mut view = active();
+        view.trial_left = Some(3 * 1024 * 1024 * 1024 + 1024 * 1024 * 1024 / 2);
+
+        let text = on_action(&Action::Subscription, &view).0.text;
+        assert!(text.contains("3,5 ГБ"), "не показан остаток: {text}");
+        assert!(text.contains("5 ГБ"), "не названо, из скольких: {text}");
+        // Именно «дней», а не «дн»: подстрока «дн» есть в слове «одна»,
+        // которое стоит в строке про ссылку. Проверка на неё срабатывала
+        // на ровном месте.
+        assert!(
+            !["день", "дня", "дней"]
+                .iter()
+                .any(|word| text.contains(word)),
+            "у пробы названы дни: {text}"
+        );
+
+        // Кончились — говорим прямо, а не «осталось 0».
+        view.trial_left = Some(0);
+        let text = on_action(&Action::Subscription, &view).0.text;
+        assert!(text.contains("закончились"), "{text}");
+
+        // У оплаченной подписки предел прежний — дни.
+        view.trial_left = None;
+        let text = on_action(&Action::Subscription, &view).0.text;
+        assert!(text.contains("дн"), "у подписки пропали дни: {text}");
+    }
+
+    /// Округление вниз до десятых, и без «5,0 ГБ» у ровного числа.
+    #[test]
+    fn gigabytes_read_like_people_write_them() {
+        use super::gigabytes;
+        const GIB: u64 = 1024 * 1024 * 1024;
+
+        assert_eq!(gigabytes(5 * GIB), "5 ГБ");
+        assert_eq!(gigabytes(0), "0 ГБ");
+        assert_eq!(gigabytes(GIB / 2), "0,5 ГБ");
+        assert_eq!(gigabytes(3 * GIB + GIB / 4), "3,2 ГБ");
+        // Ни байта не показываем больше, чем есть: 4,99 — это «4,9».
+        assert_eq!(gigabytes(5 * GIB - 1), "4,9 ГБ");
+    }
+
     /// Любая сумма обязана быть выразимой. Готовых три, и человек, отправивший
     /// 250, упирался бы без этого в переписку вручную.
     #[test]
@@ -801,6 +892,7 @@ mod tests {
             trial_used: true,
             subscription_url: None,
             app_url: None,
+            trial_left: None,
             now: NOW,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -818,6 +910,7 @@ mod tests {
             trial_used: true,
             subscription_url: None,
             app_url: None,
+            trial_left: None,
             now: granted_at + 10 * 60,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -834,6 +927,7 @@ mod tests {
             trial_used: true,
             subscription_url: None,
             app_url: None,
+            trial_left: None,
             now: NOW,
         };
         assert!(view.is_active());

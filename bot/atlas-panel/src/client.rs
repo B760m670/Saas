@@ -47,6 +47,11 @@ pub struct NewUser {
     pub squads: Vec<String>,
     /// Сколько устройств разрешено.
     pub device_limit: u8,
+    /// Потолок трафика в байтах. `0` — без ограничения.
+    ///
+    /// Ограничена только проба: она мерится гигабайтами, и это её
+    /// единственный настоящий предел. У оплаченной подписки здесь `0`.
+    pub traffic_limit: u64,
 }
 
 /// Пользователь, каким его вернула панель.
@@ -73,9 +78,27 @@ pub struct User {
     pub expires_at: i64,
     /// Ссылка на подписку — то, что вставляется в приложение.
     pub subscription_url: String,
+    /// Сколько трафика израсходовано, байт.
+    pub used_traffic: u64,
+    /// Потолок трафика, байт. `0` — без ограничения.
+    pub traffic_limit: u64,
 }
 
 impl User {
+    /// Сколько трафика осталось. `None` — потолка нет вовсе.
+    ///
+    /// Считает **панель**, а не мы: у неё эти байты и живут. Наше дело —
+    /// показать остаток человеку, у которого проба мерится гигабайтами, а
+    /// не днями. Без этого он видел бы «осталось 13 дней» при VPN, который
+    /// уже отключился, — та же ложь, что когда-то была с датой из панели.
+    #[must_use]
+    pub const fn traffic_left(&self) -> Option<u64> {
+        if self.traffic_limit == 0 {
+            return None;
+        }
+        Some(self.traffic_limit.saturating_sub(self.used_traffic))
+    }
+
     /// Действует ли подписка по мнению панели.
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -203,9 +226,14 @@ impl Panel {
                 r#"{{"username":"{username}","#,
                 r#""telegramId":{telegram},"#,
                 r#""expireAt":"{expires}","#,
-                // 0 означает «без ограничения». Тариф у нас один — безлимит,
-                // и различие по трафику мы не продаём (docs/14-bot.md §2).
-                r#""trafficLimitBytes":0,"#,
+                // 0 означает «без ограничения», и у оплаченной подписки
+                // стоит именно оно: различие по трафику мы не продаём
+                // (docs/14-bot.md §2). Ограничена только проба.
+                r#""trafficLimitBytes":{traffic},"#,
+                // Без стратегии панель считает потолок пожизненным, а не
+                // помесячным. Пробе это и нужно: пять гигабайт даются один
+                // раз, а не каждый месяц заново.
+                r#""trafficLimitStrategy":"NO_RESET","#,
                 r#""hwidDeviceLimit":{devices},"#,
                 r#""activeInternalSquads":[{squads}]}}"#
             ),
@@ -213,6 +241,7 @@ impl Panel {
             telegram = user.telegram_id,
             expires = to_iso8601(user.expires_at),
             devices = user.device_limit,
+            traffic = user.traffic_limit,
             squads = squads,
         );
 
@@ -243,10 +272,17 @@ impl Panel {
     /// посчитано и проверено у нас (`atlas_billing::subscription::extend`), и
     /// второго места, где оно живёт, быть не должно. Панель здесь только
     /// хранит то, что мы решили.
+    /// Потолок трафика уезжает вместе с датой — и это здесь главное.
+    ///
+    /// Проба заводится с потолком в пять гигабайт. Если при оплате послать
+    /// одну лишь дату, потолок останется, и человек, заплативший за месяц,
+    /// упрётся в те же пять гигабайт. Поэтому оба поля всегда ходят вместе:
+    /// не «снять ограничение при оплате», а «состояние в панели — это то,
+    /// что мы о человеке знаем».
     #[must_use]
-    pub fn set_expiry(&self, panel_id: i64, expires_at: i64) -> Request {
+    pub fn set_expiry(&self, panel_id: i64, expires_at: i64, traffic_limit: u64) -> Request {
         let body = format!(
-            r#"{{"id":{panel_id},"expireAt":"{}","status":"ACTIVE"}}"#,
+            r#"{{"id":{panel_id},"expireAt":"{}","trafficLimitBytes":{traffic_limit},"status":"ACTIVE"}}"#,
             to_iso8601(expires_at)
         );
         Request {
@@ -330,6 +366,13 @@ impl Panel {
             expire_at: String,
             #[serde(rename = "subscriptionUrl")]
             subscription_url: Option<String>,
+            // Сколько израсходовано и сколько разрешено. Оба необязательны:
+            // сборки панели отвечают по-разному, а без этих чисел работает
+            // всё, кроме показа остатка пробы.
+            #[serde(rename = "usedTrafficBytes", default)]
+            used_traffic: u64,
+            #[serde(rename = "trafficLimitBytes", default)]
+            traffic_limit: u64,
         }
 
         let envelope: serde_json::Value = serde_json::from_slice(response)
@@ -364,6 +407,8 @@ impl Panel {
             status: body.status,
             expires_at,
             subscription_url: body.subscription_url.unwrap_or_default(),
+            used_traffic: body.used_traffic,
+            traffic_limit: body.traffic_limit,
         })
     }
 }
@@ -389,6 +434,7 @@ mod tests {
             expires_at: 1_767_225_600, // 2026-01-01T00:00:00Z
             squads: vec!["b6f5d810-8ef3-4be9-9012-3456789abcde".to_owned()],
             device_limit: 4,
+            traffic_limit: 5 * 1024 * 1024 * 1024,
         }
     }
 
@@ -420,7 +466,11 @@ mod tests {
             "{body}"
         );
         assert!(body.contains(r#""hwidDeviceLimit":4"#));
-        assert!(body.contains(r#""trafficLimitBytes":0"#));
+        assert!(body.contains(r#""trafficLimitBytes":5368709120"#), "{body}");
+        assert!(
+            body.contains(r#""trafficLimitStrategy":"NO_RESET""#),
+            "{body}"
+        );
         assert!(body.contains("b6f5d810-8ef3-4be9-9012-3456789abcde"));
     }
 
@@ -483,7 +533,7 @@ mod tests {
     #[test]
     fn the_expiry_is_set_as_an_absolute_date() {
         let Some(panel) = panel() else { return };
-        let request = panel.set_expiry(7, 1_788_000_000);
+        let request = panel.set_expiry(7, 1_788_000_000, 0);
         assert_eq!(request.method, Method::Patch);
         assert_eq!(request.url, "https://panel.example.org/api/users");
 
@@ -497,6 +547,15 @@ mod tests {
             !body.contains("days"),
             "срок не должен считаться панелью: {body}"
         );
+
+        // Потолок уезжает вместе с датой, и это здесь главное: проба
+        // заводится с пятью гигабайтами, и без этой строки заплативший
+        // остался бы с ними же.
+        assert!(body.contains(r#""trafficLimitBytes":0"#), "{body}");
+
+        let trial = panel.set_expiry(7, 1_788_000_000, 5 * 1024 * 1024 * 1024);
+        let body = String::from_utf8_lossy(&trial.body);
+        assert!(body.contains(r#""trafficLimitBytes":5368709120"#), "{body}");
     }
 
     #[test]

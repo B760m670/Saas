@@ -577,9 +577,16 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         .as_ref()
         .map(|name| format!("https://t.me/{name}?start=ref_{telegram_id}"));
 
+    // У пробы предел не в днях, а в гигабайтах. Показывать ей дни значит
+    // врать: трафик кончится раньше срока, VPN отключится, а кабинет будет
+    // обещать ещё неделю.
+    let trial_left = crate::trial_left(&shared.panel, &subscriber);
+
     Ok(serde_json::json!({
         "status": status,
         "daysLeft": subscription::days_left(expires_at, now),
+        "trialLeft": trial_left.map(atlas_bot::gigabytes),
+        "trialTotal": atlas_bot::gigabytes(catalog::TRIAL_BYTES),
         "expiresAt": expires_at.map(day_month_year),
         // Сколько устройств занято, знает панель, а не мы. Присылать ноль
         // значило бы показать «0 из 4» тому, у кого их два.

@@ -93,6 +93,13 @@ pub struct PanelWork {
     pub panel_id: i64,
     /// Какую дату везём.
     pub expires_at: i64,
+    /// Была ли хоть одна оплата.
+    ///
+    /// От этого зависит потолок трафика, который уезжает вместе с датой:
+    /// у пробы он есть, у оплаченной подписки его нет. Без этого поля
+    /// заплативший остался бы с потолком пробы — то есть купил бы месяц и
+    /// упёрся в пять гигабайт.
+    pub has_paid: bool,
 }
 
 /// Кому и о чём пора напомнить.
@@ -295,7 +302,10 @@ impl Store {
     /// примет то, что записано в панели.
     pub fn panel_work(&mut self, limit: i64, now: i64) -> Result<Vec<PanelWork>, Error> {
         let rows = self.client.query(
-            "SELECT telegram_id, panel_id, FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint
+            "SELECT telegram_id, panel_id, FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
+                    EXISTS (SELECT 1 FROM orders
+                             WHERE orders.telegram_id = users.telegram_id
+                               AND orders.status = 'paid')
                FROM users
               WHERE panel_id IS NOT NULL
                 AND expires_at IS NOT NULL
@@ -312,6 +322,7 @@ impl Store {
                     telegram_id: row.try_get(0)?,
                     panel_id: row.try_get(1)?,
                     expires_at: row.try_get(2)?,
+                    has_paid: row.try_get(3)?,
                 })
             })
             .collect()

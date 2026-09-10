@@ -345,7 +345,8 @@ fn sync_panel(panel: &Panel, store: &mut Store) {
     };
 
     for item in work {
-        let request = panel.set_expiry(item.panel_id, item.expires_at);
+        let request =
+            panel.set_expiry(item.panel_id, item.expires_at, traffic_limit(item.has_paid));
         let response = match http::send(&request) {
             Ok(response) => response,
             Err(error) => {
@@ -665,7 +666,14 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
     // следующем же обращении, иначе оплативший останется без ссылки навсегда.
     if subscriber.subscription_url.is_none() {
         if let Some(expires_at) = subscriber.expires_at {
-            match ensure_panel_user(config, panel, store, telegram_id, expires_at) {
+            match ensure_panel_user(
+                config,
+                panel,
+                store,
+                telegram_id,
+                expires_at,
+                subscriber.has_paid,
+            ) {
                 Ok(url) => subscriber.subscription_url = Some(url),
                 // Разговор не прерываем. Меню без ссылки — плохо, молчащий
                 // бот — хуже: человек не поймёт, сломалось у него или у нас.
@@ -679,6 +687,7 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         trial_used: subscriber.trial_granted_at.is_some(),
         subscription_url: subscriber.subscription_url.as_deref(),
         app_url: config.miniapp_url.as_deref(),
+        trial_left: trial_left(panel, &subscriber),
         now,
     };
 
@@ -840,7 +849,9 @@ fn apply(
                 return Ok(None);
             };
 
-            let url = ensure_panel_user(config, deps.panel, store, telegram_id, expires_at)?;
+            // Проба выдаётся один раз и только тому, кто ещё не платил, —
+            // значит потолок трафика здесь всегда пробный.
+            let url = ensure_panel_user(config, deps.panel, store, telegram_id, expires_at, false)?;
             Ok(Some(
                 format!("Ваша ссылка — одна на все устройства:\n<code>{url}</code>").into(),
             ))
@@ -1471,6 +1482,47 @@ pub fn reissue_for(
     reissue(panel, &mut guard, telegram_id).map(|_| ())
 }
 
+/// Сколько трафика осталось у пробы. `None` — предела нет или он неизвестен.
+///
+/// Спрашивается у панели, а не считается у нас: байты живут там, и второго
+/// места, где они считаются, быть не должно.
+///
+/// Спрашиваем **только про пробу**. У заплатившего трафик не ограничен, и
+/// лишний поход в панель на каждое его сообщение ничего бы не дал.
+///
+/// Панель не ответила — возвращаем `None`, и человек увидит дни. Это хуже
+/// точного числа и гораздо лучше молчания: разговор не прерывается из-за
+/// того, что не удалось узнать остаток.
+fn trial_left(panel: &Panel, subscriber: &Subscriber) -> Option<u64> {
+    if subscriber.has_paid || subscriber.expires_at.is_none() {
+        return None;
+    }
+
+    let request = panel.find(subscriber.telegram_id).ok()?;
+    let response = http::send(&request).ok()?;
+    if !response.is_ok() {
+        return None;
+    }
+
+    panel.parse_user(&response.body).ok()?.traffic_left()
+}
+
+/// Потолок трафика, который панель должна знать об этом человеке.
+///
+/// Ноль — без ограничения. Ограничена только проба: она мерится
+/// гигабайтами, и это её единственный настоящий предел.
+///
+/// Функция маленькая, но заведена отдельно намеренно: её вызывают в двух
+/// местах — при заведении и при каждом обновлении, — и разойтись им нельзя.
+/// Разойдись они, заплативший остался бы с потолком пробы.
+const fn traffic_limit(has_paid: bool) -> u64 {
+    if has_paid {
+        0
+    } else {
+        catalog::TRIAL_BYTES
+    }
+}
+
 /// Завести человека в панели, если его там ещё нет, и запомнить ссылку.
 fn ensure_panel_user(
     config: &Config,
@@ -1478,6 +1530,7 @@ fn ensure_panel_user(
     store: &mut Store,
     telegram_id: i64,
     expires_at: i64,
+    has_paid: bool,
 ) -> Result<String, String> {
     let request = panel
         .create(&NewUser {
@@ -1485,6 +1538,7 @@ fn ensure_panel_user(
             expires_at,
             squads: config.squads.clone(),
             device_limit: catalog::DEVICES,
+            traffic_limit: traffic_limit(has_paid),
         })
         .map_err(|error| format!("панель: {error}"))?;
 
@@ -1680,6 +1734,8 @@ mod reconcile_tests {
             status: "ACTIVE".to_owned(),
             expires_at,
             subscription_url: "https://panel.example.org/api/sub/AbCdE".to_owned(),
+            used_traffic: 0,
+            traffic_limit: 0,
         }
     }
 
