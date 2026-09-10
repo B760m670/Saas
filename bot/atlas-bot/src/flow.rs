@@ -160,6 +160,11 @@ pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
         Action::Help => (help_screen(view), Effect::None),
         Action::Buy(plan) => buy(plan),
 
+        // Кнопка владельца. Сюда она не доходит: `gloria` разбирает её до
+        // общего разговора и только у тех, кто есть в списке владельцев.
+        // Если дошла — значит нажал не владелец, и ответ ему обычный.
+        Action::Confirm { .. } => (subscription_screen(view), Effect::None),
+
         Action::Paid(minor) => (paid_screen(*minor), Effect::None),
         Action::SentOther => (other_amount_screen(view), Effect::None),
 

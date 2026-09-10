@@ -407,6 +407,36 @@ fn a_payment_is_found_by_what_the_person_said_they_sent() {
     assert_eq!(rest.first().map(|(id, ..)| id.as_str()), Some("exact"));
 }
 
+/// Кнопка зачисления называет заказ номером, и по номеру он обязан
+/// находиться — но только пока открыт.
+///
+/// Кнопка остаётся в переписке навсегда. Нажать её второй раз через неделю
+/// проще, чем кажется, и тогда владельцу надо сказать «уже закрыт», а не
+/// зачислить второй раз.
+#[test]
+fn a_button_finds_its_order_only_while_it_is_open() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.open_order("by-button", 42, "d30", 30, rub(19_897), NOW);
+
+    assert_eq!(
+        expect(store.pending_order("by-button"), "поиск по номеру"),
+        Some((42, rub(19_897)))
+    );
+
+    // Заказа с таким номером нет вовсе.
+    assert_eq!(expect(store.pending_order("нет-такого"), "поиск"), None);
+
+    let _ = store.settle("by-button", "manual", "m-btn", rub(20_000), "{}", NOW + 10);
+    assert_eq!(
+        expect(store.pending_order("by-button"), "поиск после оплаты"),
+        None,
+        "закрытый заказ нашёлся — второе нажатие зачислило бы его снова"
+    );
+}
+
 /// Запасной выход: сумма не сошлась, и счёт ищется по человеку.
 ///
 /// Округлил 198,63 до 200 — совпадения нет, деньги пришли, зачислить их
