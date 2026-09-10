@@ -357,6 +357,56 @@ fn a_payment_finds_its_order_by_the_amount_alone() {
     );
 }
 
+/// Платёж находится по тому, что человек сказал, а не только по счёту.
+///
+/// Владелец видит в выписке 199 ₽. Счёт был на 198,97 — по нему такой
+/// платёж не найдётся никогда: этих денег человек не отправлял. Зато он
+/// сказал «199», и этого довольно, чтобы не набирать его номер руками.
+#[test]
+fn a_payment_is_found_by_what_the_person_said_they_sent() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    subscriber(&mut store, 43);
+
+    let _ = store.open_order("rounded", 42, "d30", 30, rub(19_897), NOW);
+    let _ = store.open_order("exact", 43, "d30", 30, rub(19_896), NOW);
+
+    // Пока никто ничего не сказал, по 199 не находится ничего.
+    assert!(expect(store.orders_claiming(rub(19_900), NOW, LIFETIME), "поиск").is_empty());
+
+    let _ = store.mark_claimed(42, rub(19_900), NOW + 10, LIFETIME);
+
+    assert_eq!(
+        expect(
+            store.orders_claiming(rub(19_900), NOW + 20, LIFETIME),
+            "поиск"
+        ),
+        vec![("rounded".to_owned(), 42, rub(19_897))],
+        "по названной сумме не нашёлся счёт или потерялась выставленная"
+    );
+
+    // Сказали то же самое двое — решать должен человек, и оба обязаны быть
+    // в ответе. Молча взять первого значило бы продлить не тому, у кого
+    // лежат деньги.
+    let _ = store.mark_claimed(43, rub(19_900), NOW + 30, LIFETIME);
+    let both = expect(
+        store.orders_claiming(rub(19_900), NOW + 40, LIFETIME),
+        "поиск",
+    );
+    assert_eq!(both.len(), 2, "второй сказавший потерялся: {both:?}");
+
+    // Оплаченный счёт из поиска уходит: подтверждать его второй раз нечем.
+    let _ = store.settle("rounded", "manual", "m-9", rub(19_900), "{}", NOW + 50);
+    let rest = expect(
+        store.orders_claiming(rub(19_900), NOW + 60, LIFETIME),
+        "поиск",
+    );
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest.first().map(|(id, ..)| id.as_str()), Some("exact"));
+}
+
 /// Запасной выход: сумма не сошлась, и счёт ищется по человеку.
 ///
 /// Округлил 198,63 до 200 — совпадения нет, деньги пришли, зачислить их

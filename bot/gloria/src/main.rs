@@ -872,7 +872,8 @@ fn apply(
                 config,
                 telegram,
                 &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id}\n  подтвердить: /ok {}",
+                    "Счёт <b>{}</b> · {} · от {telegram_id}\n  \
+                     подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
                     plan.title,
                     amount.to_decimal(),
@@ -989,7 +990,8 @@ fn admin(
                 };
 
                 answer.push_str(&format!(
-                    "\n<code>{}</code> · {} · {}{note}\n  подтвердить: /ok {} {}",
+                    "\n<b>{}</b> · {} · {}{note}\n  \
+                     подтвердить: <code>/ok {} {}</code>",
                     atlas_bot::menu::price_label(search),
                     order.plan,
                     order.telegram_id,
@@ -1002,7 +1004,9 @@ fn admin(
 
         "/revoke" => {
             let Some(who) = parts.next().and_then(|w| w.parse::<i64>().ok()) else {
-                return Ok(Some("Укажите номер: /revoke 123456789".to_owned()));
+                return Ok(Some(
+                    "Укажите номер: <code>/revoke 123456789</code>".to_owned(),
+                ));
             };
 
             let url = reissue(panel, store, who)?;
@@ -1024,12 +1028,20 @@ fn admin(
 
         "/ok" => {
             let Some(sum) = parts.next() else {
-                return Ok(Some("Укажите сумму: /ok 198.99".to_owned()));
+                return Ok(Some(
+                    "Укажите сумму — ту, что пришла в банк:\n\n\
+                     <code>/ok 198.97</code>\n\
+                     <code>/ok 199 8870255420</code> — если сумма не сошлась\n\n\
+                     Готовые команды есть в /pending, их можно нажать и скопировать."
+                        .to_owned(),
+                ));
             };
             let Some(amount) =
                 atlas_billing::Money::parse_decimal(sum, atlas_billing::Currency::Rub)
             else {
-                return Ok(Some("Сумма не разобралась. Пример: /ok 198.99".to_owned()));
+                return Ok(Some(
+                    "Сумма не разобралась. Пример: <code>/ok 198.97</code>".to_owned(),
+                ));
             };
 
             // Второй, необязательный довод — номер человека. Обычно он не
@@ -1041,13 +1053,31 @@ fn admin(
             if let Some(who) = who {
                 let Some(who) = who.parse::<i64>().ok() else {
                     return Ok(Some(
-                        "Номер не разобрался. Пример: /ok 200 123456789".to_owned(),
+                        "Номер не разобрался. Пример: <code>/ok 200 123456789</code>".to_owned(),
                     ));
                 };
 
-                let found = store
-                    .pending_order_of(who, now, catalog::INVOICE_LIFETIME)
-                    .map_err(|error| format!("база: {error}"))?;
+                // Сначала тот счёт, по которому этот человек назвал ровно
+                // эту сумму. Иначе — самый свежий из его открытых.
+                //
+                // Порядок неслучаен. Счетов у человека может быть два: нажал
+                // тариф, передумал, нажал другой. «Самый свежий» тогда не тот,
+                // о котором идёт речь, и годовая оплата закрыла бы месячный
+                // счёт — с продлением на месяц.
+                let claimed = store
+                    .orders_claiming(amount, now, catalog::INVOICE_LIFETIME)
+                    .map_err(|error| format!("база: {error}"))?
+                    .into_iter()
+                    .find(|(_, buyer, _)| *buyer == who)
+                    .map(|(order_id, _, invoiced)| (order_id, invoiced));
+
+                let found = match claimed {
+                    Some(found) => Some(found),
+                    None => store
+                        .pending_order_of(who, now, catalog::INVOICE_LIFETIME)
+                        .map_err(|error| format!("база: {error}"))?,
+                };
+
                 let Some((order_id, invoiced)) = found else {
                     return Ok(Some(format!("У {who} нет открытого счёта.")));
                 };
@@ -1059,13 +1089,55 @@ fn admin(
             let found = store
                 .order_by_amount(amount, now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("база: {error}"))?;
-            let Some((order_id, buyer)) = found else {
-                return Ok(Some(
-                    "Открытого счёта на такую сумму нет. Проверьте /pending.".to_owned(),
-                ));
-            };
+            if let Some((order_id, buyer)) = found {
+                return settle_order(telegram, store, &order_id, buyer, amount, amount, now)
+                    .map(Some);
+            }
 
-            settle_order(telegram, store, &order_id, buyer, amount, amount, now).map(Some)
+            // Счёта на такую сумму нет — но кто-то мог сказать, что отправил
+            // именно её. По сумме счёта находится тот, кто ввёл названное;
+            // округливший 198,97 до 199 по 198,97 не найдётся никогда, он
+            // этих денег не отправлял. Зато он сказал, сколько отправил, и в
+            // выписке лежит это самое число.
+            //
+            // Поэтому владельцу довольно того, что он видит в банке: номер
+            // покупателя набирать не нужно, пока сказавший один.
+            let claiming = store
+                .orders_claiming(amount, now, catalog::INVOICE_LIFETIME)
+                .map_err(|error| format!("база: {error}"))?;
+
+            match claiming.as_slice() {
+                [] => Ok(Some(format!(
+                    "Открытого счёта на {} нет, и столько никто не говорил, \
+                     что отправил.\n\nПосмотрите /pending — там видно, кто ждёт \
+                     и сколько назвал.",
+                    atlas_bot::menu::price_label(amount)
+                ))),
+
+                [(order_id, buyer, invoiced)] => {
+                    settle_order(telegram, store, order_id, *buyer, *invoiced, amount, now)
+                        .map(Some)
+                }
+
+                // Сказавших несколько — решает человек. Взять первого молча
+                // значило бы продлить подписку не тому, у кого лежат деньги,
+                // а второй остался бы и без подписки, и без своих денег.
+                several => {
+                    let mut answer = format!(
+                        "Столько сказали, что отправили, {} человек. \
+                         Уточните, кому зачислить:\n",
+                        several.len()
+                    );
+                    for (_, buyer, invoiced) in several {
+                        answer.push_str(&format!(
+                            "\n{buyer} · счёт был на {}\n  <code>/ok {} {buyer}</code>",
+                            atlas_bot::menu::price_label(*invoiced),
+                            amount.to_decimal(),
+                        ));
+                    }
+                    Ok(Some(answer))
+                }
+            }
         }
 
         _ => Ok(None),
@@ -1149,7 +1221,7 @@ fn claim_text(telegram_id: i64, order: Option<&(String, Money)>, sent: Money) ->
     format!(
         "Ищите в выписке <b>{label}</b> · от {telegram_id} · \
          счёт <code>{order_id}</code>{mismatch}\n  \
-         подтвердить: /ok {} {telegram_id}",
+         подтвердить: <code>/ok {} {telegram_id}</code>",
         sent.to_decimal(),
     )
 }
@@ -1311,7 +1383,8 @@ pub(crate) fn open_order_for(
                 telegram,
                 *admin,
                 &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета)\n  подтвердить: /ok {}",
+                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета)\n  \
+                     подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
                     plan.title,
                     amount.to_decimal(),

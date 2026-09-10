@@ -644,6 +644,57 @@ impl Store {
         })
     }
 
+    /// Найти счета, по которым покупатель **сказал**, что отправил столько.
+    ///
+    /// Второй способ опознать платёж, и нужен он ровно там, где отказывает
+    /// первый. По сумме счёта находится тот, кто ввёл названное; а кто
+    /// округлил 198,97 до 199, по 198,97 не находится никогда — он этих
+    /// денег не отправлял.
+    ///
+    /// Зато он сказал, сколько отправил, и в выписке лежит именно это
+    /// число. Значит владельцу достаточно того, что он видит в банке, и
+    /// номер покупателя ему набирать не нужно.
+    ///
+    /// Возвращается **список**, а не один: сказать «отправил 199» могут
+    /// двое, и тогда решать должен человек. Молча взять первого значило бы
+    /// продлить подписку не тому, у кого лежат деньги.
+    pub fn orders_claiming(
+        &mut self,
+        amount: Money,
+        now: i64,
+        lifetime: i64,
+    ) -> Result<Vec<(String, i64, Money)>, Error> {
+        let minor = i64::try_from(amount.minor())
+            .map_err(|_| Error::Inconsistent("сумма не помещается в базу"))?;
+
+        let rows = self.client.query(
+            "SELECT id, telegram_id, amount_minor, currency FROM orders
+              WHERE status = 'pending' AND claimed_minor = $1 AND currency = $2
+                AND created_at > to_timestamp($3::bigint)
+              ORDER BY claimed_at DESC
+              LIMIT 20",
+            &[&minor, &amount.currency().code(), &(now - lifetime)],
+        )?;
+
+        let mut found = Vec::new();
+        for row in rows {
+            let invoiced: i64 = row.try_get(2)?;
+            let currency: String = row.try_get(3)?;
+            let Some(currency) = Currency::parse(&currency) else {
+                return Err(Error::Inconsistent("валюта заказа неизвестна"));
+            };
+            let invoiced = u64::try_from(invoiced)
+                .map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
+
+            found.push((
+                row.try_get(0)?,
+                row.try_get(1)?,
+                Money::from_minor(invoiced, currency),
+            ));
+        }
+        Ok(found)
+    }
+
     /// Найти открытый счёт человека — когда сумма не сошлась.
     ///
     /// Обычный путь один: заплатили 198,63 — значит заплатил тот, кому мы
