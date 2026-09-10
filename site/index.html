@@ -185,6 +185,18 @@ a.btn.off { opacity: 0.45; }
    читается как сбой, и по ней жмут второй раз. */
 .btn:disabled { opacity: 0.45; }
 
+/* Ввод суммы. 16px не для красоты: при меньшем размере Safari на iPhone
+   приближает страницу, как только курсор встаёт в поле, и обратно она уже
+   не отъезжает. */
+.field {
+  width: 100%; margin-top: 10px; padding: 15px 18px;
+  border: 1px solid var(--line-2); border-radius: 14px;
+  background: var(--card-2); color: var(--text);
+  font: 600 16px/1.4 inherit;
+}
+.field::placeholder { color: var(--muted); font-weight: 400; }
+.field:focus { outline: none; border-color: var(--mid); }
+
 /* Шаги мастера. Показан ровно один: остальные не спрятаны прозрачностью, а
    убраны из потока — иначе прокрутка ниже упиралась бы в пустоту. */
 .step { display: none; }
@@ -628,6 +640,15 @@ a.btn.off { opacity: 0.45; }
   <div id="bill-sent" hidden>
     <p class="sub" style="margin-top:14px">Какую сумму вы отправили?</p>
     <div id="bill-sent-options"></div>
+    <!-- Для сумм, которых нет среди готовых: 250, 500, ошибочные 190.
+         Перечислить всё нельзя, а упираться на этом в поддержку значит
+         возвращать переписку вручную. -->
+    <button class="btn ghost" data-act="sent-other">Отправил другую сумму</button>
+    <div id="bill-other" hidden>
+      <input id="bill-other-sum" class="field" inputmode="decimal"
+             placeholder="Например, 250" aria-label="Отправленная сумма">
+      <button class="btn ghost" data-act="sent-typed">Готово</button>
+    </div>
   </div>
 
   <button class="btn ghost" data-act="close-bill">Закрыть</button>
@@ -932,29 +953,26 @@ document.addEventListener('DOMContentLoaded', function () {
       return;
     }
 
-    if (act === 'sent') {
-      /* Подписку это не включает: о переводе программе никто не сообщает,
-         знает о нём только владелец счёта. Нажатие сокращает ожидание — он
-         узнаёт о переводе сразу, а не когда сам заглянет в список счетов, и
-         узнаёт вместе с суммой, по которой платёж найдётся. */
+    if (act === 'sent-other') {
       haptic();
-      var options = document.getElementById('bill-sent-options');
-      options.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
-
-      fetch('/api/paid/' + encodeURIComponent(el.dataset.minor), {
-        method: 'POST',
-        headers: { 'X-Init-Data': (tg && tg.initData) || '' }
-      }).then(function (r) {
-        if (!r.ok) throw new Error('отказ');
-        document.getElementById('bill-sent').hidden = true;
-        document.getElementById('bill-note').textContent =
-          'Спасибо. Найду перевод на ' + el.textContent +
-          ' и включу подписку — придёт сообщение в чат.';
-      }).catch(function () {
-        options.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
-        toast('Не вышло — попробуйте ещё раз');
-      });
+      el.hidden = true;
+      document.getElementById('bill-other').hidden = false;
+      document.getElementById('bill-other-sum').focus();
       return;
+    }
+
+    if (act === 'sent-typed') {
+      /* Разбирается тем же правилом, что и в чате: «250», «250,50»,
+         «250 ₽». Словами — нет: угадывать сумму перевода нельзя. */
+      var typed = parseAmount(document.getElementById('bill-other-sum').value);
+      if (!typed) return toast('Напишите сумму числом, например 250');
+      haptic();
+      return claimSent(typed, money(typed));
+    }
+
+    if (act === 'sent') {
+      haptic();
+      return claimSent(el.dataset.minor, money(Number(el.dataset.minor)));
     }
 
     if (act === 'reissue') {
@@ -1064,6 +1082,43 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  /* Сказать, сколько отправлено.
+
+     Подписку это не включает: о переводе программе никто не сообщает,
+     знает о нём только владелец счёта. Нажатие сокращает ожидание — он
+     узнаёт о переводе сразу, а не когда сам заглянет в список счетов, и
+     узнаёт вместе с суммой, по которой платёж найдётся. */
+  function claimSent(minor, label) {
+    var box = document.getElementById('bill-sent');
+    box.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+
+    fetch('/api/paid/' + encodeURIComponent(minor), {
+      method: 'POST',
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+    }).then(function (r) {
+      if (!r.ok) throw new Error('отказ');
+      box.hidden = true;
+      document.getElementById('bill-note').textContent =
+        'Записал: ' + label + '. Найду перевод и включу подписку — ' +
+        'придёт сообщение в чат.';
+    }).catch(function () {
+      box.querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+      toast('Не вышло — попробуйте ещё раз');
+    });
+  }
+
+  /* Сумма, написанная руками. Правило то же, что у бота: пробелы и хвост
+     «₽»/«руб» отбрасываются, запятая и точка равны. Словами не
+     разбирается — угадывать сумму перевода нельзя. */
+  function parseAmount(text) {
+    var cleaned = String(text || '').replace(/[\s\u00a0]/g, '').replace(',', '.');
+    var m = cleaned.match(/^(\d{1,7})(?:\.(\d{1,2}))?(₽|р|р\.|руб|руб\.|рублей)?$/);
+    if (!m) return 0;
+
+    var minor = Number(m[1]) * 100 + Number((m[2] || '0').padEnd(2, '0'));
+    return minor > 0 && minor <= 100000000 ? minor : 0;
+  }
+
   /* Варианты «сколько вы отправили»: сам счёт, целые рубли и следующая
      сотня. Те же три, что показывает чат, и по тому же правилу — 198,62
      округляют до 199 или до 200, третьего способа ошибиться в ту же
@@ -1073,6 +1128,11 @@ document.addEventListener('DOMContentLoaded', function () {
     var box = document.getElementById('bill-sent-options');
     box.innerHTML = '';
     document.getElementById('bill-sent').hidden = true;
+    document.getElementById('bill-other').hidden = true;
+    document.getElementById('bill-other-sum').value = '';
+    document.getElementById('bill-sent')
+      .querySelectorAll('button').forEach(function (b) { b.disabled = false; });
+    document.querySelector('[data-act="sent-other"]').hidden = false;
 
     if (!minor) return;
 

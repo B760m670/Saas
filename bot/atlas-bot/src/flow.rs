@@ -161,6 +161,7 @@ pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
         Action::Buy(plan) => buy(plan),
 
         Action::Paid(minor) => (paid_screen(*minor), Effect::None),
+        Action::SentOther => (other_amount_screen(view), Effect::None),
 
         // Доступа это не даёт: проверить перевод может только тот, у кого
         // перед глазами выписка. Обещать срок не будем — обещание, которое
@@ -231,14 +232,48 @@ fn paid_screen(minor: u64) -> Reply {
         })
         .collect();
 
+    let mut rows: Vec<Vec<Button>> = rows;
+
+    // Четвёртая кнопка — для сумм, которых нет среди готовых: 250, 500,
+    // ошибочные 190. Без неё такой человек упирался бы в «напишите в
+    // поддержку», то есть в ту самую переписку вручную, ради ухода от
+    // которой всё и заведено.
+    rows.push(vec![Button::new(
+        "Отправил другую сумму",
+        Action::SentOther,
+    )]);
+
     Reply {
         text: "Какую сумму вы отправили?\n\n\
                Банк сообщает мне только сумму перевода, не имя отправителя. \
                По ней я и нахожу, чей платёж, — поэтому важно, \
                что вы отправили, а не что было в счёте.\n\n\
-               Если сумма другая — напишите @GloriaVPNSupport, разберёмся вручную."
+               По ней я и нахожу, чей платёж, — поэтому важно, \
+               что вы отправили, а не что было в счёте."
             .to_owned(),
         keyboard: Some(Keyboard { rows }),
+    }
+}
+
+/// Экран «напишите сумму сами».
+///
+/// Ввод числа, а не список: перечислить всё, что человек мог отправить,
+/// нельзя, и попытка кончилась бы экраном из двадцати кнопок.
+///
+/// Отвечать он будет обычным сообщением, и никакой памяти о том, что мы
+/// его спросили, у бота нет. Её роль играет открытый счёт: число от
+/// человека, у которого счёта нет, — это просто число, и оно получает
+/// меню, как получало раньше.
+fn other_amount_screen(view: &View<'_>) -> Reply {
+    Reply {
+        text: "Напишите сумму сообщением — числом, как в банке.\n\n\
+               Например: <code>250</code> или <code>250,50</code>.\n\n\
+               Словами не разберу: ошибиться в сумме перевода нельзя, \
+               а угадывать я не буду."
+            .to_owned(),
+        // Меню, хотя ответа мы ждём текстом. Экран без кнопок — тупик:
+        // передумавшему остаётся только перезапускать бота.
+        keyboard: Some(main_menu(view.app_url)),
     }
 }
 
@@ -370,7 +405,10 @@ fn buy(plan_id: &str) -> (Reply, Effect) {
 
 #[cfg(test)]
 mod tests {
-    use super::{claim_options, on_action, on_message, paid_screen, plural, Effect, View};
+    use super::{
+        claim_options, on_action, on_message, other_amount_screen, paid_screen, plural, Effect,
+        View,
+    };
     use crate::menu::{Action, Device};
 
     const NOW: i64 = 1_760_000_000;
@@ -597,8 +635,31 @@ mod tests {
         for minor in [19_899_u64, 19_900, 20_000, 129_000] {
             let reply = paid_screen(minor);
             let buttons = reply.keyboard.map_or(0, |keys| keys.buttons().count());
-            assert!(buttons > 0, "у счёта на {minor} копеек нет ответов");
+
+            // Готовые суммы плюс «другая»: у ровного счёта готовая одна, и
+            // выход всё равно обязан быть.
+            assert!(buttons >= 2, "у счёта на {minor} копеек нет ответов");
         }
+
+        assert!(
+            other_amount_screen(&expired()).keyboard.is_some(),
+            "передумавшему некуда деться"
+        );
+    }
+
+    /// Любая сумма обязана быть выразимой. Готовых три, и человек, отправивший
+    /// 250, упирался бы без этого в переписку вручную.
+    #[test]
+    fn any_amount_at_all_can_be_named() {
+        let (reply, effect) = on_action(&Action::SentOther, &expired());
+        assert_eq!(effect, Effect::None, "вопрос о сумме что-то сделал");
+        assert!(
+            reply.text.contains("250"),
+            "не показан пример того, что писать"
+        );
+
+        // То, что человек напишет, разбирается тем же крейтом.
+        assert_eq!(crate::menu::parse_typed_amount("250"), Some(25_000));
     }
 
     /// Цены меняются, а старая кнопка остаётся у человека в переписке. Нажав

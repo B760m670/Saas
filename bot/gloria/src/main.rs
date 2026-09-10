@@ -637,6 +637,20 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         }
     }
 
+    // Число сообщением — ответ на «напишите сумму сами». Памяти о том, что
+    // мы спросили, у бота нет: её роль играет открытый счёт. Нет счёта —
+    // это просто число, и оно пойдёт дальше обычным путём, в меню.
+    //
+    // Проверка стоит до захода в базу за покупателем, но обходится дёшево:
+    // разбор чистый, и в базу мы идём только если он что-то нашёл.
+    if let Incoming::Message { text, .. } = incoming {
+        if let Some(minor) = atlas_bot::menu::parse_typed_amount(text) {
+            if claim_typed(deps, store, telegram_id, minor, now)? {
+                return Ok(());
+            }
+        }
+    }
+
     let mut subscriber = store
         .ensure_subscriber(telegram_id)
         .map_err(|error| format!("база: {error}"))?;
@@ -1056,6 +1070,46 @@ fn admin(
 
         _ => Ok(None),
     }
+}
+
+/// Принять сумму, написанную сообщением.
+///
+/// Возвращает `false`, если счёта нет: тогда это было не про оплату, и
+/// разговор идёт дальше обычным путём. Молчать в ответ нельзя — человек,
+/// написавший «200» просто так, должен получить меню, а не тишину.
+fn claim_typed(
+    deps: &Deps<'_>,
+    store: &mut Store,
+    telegram_id: i64,
+    minor: u64,
+    now: i64,
+) -> Result<bool, String> {
+    let sent = Money::from_minor(minor, atlas_billing::Currency::Rub);
+    let found = store
+        .mark_claimed(telegram_id, sent, now, catalog::INVOICE_LIFETIME)
+        .map_err(|error| format!("база: {error}"))?;
+
+    if found.is_none() {
+        return Ok(false);
+    }
+
+    notify_admins(
+        deps.config,
+        deps.telegram,
+        &claim_text(telegram_id, found.as_ref(), sent),
+    );
+
+    tell(
+        deps.telegram,
+        telegram_id,
+        &format!(
+            "Записал: <b>{}</b>. Найду перевод и включу подписку — \
+             придёт сообщение.",
+            atlas_bot::menu::price_label(sent)
+        ),
+    );
+
+    Ok(true)
 }
 
 /// Что получает владелец, когда покупатель говорит «я оплатил».

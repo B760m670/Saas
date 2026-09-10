@@ -92,6 +92,13 @@ pub enum Action {
     /// и то, что человек отправил, — разные числа, и весь смысл вопроса в
     /// том, что второе нам неизвестно.
     Sent(u64),
+    /// «Отправил другую сумму» — ту, которой нет среди готовых.
+    ///
+    /// Готовых три, и они покрывают почти всё: счёт, целые рубли, следующая
+    /// сотня. Но отправить можно и 250, и 500 — а упереться на этом в
+    /// «напишите в поддержку» значит вернуть ту самую переписку вручную,
+    /// ради ухода от которой всё и заведено.
+    SentOther,
 }
 
 /// Почему нажатие нельзя принять.
@@ -126,6 +133,7 @@ impl Action {
             Self::Home => "home".to_owned(),
             Self::Paid(minor) => format!("paid:{minor}"),
             Self::Sent(minor) => format!("sent:{minor}"),
+            Self::SentOther => "other".to_owned(),
         }
     }
 
@@ -159,6 +167,7 @@ impl Action {
             "sub" => Ok(Self::Subscription),
             "plans" => Ok(Self::Plans),
             "conn" => Ok(Self::Connect),
+            "other" => Ok(Self::SentOther),
             "help" => Ok(Self::Help),
             "home" => Ok(Self::Home),
             _ => Err(Unknown::NoSuchAction),
@@ -172,6 +181,60 @@ impl Action {
 /// сообщение владельцу готовой командой зачисления. Пусть невозможное
 /// отсекается здесь, а не читается им с экрана как правда.
 const MAX_CLAIM_MINOR: u64 = 100_000_000;
+
+/// Разобрать сумму, **написанную руками**.
+///
+/// Отдельно от [`parse_claim`], потому что источник другой. Там строка,
+/// которую мы сами положили в кнопку, — цифры и ничего больше. Здесь
+/// человек пишет как умеет: «250», «250,50», «250.5», «250 ₽», «250 руб».
+///
+/// Всё это одна и та же сумма, и переспрашивать из-за пробела значит
+/// возвращать его к тому, от чего он только что ушёл.
+///
+/// А вот «двести пятьдесят» словами не разбирается намеренно: угадывать
+/// число, которое уйдёт владельцу готовой командой зачисления, нельзя.
+/// Такому человеку честнее ответить, что не понял.
+#[must_use]
+pub fn parse_typed_amount(text: &str) -> Option<u64> {
+    // Разделитель целых от копеек — что запятая, что точка: на телефоне
+    // стоит то, что стоит, и выбирал его не человек.
+    let cleaned: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{00a0}')
+        .map(|c| if c == ',' { '.' } else { c })
+        .collect();
+
+    // Хвост вроде «₽» или «руб» отбрасывается: он ничего не добавляет, а
+    // пишут его часто.
+    let digits: String = cleaned
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let tail = &cleaned[digits.len()..];
+    if !tail.is_empty() && !matches!(tail, "₽" | "р" | "р." | "руб" | "руб." | "рублей")
+    {
+        return None;
+    }
+
+    let (rubles, kopeks) = match digits.split_once('.') {
+        None => (digits.as_str(), "0"),
+        // «250.» и «250.505» — не суммы, а опечатки. Принять их значило бы
+        // самим решить, что человек имел в виду.
+        Some((_, after)) if after.is_empty() || after.len() > 2 => return None,
+        Some((before, after)) => (before, after),
+    };
+
+    if rubles.is_empty() || rubles.len() > 7 {
+        return None;
+    }
+
+    let rubles: u64 = rubles.parse().ok()?;
+    // «250.5» — это пятьдесят копеек, а не пять.
+    let kopeks: u64 = format!("{kopeks:0<2}").parse().ok()?;
+
+    let minor = rubles.checked_mul(100)?.checked_add(kopeks)?;
+    (minor > 0 && minor <= MAX_CLAIM_MINOR).then_some(minor)
+}
 
 /// Разобрать сумму, названную покупателем.
 ///
@@ -512,6 +575,11 @@ mod tests {
     /// круглая сумма, миллион.
     #[test]
     fn amounts_survive_the_round_trip() {
+        assert_eq!(
+            Action::decode(&Action::SentOther.encode()),
+            Ok(Action::SentOther)
+        );
+
         for minor in [1_u64, 19_899, 20_000, 100_000_000] {
             for action in [Action::Paid(minor), Action::Sent(minor)] {
                 assert_eq!(
@@ -545,6 +613,56 @@ mod tests {
                 Err(Unknown::BadAmount),
                 "принята сумма из {data:?}"
             );
+        }
+    }
+
+    /// Сумма, написанная руками. Человек пишет как умеет, и переспрашивать
+    /// из-за пробела значит возвращать его к тому, от чего он ушёл.
+    #[test]
+    fn a_typed_amount_is_read_the_way_people_write_it() {
+        use super::parse_typed_amount as parse;
+
+        for (text, minor) in [
+            ("250", 25_000),
+            ("250,50", 25_050),
+            ("250.50", 25_050),
+            // «250.5» — это пятьдесят копеек, а не пять.
+            ("250,5", 25_050),
+            ("250 ₽", 25_000),
+            ("250₽", 25_000),
+            ("250 руб", 25_000),
+            ("250 руб.", 25_000),
+            ("1 290", 129_000),
+            ("198,62", 19_862),
+            ("1", 100),
+        ] {
+            assert_eq!(parse(text), Some(minor), "не разобралось: {text:?}");
+        }
+    }
+
+    /// А угадывать нельзя: число уходит владельцу готовой командой
+    /// зачисления, и «примерно двести» там читалось бы как правда.
+    #[test]
+    fn a_typed_amount_that_is_not_a_number_is_refused() {
+        use super::parse_typed_amount as parse;
+
+        for text in [
+            "",
+            "двести пятьдесят",
+            "около 250",
+            "250 рублей ровно",
+            "-250",
+            "0",
+            "0,00",
+            "250.",
+            "250,505",
+            "2,5,0",
+            "250$",
+            "1000001",
+            "99999999999",
+            "/start",
+        ] {
+            assert_eq!(parse(text), None, "принято: {text:?}");
         }
     }
 
