@@ -78,6 +78,17 @@ SELECT must_fail(
        VALUES ('order-5', 1001, 'd30', 0, 19900, 'RUB')$q$,
     'заказ на ноль дней');
 
+-- --- «я оплатил» не бывает раньше самого счёта -----------------------------
+
+SELECT must_fail(
+    $q$UPDATE orders SET claimed_at = created_at - interval '1 minute'
+        WHERE id = 'order-1'$q$,
+    'заявление об оплате раньше выставления счёта');
+
+-- А в свой срок — сколько угодно раз: человек, нажавший дважды, всё ещё ждёт.
+UPDATE orders SET claimed_at = now() WHERE id = 'order-1';
+UPDATE orders SET claimed_at = now() WHERE id = 'order-1';
+
 -- --- оплаченный заказ знает время оплаты ----------------------------------
 
 SELECT must_fail(

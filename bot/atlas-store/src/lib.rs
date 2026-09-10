@@ -27,7 +27,7 @@
 use atlas_billing::invoice::TakenAmounts;
 use atlas_billing::money::{Currency, Money};
 use atlas_billing::subscription;
-use postgres::{Client, NoTls, Transaction};
+use postgres::{Client, NoTls, Row, Transaction};
 
 /// Отказ при работе с хранилищем.
 #[derive(Debug)]
@@ -142,6 +142,26 @@ pub struct Pending {
     pub plan: String,
     /// Сумма, по которой платёж узнаётся в уведомлении банка.
     pub amount: Money,
+    /// Сказал ли покупатель, что уже перевёл. Не подтверждение оплаты:
+    /// поступление видит только владелец счёта. Нужно, когда сумма в
+    /// выписке круглая и по ней счёт не находится.
+    pub claimed: bool,
+}
+
+/// Разобрать строку вида «номер, сумма, валюта» в номер и сумму.
+///
+/// Отдельная функция, потому что так отвечают два запроса и ошибаться в
+/// разборе они обязаны одинаково.
+fn named_order(row: Row) -> Result<(String, Money), Error> {
+    let minor: i64 = row.try_get(1)?;
+    let currency: String = row.try_get(2)?;
+    let Some(currency) = Currency::parse(&currency) else {
+        return Err(Error::Inconsistent("валюта заказа неизвестна"));
+    };
+    let minor =
+        u64::try_from(minor).map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
+
+    Ok((row.try_get(0)?, Money::from_minor(minor, currency)))
 }
 
 /// Хранилище.
@@ -481,16 +501,21 @@ impl Store {
         Ok(taken)
     }
 
-    /// Открытые счета, от новых к старым.
+    /// Открытые счета — сначала те, кто говорит, что уже перевёл.
     ///
     /// То, что видит владелец в админском экране: сумма, по которой он
     /// узнаёт платёж в уведомлении банка, и кому этот счёт принадлежит.
+    ///
+    /// Порядок не украшение. Список читают, когда в выписке лежит перевод, и
+    /// первым в нём должен стоять тот, кто вероятнее всего его и сделал, —
+    /// нажавший «Я оплатил». Остальные ждут своей очереди буквально.
     pub fn pending_orders(&mut self, now: i64, lifetime: i64) -> Result<Vec<Pending>, Error> {
         let rows = self.client.query(
-            "SELECT id, telegram_id, plan, amount_minor, currency
+            "SELECT id, telegram_id, plan, amount_minor, currency,
+                    claimed_at IS NOT NULL
                FROM orders
               WHERE status = 'pending' AND created_at > to_timestamp($1::bigint)
-              ORDER BY created_at DESC
+              ORDER BY claimed_at DESC NULLS LAST, created_at DESC
               LIMIT 20",
             &[&(now - lifetime)],
         )?;
@@ -509,6 +534,7 @@ impl Store {
                 telegram_id: row.try_get(1)?,
                 plan: row.try_get(2)?,
                 amount: Money::from_minor(minor, currency),
+                claimed: row.try_get(5)?,
             });
         }
         Ok(pending)
@@ -621,19 +647,42 @@ impl Store {
             &[&telegram_id, &(now - lifetime)],
         )?;
 
-        let Some(row) = row else {
-            return Ok(None);
-        };
+        row.map(named_order).transpose()
+    }
 
-        let minor: i64 = row.try_get(1)?;
-        let currency: String = row.try_get(2)?;
-        let Some(currency) = Currency::parse(&currency) else {
-            return Err(Error::Inconsistent("валюта заказа неизвестна"));
-        };
-        let minor =
-            u64::try_from(minor).map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
+    /// Отметить, что покупатель сказал «я оплатил».
+    ///
+    /// Отметка **не подтверждение**: нажимает её покупатель, а поступление
+    /// видит только владелец счёта. Она нужна там, где перестаёт работать
+    /// уникальный хвост копеек, — когда сумму ввели по памяти.
+    ///
+    /// Хвост отвечает на вопрос «чей платёж», пока сумма совпадает до
+    /// копейки. Круглые 199 или 200 не принадлежат никому намеренно: иначе
+    /// платёж по памяти зачислился бы чужому заказу. Такой перевод уходит в
+    /// ручной разбор — и вот там отметка сужает круг подозреваемых до тех,
+    /// кто прямо сейчас говорит, что перевёл.
+    ///
+    /// Отмечается тот же счёт, что вернул бы [`Store::pending_order_of`], —
+    /// самый свежий открытый. Повторное нажатие переставляет время: человек,
+    /// нажавший дважды, всё ещё ждёт, и в списке он должен быть свежим.
+    pub fn mark_claimed(
+        &mut self,
+        telegram_id: i64,
+        now: i64,
+        lifetime: i64,
+    ) -> Result<Option<(String, Money)>, Error> {
+        let row = self.client.query_opt(
+            "UPDATE orders SET claimed_at = to_timestamp($2::bigint)
+              WHERE id = (SELECT id FROM orders
+                           WHERE status = 'pending' AND telegram_id = $1
+                             AND created_at > to_timestamp($3::bigint)
+                           ORDER BY created_at DESC
+                           LIMIT 1)
+          RETURNING id, amount_minor, currency",
+            &[&telegram_id, &now, &(now - lifetime)],
+        )?;
 
-        Ok(Some((row.try_get(0)?, Money::from_minor(minor, currency))))
+        row.map(named_order).transpose()
     }
 
     /// Пересоздать схему. **Только для тестов.**

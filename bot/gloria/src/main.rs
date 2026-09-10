@@ -914,7 +914,7 @@ fn apply(
             // владелец счёта — и вся кнопка в том, чтобы он узнал сейчас, а
             // не когда сам заглянет в /pending.
             let found = store
-                .pending_order_of(telegram_id, now, catalog::INVOICE_LIFETIME)
+                .mark_claimed(telegram_id, now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("база: {error}"))?;
 
             notify_admins(config, telegram, &claim_text(telegram_id, found.as_ref()));
@@ -950,8 +950,17 @@ fn admin(
 
             let mut answer = String::from("Ожидают оплаты:\n");
             for order in pending {
+                // Пометка стоит у тех, кто нажал «Я оплатил», и они же идут
+                // первыми. Это единственная зацепка, когда в выписке круглая
+                // сумма: по ней счёт не находится, зато находится тот, кто
+                // прямо сейчас говорит, что перевёл.
+                let claim = if order.claimed {
+                    " ✔ сказал, что оплатил"
+                } else {
+                    ""
+                };
                 answer.push_str(&format!(
-                    "\n<code>{}</code> · {} · {}\n  подтвердить: /ok {}",
+                    "\n<code>{}</code> · {} · {}{claim}\n  подтвердить: /ok {}",
                     atlas_bot::menu::price_label(order.amount),
                     order.plan,
                     order.telegram_id,
@@ -1255,7 +1264,7 @@ pub(crate) fn claim_paid_for(
             .lock()
             .map_err(|_| "замок базы испорчен".to_owned())?;
         store
-            .pending_order_of(telegram_id, now, catalog::INVOICE_LIFETIME)
+            .mark_claimed(telegram_id, now, catalog::INVOICE_LIFETIME)
             .map_err(|error| format!("база: {error}"))?
     };
 
