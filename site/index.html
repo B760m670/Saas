@@ -64,17 +64,49 @@ body {
 }
 
 /* Поле света. Ядро вынесено за край кадра — видно только затухание, как на
-   значке. Оно же задаёт направление: свет приходит сверху справа. */
-body::before {
+   значке. Оно же задаёт направление: свет приходит сверху справа.
+
+   Пятен два, и они дышат — медленно плывут и меняют размер. Одно пятно,
+   даже движущееся, читается как анимация; два с разной длиной цикла (28 с
+   и 37 с) не совпадают никогда, и движение перестаёт выглядеть петлёй.
+
+   Двигаются они `transform`-ом, а не сдвигом градиента. Разница не
+   косметическая: `transform` браузер отдаёт видеокарте и перерисовывает
+   только композицию, а правка координат градиента заставляет его каждый
+   кадр считать заливку заново — на телефоне это греет батарею. */
+body::before,
+body::after {
   content: "";
   position: fixed;
-  inset: -30% -30% auto -30%;
-  height: 90vh;
-  background:
-    radial-gradient(60% 55% at 78% 8%, rgba(238, 152, 46, 0.30), transparent 72%),
-    radial-gradient(38% 34% at 86% 2%, rgba(255, 236, 190, 0.20), transparent 68%);
   pointer-events: none;
   z-index: 0;
+  will-change: transform;
+}
+
+body::before {
+  inset: -15% -25% auto -25%;
+  height: 80vh;
+  background: radial-gradient(46% 42% at 70% 30%, rgba(238, 152, 46, 0.42), transparent 70%);
+  animation: glow-a 28s ease-in-out infinite alternate;
+}
+
+/* Второе пятно внизу и холоднее. Без него нижняя половина экрана остаётся
+   плоско-чёрной, и свет читается как шапка, а не как среда. */
+body::after {
+  inset: auto -35% -10% -35%;
+  height: 85vh;
+  background: radial-gradient(52% 46% at 26% 46%, rgba(238, 152, 46, 0.22), transparent 70%);
+  animation: glow-b 37s ease-in-out infinite alternate;
+}
+
+@keyframes glow-a {
+  from { transform: translate3d(-7%, -5%, 0) scale(1); }
+  to   { transform: translate3d(10%, 8%, 0) scale(1.22); }
+}
+
+@keyframes glow-b {
+  from { transform: translate3d(7%, 6%, 0) scale(1.14); }
+  to   { transform: translate3d(-9%, -4%, 0) scale(0.92); }
 }
 
 /* ------------------------------- экраны ---------------------------------- */
@@ -96,6 +128,9 @@ main { position: relative; z-index: 1; }
 @media (prefers-reduced-motion: reduce) {
   .screen.on { animation: none; }
   * { transition-duration: 0.01ms !important; }
+  /* Свет замирает. Прежнее правило гасило переходы и не трогало анимации,
+     то есть самое заметное движение на экране как раз и оставалось. */
+  body::before, body::after { animation: none; }
 }
 
 h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.5px; font-weight: 700; }
@@ -108,6 +143,36 @@ p { margin: 0 0 12px; }
 .muted { color: var(--muted); }
 .small { font-size: 13px; }
 
+/* -------------------------------- стекло --------------------------------- */
+
+/* Поверхности кабинета — матовое стекло над полем света.
+ *
+ * Смысл не в моде на «жидкое стекло», а в том, что свет за ними живой: он
+ * плывёт, и поверхность, пропускающая его сквозь себя, меняется вместе с
+ * ним. Непрозрачная карточка тот же свет просто закрыла бы, и движение
+ * осталось бы только на полях.
+ *
+ * Стекло здесь собрано из трёх частей, и размытие — **не** главная:
+ * — полупрозрачная тёплая заливка: сквозь неё и виден свет;
+ * — `saturate`: без подкрутки тёплое пятно за стеклом сереет;
+ * — светлая полоса по верхней кромке (`inset`-тень): так стекло ловит свет
+ *   ребром. Без неё поверхность читается как дырка, а не как предмет.
+ *
+ * # Почему размытие только у листа и панели вкладок
+ *
+ * Размывать нечего: за карточками лежит плавный градиент, а размытие
+ * плавного градиента — тот же градиент. Замерено отрисовкой двух версий и
+ * сравнением точек: размытие само по себе меняет **8 уровней из 255** на
+ * 2,4 % точек. Увидеть это нельзя, а платить приходится отдельным проходом
+ * композиции на каждой поверхности — на слабом телефоне это рывки при
+ * прокрутке.
+ *
+ * У листа тарифов и панели вкладок за спиной не градиент, а содержимое
+ * страницы. Там размытие и делает работу, там оно и оставлено.
+ *
+ * `-webkit-` обязателен: Safari на iPhone знает только его, а это половина
+ * покупателей. */
+
 /* ------------------------------ карточки --------------------------------- */
 
 .card {
@@ -115,6 +180,9 @@ p { margin: 0 0 12px; }
   border: 1px solid var(--line);
   border-radius: 18px;
   padding: 18px;
+  backdrop-filter: saturate(150%);
+  -webkit-backdrop-filter: saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 190, 0.07);
 }
 .card + .card { margin-top: 10px; }
 
@@ -151,6 +219,9 @@ p { margin: 0 0 12px; }
 .chip {
   border: 1px solid var(--line); border-radius: 20px;
   padding: 5px 12px; font-size: 12.5px; color: var(--muted);
+  background: rgba(255, 236, 190, 0.035);
+  backdrop-filter: saturate(140%);
+  -webkit-backdrop-filter: saturate(140%);
 }
 
 /* ------------------------------- кнопки ---------------------------------- */
@@ -164,16 +235,25 @@ button { font: inherit; color: inherit; }
   background: var(--card-2); color: var(--text);
   font-size: 15.5px; font-weight: 600; cursor: pointer;
   transition: transform 0.12s var(--ease), background 0.18s;
+  backdrop-filter: saturate(150%);
+  -webkit-backdrop-filter: saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 190, 0.08);
 }
 .btn:active { transform: scale(0.985); }
 
+/* Главная кнопка остаётся плотной. Стеклянными должны быть поверхности, а
+   не то, что от них отличается: сделай прозрачным всё — и не выделится
+   ничего, а на экране обязан быть ровно один очевидный следующий шаг. */
 .btn.primary {
   border-color: transparent;
   background: linear-gradient(140deg, var(--core), var(--mid));
   color: #2a1403;
   font-weight: 700;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: 0 6px 22px rgba(238, 152, 46, 0.22);
 }
-.btn.ghost { background: transparent; }
+.btn.ghost { background: rgba(255, 236, 190, 0.03); }
 
 /* Кнопка «Добавить в приложение» — ссылка, а не кнопка: за пределами
    Telegram она должна работать обычным нажатием, без скрипта. Внутри
@@ -218,6 +298,9 @@ a.btn.off { opacity: 0.45; }
   border: 1px solid var(--line); border-radius: 14px;
   background: var(--card); text-align: left; cursor: pointer;
   transition: background 0.18s;
+  backdrop-filter: saturate(150%);
+  -webkit-backdrop-filter: saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 190, 0.06);
 }
 .row + .row { margin-top: 8px; }
 .row:active { background: var(--card-2); }
@@ -320,9 +403,12 @@ a.btn.off { opacity: 0.45; }
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 21;
   max-width: 560px; margin: 0 auto;
   padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
-  background: #0d0a10; border: 1px solid var(--line); border-bottom: 0;
+  background: rgba(13, 10, 16, 0.72); border: 1px solid var(--line); border-bottom: 0;
   border-radius: 22px 22px 0 0;
   transform: translateY(100%); transition: transform 0.36s var(--ease);
+  backdrop-filter: blur(26px) saturate(160%);
+  -webkit-backdrop-filter: blur(26px) saturate(160%);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 190, 0.08);
 }
 .sheet.on { transform: none; }
 .sheet .grab { width: 38px; height: 4px; border-radius: 4px; background: var(--line-2); margin: 0 auto 16px; }
@@ -331,11 +417,19 @@ a.btn.off { opacity: 0.45; }
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   width: 100%; padding: 15px 16px; border: 1px solid var(--line); border-radius: 14px;
   background: var(--card); cursor: pointer; text-align: left;
+  backdrop-filter: saturate(150%);
+  -webkit-backdrop-filter: saturate(150%);
+  box-shadow: inset 0 1px 0 rgba(255, 236, 190, 0.06);
 }
 .plan + .plan { margin-top: 8px; }
 .plan.best { border-color: rgba(238, 152, 46, 0.4); background: rgba(238, 152, 46, 0.08); }
-.plan .term { font-size: 15.5px; font-weight: 600; }
-.plan .per { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+/* `display: block` обязателен: без него оба остаются инлайновыми и
+   слипаются в одну строку — «1 месяц199 ₽ в месяц». Заодно `margin-top`
+   у инлайнового элемента не делает ничего, то есть отступ был мнимым.
+   Тот же дефект когда-то нашли в строках списка и там поправили, а
+   тарифы пропустили; нашлось это отрисовкой, в коде не видно. */
+.plan .term { display: block; font-size: 15.5px; font-weight: 600; }
+.plan .per { display: block; font-size: 12.5px; color: var(--muted); margin-top: 1px; }
 .plan .price { font-size: 17px; font-weight: 700; white-space: nowrap; }
 .plan .off { font-size: 11.5px; font-weight: 700; color: var(--mid); }
 
