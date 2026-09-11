@@ -2,13 +2,32 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- Масштабирование выключено целиком. Кабинет свёрстан под ширину экрана,
+     и любой зум здесь — случайность: двойное касание по карточке или щипок
+     при прокрутке одной рукой. Промахнувшийся оказывался на увеличенной
+     странице, с которой сам не выбирался.
+
+     `maximum-scale` и `user-scalable` работают не везде — Safari их с
+     десятой версии игнорирует ради доступности, — поэтому ниже стоят ещё
+     два рубежа: `touch-action` в стилях и перехват жеста в коде. Порознь
+     ни один не закрывает всё. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Gloria</title>
 <meta name="robots" content="noindex, nofollow">
-<!-- defer обязателен. Скрипт лежит на telegram.org, а он из России достаётся
-     не всегда; блокирующий тег в <head> подвесил бы отрисовку до таймаута —
-     ровно так чёрный экран показывала панель из-за скрипта на unpkg. -->
-<script defer src="https://telegram.org/js/telegram-web-app.js"></script>
+<!-- `async`, а не `defer`, и это не придирка.
+     Скрипт лежит на telegram.org, а он из России достаётся не всегда.
+     Блокирующий тег в <head> подвесил бы отрисовку до таймаута — ровно так
+     чёрный экран показывала панель из-за скрипта на unpkg. `defer` это
+     чинил наполовину: страница рисовалась, но **отложенные скрипты обязаны
+     выполниться до `DOMContentLoaded`**, а весь кабинет ждал этого события.
+     При недоступном telegram.org документ навсегда оставался в состоянии
+     `interactive`: вкладки не переключались, кнопки не нажимались, на
+     карточке вечно висело «загружаем…».
+     Замерено отрисовкой: с этим тегом документ не доходил до `complete`,
+     без него — доходил, и обработчики вставали на место.
+     `async` не задерживает событие вовсе. А код ниже больше и не ждёт
+     события: он стоит в конце <body>, где разметка уже разобрана. -->
+<script async id="tg-sdk" src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 /* ---------------------------------------------------------------------------
    Палитра взята из аватарки (design/render_avatar.py): тёплое ядро, оранжевая
@@ -64,10 +83,11 @@
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
-  /* Двойное касание по кнопке приближало страницу — браузер ждал второго
-     тапа, чтобы решить, нажатие это или зум. `manipulation` снимает
-     ожидание: прокрутка и щипок остаются, двойной тап перестаёт масштабировать. */
-  touch-action: manipulation;
+  /* Зум выключен целиком, прокрутка оставлена.
+     `manipulation` тут стояло раньше и снимало только двойное касание —
+     щипок оно разрешает. `pan-x pan-y` разрешает ровно прокрутку по обеим
+     осям и запрещает всякое масштабирование. */
+  touch-action: pan-x pan-y;
 }
 
 html, body { height: 100%; }
@@ -847,15 +867,64 @@ a.btn.off { opacity: 0.45; }
      POST /api/reissue  → перевыпустить ссылку
    Подлинность запроса сервер проверяет по initData (core/atlas-telegram).
    Ни один экран не решает ничего сам: всё, что показано, приходит с сервера. */
-document.addEventListener('DOMContentLoaded', function () {
-  var tg = window.Telegram && window.Telegram.WebApp;
-  if (tg) {
+(function () {
+  /* Третий рубеж против зума — перехват самого жеста.
+   *
+   * `gesturestart` есть только у Safari, и именно он остаётся, когда
+   * `user-scalable=no` проигнорирован: щипок приходит сюда и отменяется.
+   *
+   * Двойное касание отменяется иначе. `touch-action: manipulation` в стилях
+   * обязан был его убрать, но на SVG-значках срабатывает не всегда — а зум
+   * ловится как раз на значке подписки. Поэтому второе касание в пределах
+   * трёхсот миллисекунд гасится здесь.
+   *
+   * `passive: false` обязателен: без него `preventDefault` не действует, и
+   * обработчик становится украшением.
+   *
+   * Важное: гасится только **повторное** касание. Первое доходит как
+   * обычно, поэтому нажатия на кнопки не теряются, а быстрое двойное
+   * нажатие по одной кнопке считается за одно — чего мы и хотим. */
+  (function () {
+    document.addEventListener('gesturestart', function (e) { e.preventDefault(); }, { passive: false });
+
+    var lastTap = 0;
+    document.addEventListener('touchend', function (e) {
+      var now = Date.now();
+      if (now - lastTap <= 300) e.preventDefault();
+      lastTap = now;
+    }, { passive: false });
+  }());
+
+  /* Telegram может приехать позже кабинета, а может не приехать вовсе.
+     Второе — не поломка, а обычное дело при недоступном telegram.org, и
+     кабинет обязан работать в обоих случаях: показывать экраны, отвечать на
+     нажатия и честно говорить, что данных нет.
+     Без подписи `initData` сервер откажет, и на карточке будут прочерки, —
+     но это ответ, а не зависание. */
+  var tg = null;
+
+  function connectTelegram() {
+    tg = (window.Telegram && window.Telegram.WebApp) || null;
+    if (!tg) return false;
+
     tg.ready();
     tg.expand();
     // Фон приложения задаётся нашей палитрой, а не темой клиента, — иначе
     // над кабинетом висела бы чужая полоса другого цвета.
     if (tg.setHeaderColor) { try { tg.setHeaderColor('#060507'); } catch (e) {} }
     if (tg.setBackgroundColor) { try { tg.setBackgroundColor('#060507'); } catch (e) {} }
+    return true;
+  }
+
+  if (!connectTelegram()) {
+    var sdk = document.getElementById('tg-sdk');
+    // Приехал позже — подключаемся и перезапрашиваем состояние: до этого
+    // запрос ушёл без подписи и получил отказ.
+    if (sdk) {
+      sdk.addEventListener('load', function () {
+        if (connectTelegram()) load();
+      });
+    }
   }
 
   var state = null;
@@ -1396,23 +1465,30 @@ document.addEventListener('DOMContentLoaded', function () {
     if (name === 'set')    return go('set');
   }
 
-  /* Состояние. Пока сервера нет — заглушка с видимым предупреждением: без
-     него легко принять придуманные числа за настоящие и удивиться позже. */
-  fetch('/api/me', {
-    headers: { 'X-Init-Data': (tg && tg.initData) || '' }
-  }).then(function (r) {
-    if (!r.ok) throw new Error('нет ответа');
-    return r.json();
-  }).catch(function () {
-    /* Сервер не ответил. Выдуманные числа на их месте выглядели бы как
-       настоящие, поэтому здесь пусто: прочерки и погашенные кнопки. */
-    return { status: null, subscriptionUrl: null, referral: {} };
-  }).then(function (data) {
-    state = data;
-    render();
-    route();
-  });
-});
+  /* Состояние с сервера.
+     Отдельной функцией, потому что запрашивается дважды: сразу при запуске
+     и ещё раз, если Telegram доехал позже. Первый запрос в этом случае
+     уходит без подписи и получает отказ — без повтора кабинет так и остался
+     бы с прочерками при исправном сервере. */
+  function load() {
+    return fetch('/api/me', {
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+    }).then(function (r) {
+      if (!r.ok) throw new Error('нет ответа');
+      return r.json();
+    }).catch(function () {
+      /* Сервер не ответил. Выдуманные числа на их месте выглядели бы как
+         настоящие, поэтому здесь пусто: прочерки и погашенные кнопки. */
+      return { status: null, subscriptionUrl: null, referral: {} };
+    }).then(function (data) {
+      state = data;
+      render();
+      route();
+    });
+  }
+
+  load();
+}());
 </script>
 
 </body>
