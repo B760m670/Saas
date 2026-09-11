@@ -56,7 +56,18 @@ impl core::error::Error for Error {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     /// Сообщение или команда.
-    Message { chat: i64, from: i64, text: String },
+    Message {
+        chat: i64,
+        from: i64,
+        text: String,
+        /// Номер сообщения, на которое это ответ. `None` — обычное
+        /// сообщение.
+        ///
+        /// Нужен поддержке: владелец отвечает свайпом по пересланному
+        /// обращению, и по этому номеру находится, кому ответ. Набирать
+        /// номер человека руками при таком способе не приходится вовсе.
+        reply_to: Option<i64>,
+    },
     /// Нажатие на кнопку под сообщением.
     Button {
         chat: i64,
@@ -231,6 +242,39 @@ impl Telegram {
         ))
     }
 
+    /// Номер отправленного сообщения из ответа Telegram.
+    ///
+    /// Нужен поддержке, и только ей. Пересылая обращение владельцу, мы
+    /// запоминаем этот номер рядом с тем, от кого обращение пришло. Когда
+    /// владелец отвечает свайпом, Telegram присылает номер процитированного
+    /// сообщения — по нему и находится получатель.
+    ///
+    /// Без этой связки ответ пришлось бы адресовать вручную: набирать номер
+    /// человека в каждом сообщении. Один раз ошибиться — и ответ уходит
+    /// чужому, вместе со всем, что в нём написано.
+    ///
+    /// `None`, если Telegram ответил отказом или чем-то неожиданным. Это не
+    /// беда: сообщение к тому времени уже отправлено, потеряна только
+    /// возможность ответить на него свайпом.
+    #[must_use]
+    pub fn sent_message_id(body: &[u8]) -> Option<i64> {
+        #[derive(Deserialize)]
+        struct Envelope {
+            ok: bool,
+            result: Option<Sent>,
+        }
+        #[derive(Deserialize)]
+        struct Sent {
+            message_id: i64,
+        }
+
+        let envelope: Envelope = serde_json::from_slice(body).ok()?;
+        if !envelope.ok {
+            return None;
+        }
+        envelope.result.map(|sent| sent.message_id)
+    }
+
     /// Ответить на нажатие кнопки.
     ///
     /// Отвечать обязательно, даже если сказать нечего: иначе у человека
@@ -323,6 +367,16 @@ impl Telegram {
             chat: Chat,
             from: Option<From>,
             text: Option<String>,
+            // Ответ свайпом. По номеру процитированного сообщения владелец
+            // поддержки и находится: «кому это ответ» решает не набранный
+            // номер, а то, на что он ответил.
+            //
+            // Box, потому что сообщение ссылается на сообщение: без него у
+            // типа получился бы бесконечный размер, и это не компилируется.
+            #[serde(default, rename = "reply_to_message")]
+            reply_to: Option<Box<Message>>,
+            #[serde(default, rename = "message_id")]
+            id: Option<i64>,
         }
         #[derive(Deserialize)]
         struct CallbackQuery {
@@ -368,11 +422,13 @@ impl Telegram {
                     _ => None,
                 }
             } else if let Some(message) = raw.message {
+                let reply_to = message.reply_to.as_ref().and_then(|m| m.id);
                 match (message.text, message.from) {
                     (Some(text), Some(from)) => Some(Incoming::Message {
                         chat: message.chat.id,
                         from: from.id,
                         text,
+                        reply_to,
                     }),
                     _ => None,
                 }
@@ -412,6 +468,9 @@ fn inline_markup(keyboard: &Keyboard) -> String {
                     let press = match &button.press {
                         Press::Act(action) => {
                             format!(r#""callback_data":"{}""#, json_string(&action.encode()))
+                        }
+                        Press::Data(data) => {
+                            format!(r#""callback_data":"{}""#, json_string(data))
                         }
                         Press::Open(url) => format!(r#""url":"{}""#, json_string(url)),
                         Press::App(url) => {
@@ -564,6 +623,7 @@ mod tests {
                         chat: 1,
                         from: 1,
                         text: "x".to_owned(),
+                        reply_to: None,
                     },
                 })
                 .collect(),
@@ -613,7 +673,8 @@ mod tests {
                 incoming: Incoming::Message {
                     chat: 42,
                     from: 42,
-                    text: "/start".to_owned()
+                    text: "/start".to_owned(),
+                    reply_to: None
                 }
             }]
         );

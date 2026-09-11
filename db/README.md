@@ -120,6 +120,7 @@ docker exec -i remnawave-db psql -U gloria -d gloria -v ON_ERROR_STOP=1 \
 | `migrations/0004_reminder_days.sql` | напоминания привязаны к суткам |
 | `migrations/0005_claimed_orders.sql` | отметка «покупатель сказал, что оплатил» |
 | `migrations/0006_claimed_amount.sql` | и сколько он говорит, что отправил |
+| `migrations/0007_support.sql` | обращения в поддержку и кому они пересланы |
 | `tests/invariants.sql` | проверка того, что ограничения действуют |
 
 Миграции нумеруются и **не переписываются** после того, как применены на

@@ -12,6 +12,7 @@
 pub mod catalog;
 pub mod flow;
 pub mod menu;
+pub mod support;
 
 pub use catalog::{plan, plans};
 pub use flow::{gigabytes, on_action, on_message, Effect, Reply, View};

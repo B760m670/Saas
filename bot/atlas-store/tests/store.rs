@@ -74,6 +74,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0005_claimed_orders.sql"),
         "\n",
         include_str!("../../../db/migrations/0006_claimed_amount.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0007_support.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -1029,4 +1031,70 @@ fn two_reminders_never_come_due_at_the_same_moment() {
             "за {hours_left} ч до конца пришло бы сразу несколько: {due:?}"
         );
     }
+}
+
+/// Ответ поддержки находит адресата по процитированному сообщению.
+///
+/// Владелец отвечает свайпом; Telegram сообщает номер сообщения, а кто за
+/// ним стоит — известно только отсюда. Разойдись эта связь, ответ ушёл бы
+/// чужому вместе со всем, что в нём написано.
+#[test]
+fn a_support_reply_finds_its_recipient() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    subscriber(&mut store, 43);
+
+    // Одно обращение переслано двум владельцам. Номера сообщений у каждого
+    // свои — потому ключ и составной.
+    expect(store.remember_support_message(900, 11, 42), "запись");
+    expect(store.remember_support_message(901, 11, 43), "запись");
+
+    assert_eq!(expect(store.support_recipient(900, 11), "поиск"), Some(42));
+    assert_eq!(
+        expect(store.support_recipient(901, 11), "поиск"),
+        Some(43),
+        "номер сообщения одного владельца указал на чужого покупателя"
+    );
+
+    // Ответ на постороннее сообщение адресата не имеет, и придумывать его
+    // нельзя: письмо ушло бы чужому.
+    assert_eq!(expect(store.support_recipient(900, 99), "поиск"), None);
+
+    // Повтор не меняет адресата.
+    expect(store.remember_support_message(900, 11, 43), "повтор");
+    assert_eq!(expect(store.support_recipient(900, 11), "поиск"), Some(42));
+}
+
+/// Тема живёт недолго: выбравший её неделю назад пишет уже о другом, и
+/// подпись «о чём речь» ввела бы владельца в заблуждение.
+#[test]
+fn a_support_topic_goes_stale() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    const HOUR: i64 = 3600;
+
+    assert_eq!(expect(store.support_topic(42, NOW, HOUR), "тема"), None);
+
+    expect(store.set_support_topic(42, "pay", NOW), "запись темы");
+    assert_eq!(
+        expect(store.support_topic(42, NOW + 60, HOUR), "тема"),
+        Some("pay".to_owned())
+    );
+
+    // Спустя срок — молчание, а не старая тема.
+    assert_eq!(
+        expect(store.support_topic(42, NOW + HOUR + 1, HOUR), "тема"),
+        None
+    );
+
+    // Новая заменяет прежнюю целиком.
+    expect(store.set_support_topic(42, "slow", NOW + HOUR * 2), "смена");
+    assert_eq!(
+        expect(store.support_topic(42, NOW + HOUR * 2, HOUR), "тема"),
+        Some("slow".to_owned())
+    );
 }

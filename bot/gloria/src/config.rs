@@ -58,6 +58,12 @@ pub struct Config {
     pub wata_token: Option<String>,
     /// Адрес мини-приложения. Из него делается кнопка «Меню» у поля ввода.
     pub miniapp_url: Option<String>,
+    /// Токен бота поддержки. Свой, отдельный от основного.
+    ///
+    /// Нет — поддержка не поднимается, и всё остальное работает как
+    /// работало. Обращения тогда идут туда, куда указывает кнопка в
+    /// кабинете, и это ответственность настроек, а не кода.
+    pub support_token: Option<String>,
 }
 
 impl core::fmt::Debug for Config {
@@ -93,6 +99,7 @@ pub const YOOKASSA_SHOP_ID: &str = "GLORIA_YOOKASSA_SHOP_ID";
 pub const YOOKASSA_SECRET: &str = "GLORIA_YOOKASSA_SECRET";
 pub const WATA_TOKEN: &str = "GLORIA_WATA_TOKEN";
 pub const MINIAPP_URL: &str = "GLORIA_MINIAPP_URL";
+const SUPPORT_TOKEN: &str = "GLORIA_SUPPORT_TOKEN";
 
 /// Куда встаёт мини-приложение, если адрес не задан.
 ///
@@ -218,6 +225,7 @@ impl Config {
             yookassa_secret: optional(vars, YOOKASSA_SECRET),
             wata_token: optional(vars, WATA_TOKEN),
             miniapp_url,
+            support_token: optional(vars, SUPPORT_TOKEN),
         })
     }
 

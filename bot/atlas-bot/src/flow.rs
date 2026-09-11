@@ -415,7 +415,7 @@ fn device_screen(device: Device, view: &View<'_>) -> Reply {
 
 fn help_screen(view: &View<'_>) -> Reply {
     Reply {
-        text: "Напишите @GloriaVPNSupport — отвечает человек.\n\n\
+        text: "Напишите @GloriaVPNSupport_Bot — отвечает человек.\n\n\
                Частое: во время региональных ограничений мобильного интернета \
                не работает ни один VPN, включая наш, — ограничение стоит в сети \
                оператора. Дома по Wi-Fi и на проводном всё продолжает работать."

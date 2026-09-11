@@ -786,6 +786,90 @@ impl Store {
         row.map(named_order).transpose()
     }
 
+    // --- поддержка --------------------------------------------------------
+
+    /// Запомнить, кому переслано обращение.
+    ///
+    /// По этой записи владелец и отвечает: он пишет свайпом, Telegram
+    /// сообщает номер процитированного сообщения, а кто за ним стоит —
+    /// известно только отсюда.
+    pub fn remember_support_message(
+        &mut self,
+        admin_chat_id: i64,
+        admin_message_id: i64,
+        telegram_id: i64,
+    ) -> Result<(), Error> {
+        self.client.execute(
+            "INSERT INTO support_messages (admin_chat_id, admin_message_id, telegram_id)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (admin_chat_id, admin_message_id) DO NOTHING",
+            &[&admin_chat_id, &admin_message_id, &telegram_id],
+        )?;
+        Ok(())
+    }
+
+    /// Кому отвечает владелец, процитировавший это сообщение.
+    ///
+    /// `None` означает «не наше сообщение»: владелец ответил на что-то
+    /// постороннее — на свою же заметку, на старое обращение из времён до
+    /// этой таблицы. Отправлять такой ответ некому, и придумывать получателя
+    /// нельзя: письмо уйдёт чужому.
+    pub fn support_recipient(
+        &mut self,
+        admin_chat_id: i64,
+        admin_message_id: i64,
+    ) -> Result<Option<i64>, Error> {
+        let row = self.client.query_opt(
+            "SELECT telegram_id FROM support_messages
+              WHERE admin_chat_id = $1 AND admin_message_id = $2",
+            &[&admin_chat_id, &admin_message_id],
+        )?;
+        Ok(match row {
+            Some(row) => Some(row.try_get(0)?),
+            None => None,
+        })
+    }
+
+    /// Запомнить выбранную тему обращения.
+    pub fn set_support_topic(
+        &mut self,
+        telegram_id: i64,
+        topic: &str,
+        now: i64,
+    ) -> Result<(), Error> {
+        self.client.execute(
+            "UPDATE users SET support_topic = $2,
+                              support_topic_at = to_timestamp($3::bigint)
+              WHERE telegram_id = $1",
+            &[&telegram_id, &topic, &now],
+        )?;
+        Ok(())
+    }
+
+    /// Свежая тема этого человека, если он выбирал её недавно.
+    ///
+    /// Старая не возвращается намеренно. Выбравший тему полчаса назад пишет,
+    /// скорее всего, о ней; выбравший неделю назад — вряд ли, и подпись «о
+    /// чём речь» ввела бы владельца в заблуждение вернее, чем её отсутствие.
+    pub fn support_topic(
+        &mut self,
+        telegram_id: i64,
+        now: i64,
+        fresh_for: i64,
+    ) -> Result<Option<String>, Error> {
+        let row = self.client.query_opt(
+            "SELECT support_topic FROM users
+              WHERE telegram_id = $1
+                AND support_topic IS NOT NULL
+                AND support_topic_at > to_timestamp($2::bigint)",
+            &[&telegram_id, &(now - fresh_for)],
+        )?;
+        Ok(match row {
+            Some(row) => Some(row.try_get(0)?),
+            None => None,
+        })
+    }
+
     /// Пересоздать схему. **Только для тестов.**
     ///
     /// Метод отказывается работать, если имя базы не содержит `test`. Это не

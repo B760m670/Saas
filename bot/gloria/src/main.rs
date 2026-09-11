@@ -13,6 +13,7 @@
 mod api;
 mod config;
 mod http;
+mod support;
 
 use std::process::ExitCode;
 
@@ -100,6 +101,11 @@ fn main() -> ExitCode {
         eprintln!("Мини-приложение: {error}");
         return ExitCode::FAILURE;
     }
+
+    // Поддержка — отдельный бот со своим токеном. Не поднялся — об этом
+    // сказано в журнале, и на остальное это не влияет: обращения тогда идут
+    // туда, куда указывает кнопка в кабинете.
+    support::spawn(&config);
 
     announce(&config, &telegram);
 
@@ -1599,7 +1605,7 @@ fn transfer_invoice(config: &Config, amount: atlas_billing::Money) -> Extra {
     let Some(link) = &config.pay_link else {
         return format!(
             "К оплате: <b>{sum}</b>\n\n\
-             Приём оплаты ещё настраивается — напишите @GloriaVPNSupport, \
+             Приём оплаты ещё настраивается — напишите @GloriaVPNSupport_Bot, \
              и подписку выдадут вручную."
         )
         .into();
