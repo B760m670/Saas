@@ -132,6 +132,20 @@ fn handle(
             // пока мы ходим в базу.
             let _ = http::send(&telegram.answer_callback(callback_id, None));
 
+            // «Не помогло» не меняет тему и не повторяет ответ: тема нужна
+            // владельцу как подпись «о чём речь», а подменять её на «Другое»
+            // значит терять ровно то, ради чего её и выбирали.
+            if data == "ask" {
+                send(
+                    telegram,
+                    incoming.chat(),
+                    "Напишите, что случилось, — передам вместе с тем, \
+                     что знаю о вашей подписке.",
+                    None,
+                );
+                return Ok(());
+            }
+
             let Some(topic) = data.strip_prefix("t:").and_then(Topic::parse) else {
                 return greet(telegram, incoming.chat());
             };
@@ -146,7 +160,7 @@ fn handle(
                 .map_err(|error| format!("база: {error}"))?;
 
             let keyboard = Keyboard {
-                rows: vec![vec![Button::data("Не помогло, напишу", "t:other")]],
+                rows: vec![vec![Button::data("Не помогло, напишу", "ask")]],
             };
             send(telegram, incoming.chat(), topic.answer(), Some(&keyboard));
             Ok(())
@@ -159,8 +173,23 @@ fn handle(
                 return greet(telegram, *chat);
             }
 
-            // Владелец пишет ответ — свайпом или командой.
-            if admins.contains(&who) {
+            // Владелец отвечает **явно**: свайпом по обращению или командой
+            // `/w`. Всё остальное от него — обычное обращение.
+            //
+            // Раньше сюда уходил любой его текст, и у этого было два
+            // следствия. Он не мог проверить бота, написав ему как
+            // покупатель: вместо обращения получал подсказку про свайп. И не
+            // мог обратиться в собственную поддержку, если бы понадобилось.
+            //
+            // Признак ответа — не «кто пишет», а «как»: процитированное
+            // сообщение либо команда. Оба видны в самом сообщении, гадать не
+            // приходится.
+            let replying = match incoming {
+                Incoming::Message { reply_to, .. } => reply_to.is_some(),
+                Incoming::Button { .. } => false,
+            } || command == "/w";
+
+            if admins.contains(&who) && replying {
                 return answer_from_owner(telegram, store, incoming, text, *chat);
             }
 
@@ -287,19 +316,18 @@ fn answer_from_owner(
         };
     }
 
-    // Запасной путь: номер набран руками.
-    if let Some(rest) = text.strip_prefix("/w ") {
-        let mut parts = rest.splitn(2, char::is_whitespace);
-        let buyer = parts.next().unwrap_or("").parse::<i64>().ok();
-        let body = parts.next().unwrap_or("").trim();
-
-        return match (buyer, body.is_empty()) {
-            (Some(buyer), false) => deliver(telegram, chat, buyer, body),
-            _ => {
+    // Запасной путь: номер набран руками. Разбор — в `atlas_bot::support`,
+    // под тестами: от него зависит, кому уйдёт ответ, и однажды он уже
+    // подвёл молча.
+    if text.starts_with("/w") {
+        return match atlas_bot::support::parse_reply(text) {
+            Some((buyer, body)) => deliver(telegram, chat, buyer, body),
+            None => {
                 send(
                     telegram,
                     chat,
-                    "Не разобрал. Ожидается <code>/w номер текст</code>.",
+                    "Не разобрал. Ожидается <code>/w номер текст</code>, \
+                     например <code>/w 123456789 проверил, продлил</code>.",
                     None,
                 );
                 Ok(())
