@@ -76,6 +76,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0006_claimed_amount.sql"),
         "\n",
         include_str!("../../../db/migrations/0007_support.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0008_support_one_at_a_time.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -1096,5 +1098,91 @@ fn a_support_topic_goes_stale() {
     assert_eq!(
         expect(store.support_topic(42, NOW + HOUR * 2, HOUR), "тема"),
         Some("slow".to_owned())
+    );
+}
+
+/// Пока на обращение не ответили, второе до владельца не доходит. Иначе
+/// вместо одного обращения он читает шесть — и шесть раз одно и то же.
+#[test]
+fn a_second_message_waits_for_the_answer() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    const PATIENCE: i64 = DAY;
+
+    assert!(
+        expect(store.open_support_request(42, NOW, PATIENCE), "первое"),
+        "первое обращение обязано пройти"
+    );
+    assert!(
+        !expect(store.open_support_request(42, NOW + 1, PATIENCE), "второе"),
+        "второе обращение прошло, пока первое без ответа"
+    );
+
+    // Ответ владельца открывает дорогу следующему.
+    expect(store.close_support_request(42), "закрытие");
+    assert!(
+        expect(store.open_support_request(42, NOW + 2, PATIENCE), "после"),
+        "после ответа писать снова нельзя"
+    );
+}
+
+/// Молчание владельца не запирает человека навсегда: право написать
+/// возвращается само. Проглядел обращение — а тот, у кого не работает
+/// оплаченный VPN, не может даже напомнить о себе.
+#[test]
+fn silence_does_not_lock_a_person_out_forever() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    const PATIENCE: i64 = 3600;
+
+    assert!(expect(
+        store.open_support_request(42, NOW, PATIENCE),
+        "первое"
+    ));
+    assert!(
+        !expect(
+            store.open_support_request(42, NOW + PATIENCE - 1, PATIENCE),
+            "до срока"
+        ),
+        "до срока ждём ответа"
+    );
+    assert!(
+        expect(
+            store.open_support_request(42, NOW + PATIENCE, PATIENCE),
+            "после срока"
+        ),
+        "после срока молчания писать снова обязано быть можно"
+    );
+}
+
+/// Обращения разных людей не связаны: молчание по одному не затыкает
+/// остальных. Иначе первый написавший закрывал бы поддержку для всех.
+#[test]
+fn one_persons_wait_does_not_silence_another() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    subscriber(&mut store, 43);
+    const PATIENCE: i64 = 3600;
+
+    assert!(expect(
+        store.open_support_request(42, NOW, PATIENCE),
+        "первый"
+    ));
+    assert!(
+        expect(store.open_support_request(43, NOW, PATIENCE), "второй"),
+        "чужое ожидание закрыло поддержку"
+    );
+
+    // И закрытие одного не открывает другого.
+    expect(store.close_support_request(42), "закрытие");
+    assert!(
+        !expect(store.open_support_request(43, NOW + 1, PATIENCE), "второй"),
+        "ответ одному открыл дорогу другому"
     );
 }

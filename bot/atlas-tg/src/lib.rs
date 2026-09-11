@@ -326,6 +326,34 @@ impl Telegram {
         )
     }
 
+    /// Описание бота: то, что видно на пустом экране до нажатия «Начать».
+    ///
+    /// Без него человек, впервые открывший бота, видит пустоту и кнопку —
+    /// и не знает ни что это, ни ответят ли ему. Первое впечатление от
+    /// поддержки не должно быть «тут никого нет».
+    ///
+    /// Задаётся из кода, а не в BotFather, по той же причине, что и список
+    /// команд: настройка, живущая только на чужом сервере, восстанавливается
+    /// по памяти — и не восстанавливается.
+    ///
+    /// Telegram режет описание по 512 знакам, короткое — по 120.
+    #[must_use]
+    pub fn set_my_description(&self, description: &str) -> Request {
+        self.post(
+            "setMyDescription",
+            format!(r#"{{"description":"{}"}}"#, json_string(description)),
+        )
+    }
+
+    /// Короткое описание: строка в профиле бота и в предпросмотре ссылки.
+    #[must_use]
+    pub fn set_my_short_description(&self, description: &str) -> Request {
+        self.post(
+            "setMyShortDescription",
+            format!(r#"{{"short_description":"{}"}}"#, json_string(description)),
+        )
+    }
+
     /// Кнопка слева от поля ввода: открывает мини-приложение одним нажатием.
     ///
     /// По умолчанию там показывается список команд — то же, что и по «/»,
@@ -903,5 +931,22 @@ mod tests {
             };
             assert_eq!(Action::decode(&action.encode()), Ok(action.clone()));
         }
+    }
+
+    /// Описание бота — многострочный текст, и перевод строки внутри строки
+    /// JSON недопустим. Telegram на такое отвечает отказом, а отказ при
+    /// запуске виден только в журнале: бот работает, описания просто нет.
+    #[test]
+    fn a_description_survives_becoming_json() {
+        let Some(telegram) = telegram() else { return };
+        let request = telegram.set_my_description("Первая строка.\n\nВторая «строка».");
+        let body = String::from_utf8_lossy(&request.body);
+
+        assert!(body.contains(r"\n\n"), "{body}");
+        assert!(
+            !body.contains('\n'),
+            "настоящий перевод строки в JSON: {body}"
+        );
+        assert!(body.contains("«строка»"), "{body}");
     }
 }

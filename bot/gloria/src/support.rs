@@ -17,6 +17,16 @@
 //! ошибка в одной цифре отправляет ответ чужому вместе со всем, что в нём
 //! написано.
 //!
+//! # Одно обращение за раз
+//!
+//! Пока на обращение не ответили, следующее до владельца не доходит.
+//! Второе письмо очередь не двигает, а владельцу вместо одного обращения
+//! достаётся шесть — и он читает их шесть раз вместо одного.
+//!
+//! Замок снимается ответом владельца, а если ответа нет слишком долго —
+//! сам: владелец один, он болеет и проглядывает, и запертым оказался бы
+//! как раз тот, у кого не работает оплаченный VPN.
+//!
 //! # Чего здесь намеренно нет
 //!
 //! Пересылки сообщений средствами Telegram (`forwardMessage`). Она показала
@@ -37,6 +47,17 @@ use crate::{day_month_year, http};
 /// Через неделю — вряд ли, и подпись «о чём речь» ввела бы владельца в
 /// заблуждение вернее, чем её отсутствие.
 const TOPIC_FRESH_FOR: i64 = 60 * 60;
+
+/// Сколько ждём ответа владельца, прежде чем человек снова может написать.
+///
+/// Пока обращение без ответа, второе письмо до владельца не доходит: очередь
+/// от него не движется, а читать одно и то же шесть раз приходится.
+///
+/// Но и запирать человека навсегда нельзя. Владелец — один человек: он
+/// болеет, спит и проглядывает. Хуже всего такой замок для того, у кого не
+/// работает оплаченный VPN: он не может даже напомнить о себе. Сутки —
+/// столько, чтобы забывчивость успела проявиться, но спам не успел.
+const ANSWER_PATIENCE: i64 = 24 * 60 * 60;
 
 /// Длинное ожидание обновлений, секунд.
 const POLL_TIMEOUT: u16 = 30;
@@ -77,6 +98,7 @@ pub fn spawn(config: &Config) -> Option<std::thread::JoinHandle<()>> {
 
     println!("Бот поддержки запущен");
     Some(std::thread::spawn(move || {
+        describe(&telegram);
         let mut store = store;
         let mut offset = None;
         loop {
@@ -199,6 +221,11 @@ fn handle(
 }
 
 /// Приветствие с выбором темы.
+///
+/// Говорит три вещи и умолкает: куда человек попал, что делать и когда
+/// ответят. Всё остальное — извинения за неудобства, обещания качества,
+/// перечисление возможностей — человек, у которого что-то не работает,
+/// пролистывает не читая, а нужное оказывается под ним.
 fn greet(telegram: &Telegram, chat: i64) -> Result<(), String> {
     let keyboard = Keyboard {
         rows: Topic::all()
@@ -210,12 +237,59 @@ fn greet(telegram: &Telegram, chat: i64) -> Result<(), String> {
     send(
         telegram,
         chat,
-        "Чем помочь?\n\n\
+        "Это поддержка Gloria VPN.\n\n\
          Выберите, что случилось, — на частое отвечу сразу. \
-         Или просто напишите сообщением, я передам.",
+         Если среди тем нужного нет, просто напишите своими словами: \
+         передам и отвечу сюда же, обычно в течение часа.",
         Some(&keyboard),
     );
     Ok(())
+}
+
+/// Что видно на пустом экране, пока человек не нажал «Начать».
+///
+/// Без этого текста первое, что видит написавший в поддержку, — пустота.
+/// Хуже места для пустоты нет: человек пришёл сюда, потому что у него
+/// что-то не работает, и молчащий экран отвечает ему «тут никого нет».
+const DESCRIPTION: &str = "Поддержка Gloria VPN.\n\n\
+     Напишите, что случилось, — отвечу сюда же, обычно в течение часа. \
+     На частые вопросы бот отвечает сразу, не дожидаясь меня.";
+
+/// Строка в профиле бота и в предпросмотре ссылки — там, где длинному
+/// описанию места нет.
+const SHORT_DESCRIPTION: &str = "Поддержка Gloria VPN. Напишите, что случилось.";
+
+/// Рассказать Telegram, что это за бот.
+///
+/// Ни один отказ здесь не останавливает бота: описание — украшение, и
+/// падение при запуске из-за недоступного Telegram означало бы, что
+/// поддержка не поднимется, пока тот не ответит.
+fn describe(telegram: &Telegram) {
+    let tell = |what: &str, request| match http::send(&request) {
+        Ok(response) if response.is_ok() => {}
+        Ok(response) => eprintln!(
+            "Поддержка, {what}: Telegram отказал, код {}: {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        ),
+        Err(error) => eprintln!("Поддержка, {what}: {}", telegram.redact(&error.to_string())),
+    };
+
+    tell("описание", telegram.set_my_description(DESCRIPTION));
+    tell(
+        "краткое описание",
+        telegram.set_my_short_description(SHORT_DESCRIPTION),
+    );
+
+    // Одна команда: всё остальное делается кнопками, и список из пяти
+    // строк здесь был бы вторым меню поверх первого.
+    tell(
+        "команды",
+        telegram.set_my_commands(
+            &[atlas_tg::Command::new("start", "начать сначала")],
+            atlas_tg::Scope::Everyone,
+        ),
+    );
 }
 
 /// Обращение от покупателя: переслать владельцу вместе с тем, что о нём известно.
@@ -231,6 +305,29 @@ fn from_buyer(
     let subscriber = store
         .ensure_subscriber(who)
         .map_err(|error| format!("база: {error}"))?;
+
+    // Одно обращение за раз. Проверка стоит **до** отправки и сама занимает
+    // место: два сообщения подряд иначе прошли бы оба, а от этого мы и
+    // защищаемся.
+    let allowed = store
+        .open_support_request(who, now, ANSWER_PATIENCE)
+        .map_err(|error| format!("база: {error}"))?;
+
+    if !allowed {
+        // Отказ без объяснения человек читает как поломку и пишет ещё раз —
+        // то есть делает ровно то, чего мы избегали. Поэтому говорим прямо:
+        // обращение принято, ответ придёт сюда.
+        send(
+            telegram,
+            chat,
+            "Ваше обращение уже у меня — отвечу сюда же.\n\n\
+             Новое сообщение не ускорит ответ, поэтому оно не отправится, \
+             пока я не отвечу на это. Если дело срочное и ответа долго нет, \
+             напишите ещё раз через сутки.",
+            None,
+        );
+        return Ok(());
+    }
 
     let topic = store
         .support_topic(who, now, TOPIC_FRESH_FOR)
@@ -262,6 +359,7 @@ fn from_buyer(
     // Номер отправленного сообщения запоминается у каждого владельца свой:
     // номера уникальны внутри чата, и свайп в одном чате не должен
     // указывать на сообщение в другом.
+    let mut delivered = false;
     for admin in admins {
         let Ok(request) = telegram.send_message(*admin, &message, None) else {
             continue;
@@ -270,10 +368,27 @@ fn from_buyer(
             continue;
         };
         if let Some(id) = Telegram::sent_message_id(&response.body) {
+            delivered = true;
             store
                 .remember_support_message(*admin, id, who)
                 .map_err(|error| format!("база: {error}"))?;
         }
+    }
+
+    // Не дошло ни до кого — право написать надо вернуть. Иначе человек
+    // заперт на сутки обращением, которого владелец не видел: ответить на
+    // него некому, а написать снова нельзя.
+    if !delivered {
+        store
+            .close_support_request(who)
+            .map_err(|error| format!("база: {error}"))?;
+        send(
+            telegram,
+            chat,
+            "Не получилось передать — попробуйте, пожалуйста, ещё раз.",
+            None,
+        );
+        return Ok(());
     }
 
     send(
@@ -306,7 +421,7 @@ fn answer_from_owner(
             .map_err(|error| format!("база: {error}"))?;
 
         return match found {
-            Some(buyer) => deliver(telegram, chat, buyer, text),
+            Some(buyer) => deliver(telegram, store, chat, buyer, text),
             // Ответ на постороннее сообщение. Придумывать получателя нельзя:
             // письмо ушло бы чужому.
             None => {
@@ -328,7 +443,7 @@ fn answer_from_owner(
     // подвёл молча.
     if text.starts_with("/w") {
         return match atlas_bot::support::parse_reply(text) {
-            Some((buyer, body)) => deliver(telegram, chat, buyer, body),
+            Some((buyer, body)) => deliver(telegram, store, chat, buyer, body),
             None => {
                 send(
                     telegram,
@@ -356,7 +471,13 @@ fn answer_from_owner(
 }
 
 /// Доставить ответ покупателю и подтвердить владельцу.
-fn deliver(telegram: &Telegram, admin_chat: i64, buyer: i64, text: &str) -> Result<(), String> {
+fn deliver(
+    telegram: &Telegram,
+    store: &mut Store,
+    admin_chat: i64,
+    buyer: i64,
+    text: &str,
+) -> Result<(), String> {
     let body = format!("Поддержка:\n\n{}", atlas_tg::escape_html(text));
 
     let request = telegram
@@ -365,6 +486,12 @@ fn deliver(telegram: &Telegram, admin_chat: i64, buyer: i64, text: &str) -> Resu
 
     match http::send(&request) {
         Ok(response) if response.is_ok() => {
+            // Обращение закрыто — человек снова может писать. Снимаем замок
+            // только здесь, по **дошедшему** ответу: сняв его раньше, мы
+            // открыли бы дорогу следующему письму, не ответив на прошлое.
+            store
+                .close_support_request(buyer)
+                .map_err(|error| format!("база: {error}"))?;
             send(telegram, admin_chat, &format!("Отправлено {buyer}."), None);
         }
         // Не дошло — говорим об этом. Молчание владелец прочтёт как «дошло»,
@@ -442,5 +569,29 @@ fn send(telegram: &Telegram, chat: i64, text: &str, keyboard: Option<&Keyboard>)
             }
         }
         Err(error) => eprintln!("Поддержка, сообщение для {chat}: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DESCRIPTION, SHORT_DESCRIPTION};
+
+    /// Telegram режет описание по 512 знакам, короткое — по 120, и отвечает
+    /// на длинное отказом. Отказ при запуске виден только в журнале: бот
+    /// работает, а экран у не нажавшего «Начать» остаётся пустым — ровно та
+    /// поломка, ради которой описание и заводилось.
+    #[test]
+    fn the_description_fits_what_telegram_accepts() {
+        assert!(
+            DESCRIPTION.chars().count() <= 512,
+            "описание длиннее предела: {}",
+            DESCRIPTION.chars().count()
+        );
+        assert!(
+            SHORT_DESCRIPTION.chars().count() <= 120,
+            "краткое описание длиннее предела: {}",
+            SHORT_DESCRIPTION.chars().count()
+        );
+        assert!(!DESCRIPTION.is_empty() && !SHORT_DESCRIPTION.is_empty());
     }
 }
