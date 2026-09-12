@@ -32,12 +32,66 @@ git fetch origin "$BRANCH"
 git checkout -q FETCH_HEAD
 
 echo "== схема базы"
+
+# Как попасть в базу. Переменной, а не жёстко: так этот же блок проверяется
+# на обычном PostgreSQL, без докера и без сервера.
+DB_EXEC=${DB_EXEC:-"docker exec -i remnawave-db psql -U gloria -d gloria"}
+
+# shellcheck disable=SC2086
+db() { $DB_EXEC -v ON_ERROR_STOP=1 "$@"; }
+
+# Учёт применённого.
+#
+# Раньше его не было, и единственным признаком «уже применена» служил отказ:
+# упёрлась в «уже существует» — значит применена. Но отказы неразличимы,
+# а вывод к тому же подавлялся, и под то же самое «пропущена (скорее всего,
+# уже применена)» попадали опечатка в SQL, нехватка прав и недоступная база.
+#
+# Так и вышло: 0004 не применялась **ни разу**, каждая выкладка бодро
+# сообщала «пропущена», а напоминания об окончании подписки молча падали на
+# ограничении CHECK. Обнаружилось это случайно и спустя недели.
+db -qtA >/dev/null <<'SQL'
+SET client_min_messages = warning;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+SQL
+
+applied=$(db -qtAc 'SELECT name FROM schema_migrations')
+
 for m in db/migrations/*.sql; do
-    # Уже применённая упрётся в «уже существует» — это не ошибка, а
-    # отсутствие учёта миграций. Поэтому отказ здесь не останавливает.
-    docker exec -i remnawave-db psql -U gloria -d gloria -v ON_ERROR_STOP=1 < "$m" >/dev/null 2>&1 \
-        && echo "   применена $(basename "$m")" \
-        || echo "   пропущена $(basename "$m") (скорее всего, уже применена)"
+    name=$(basename "$m")
+
+    if printf '%s\n' "$applied" | grep -qxF "$name"; then
+        echo "   уже применена $name"
+        continue
+    fi
+
+    # VERBOSITY=verbose добавляет к ошибке её код, а разбирать надо именно
+    # код: текст зависит от языка сервера и от версии.
+    if out=$(db -v VERBOSITY=verbose < "$m" 2>&1); then
+        echo "   применена $name"
+    elif printf '%s' "$out" | grep -qE 'ERROR: +42(P07|701|710|P06|723):'; then
+        # Объект уже есть — миграция применялась до того, как завёлся учёт.
+        # Единственный случай, когда отказ не отказ; все остальные ниже.
+        echo "   уже применена $name (учтена задним числом)"
+    else
+        # Настоящий отказ. Молчать здесь нельзя: бот поедет на схеме, которой
+        # не хватает того, на что он рассчитывает, и узнается это по
+        # неработающей мелочи спустя недели.
+        echo "== схема не обновилась, на $name:" >&2
+        printf '%s\n' "$out" >&2
+        exit 1
+    fi
+
+    # Через ввод, а не через -c: переменные psql разворачивает только в том,
+    # что прочитал сам. С -c имя ушло бы в запрос буквально, как `:'name'`,
+    # и учёт не пополнялся бы вовсе.
+    db -v name="$name" -qtA >/dev/null <<'SQL'
+INSERT INTO schema_migrations (name) VALUES (:'name')
+ON CONFLICT (name) DO NOTHING;
+SQL
 done
 
 echo "== сборка"
