@@ -1519,7 +1519,7 @@ pub(crate) fn open_order_for(
         return Err(format!("тарифа {plan_id} нет в витрине"));
     };
 
-    let (order_id, amount) = {
+    let (order_id, amount, spent) = {
         let mut store = shared
             .store
             .lock()
@@ -1559,7 +1559,7 @@ pub(crate) fn open_order_for(
             return Err("бонусы уже заняты другим счётом".to_owned());
         }
 
-        (order_id, amount)
+        (order_id, amount, discounted.spent)
     };
 
     // Владелец узнаёт о счёте сразу, а не когда вспомнит про `/pending`:
@@ -1571,10 +1571,15 @@ pub(crate) fn open_order_for(
                 telegram,
                 *admin,
                 &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета)\n  \
+                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета){}\n  \
                      подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
                     plan.title,
+                    if spent > 0 {
+                        format!("\n  со скидкой {spent} за приглашённых")
+                    } else {
+                        String::new()
+                    },
                     amount.to_decimal(),
                 ),
             );
@@ -1591,7 +1596,7 @@ pub(crate) fn open_order_for(
     // сервере и везти списком значило бы завести второе место, где живёт
     // одно правило округления.
     Ok(format!(
-        r#"{{"amount":"{}","minor":{},"label":"{}",{pay}"life":"{}","orderId":"{order_id}"}}"#,
+        r#"{{"amount":"{}","minor":{},"label":"{}","bonusSpent":{spent},{pay}"life":"{}","orderId":"{order_id}"}}"#,
         amount.to_decimal(),
         amount.minor(),
         atlas_bot::menu::price_label(amount),
