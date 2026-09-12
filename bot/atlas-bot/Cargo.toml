@@ -1,0 +1,14 @@
+[package]
+name = "atlas-bot"
+description = "Бот Gloria VPN: экраны, кнопки и тексты"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atlas-billing.workspace = true
+
+[lints]
+workspace = true

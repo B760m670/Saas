@@ -1,0 +1,15 @@
+[package]
+name = "atlas-store"
+description = "Хранилище бота: заказы, платежи, подписки"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+atlas-billing.workspace = true
+postgres = "0.19"
+
+[lints]
+workspace = true

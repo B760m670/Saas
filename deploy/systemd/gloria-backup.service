@@ -1,0 +1,23 @@
+# Снятие копий баз: панели и бота.
+#
+# Сам по себе не запускается — его будит gloria-backup.timer.
+
+[Unit]
+Description=Резервная копия баз Gloria VPN
+Documentation=https://github.com/B760m670/Saas/blob/main/deploy/backup/README.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+
+# От root: сценарий ходит в докер, а докер — это root на этой машине.
+# Ограничивать его так же, как бота, смысла нет: бот разбирает то, что
+# пришло из сети, а этот запускается только по расписанию и ничего из сети
+# не читает.
+ExecStart=/usr/local/bin/gloria-backup.sh
+
+# Копии полезны ровно настолько, насколько заметен их отказ. Провал попадёт
+# в journalctl и в `systemctl list-units --failed`.
+StandardOutput=journal
+StandardError=journal
