@@ -17,7 +17,9 @@ mod support;
 
 use std::process::ExitCode;
 
-use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, Wata, YooKassa};
+use atlas_billing::{
+    bonus, invoice, Checkout, Money, Order, OrderId, Provider, UserId, Wata, YooKassa,
+};
 use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
 use atlas_store::{Reminder, Settled, Store, Subscriber, Trial};
@@ -662,6 +664,24 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         .ensure_subscriber(telegram_id)
         .map_err(|error| format!("база: {error}"))?;
 
+    // Пришёл по чьей-то ссылке — запоминаем, кто привёл. Запись идёт сразу
+    // после того, как человек заведён, и только один раз: решает это
+    // хранилище, а здесь — лишь разбор ссылки.
+    //
+    // Бонусов приглашение пока не приносит и принесёт, только когда этот
+    // человек заплатит и владелец платёж подтвердит.
+    if let Incoming::Message { text, .. } = incoming {
+        if let Some(inviter) = flow::parse_invite(text) {
+            match store.remember_invite(telegram_id, inviter) {
+                Ok(true) => println!("Приглашение: {telegram_id} от {inviter}"),
+                Ok(false) => {}
+                // Разговор не прерываем: человек пришёл пользоваться VPN, а
+                // не оформлять приглашение.
+                Err(error) => eprintln!("Приглашение для {telegram_id}: {error}"),
+            }
+        }
+    }
+
     // Сначала сверка, потом всё остальное: срок могли поправить в панели
     // руками, и без этого человек увидел бы «истекла» при работающем VPN.
     reconcile(panel, store, &mut subscriber, now);
@@ -868,19 +888,54 @@ fn apply(
                 return Ok(None);
             };
 
+            // Сначала возвращаем бонусы с истёкших счетов: человек мог
+            // передумать вчера, и его же бонусы должны быть при нём сегодня.
+            store
+                .reclaim_expired_bonuses(telegram_id, now, catalog::INVOICE_LIFETIME)
+                .map_err(|error| format!("возврат бонусов: {error}"))?;
+
+            let balance = store
+                .bonus_balance(telegram_id)
+                .map_err(|error| format!("бонусы: {error}"))?;
+
+            // Скидка считается до подбора суммы, а не после: подбирается
+            // уникальный хвост уже к той сумме, которую человек переведёт.
+            // Наоборот — и опознавать пришлось бы не то, что пришло.
+            let discounted = bonus::apply(plan.price, balance);
+
             let taken = store
                 .taken_amounts(now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("занятые суммы: {error}"))?;
 
-            let amount = invoice::allocate(plan.price, &taken)
+            let amount = invoice::allocate(discounted.to_pay, &taken)
                 .map_err(|_| "сейчас слишком много открытых счетов, попробуйте через минуту")?;
 
             // Номер заказа: кто, что и когда. Набор символов проверяется
             // и здесь, и в базе — он уходит в подпись платёжного сервиса.
             let order_id = format!("u{telegram_id}-{}-{now}", plan.id);
-            store
-                .open_order(&order_id, telegram_id, &plan.id, plan.days, amount, now)
+            let opened = store
+                .open_order(
+                    &order_id,
+                    telegram_id,
+                    &plan.id,
+                    plan.days,
+                    amount,
+                    discounted.spent,
+                    now,
+                )
                 .map_err(|error| format!("счёт: {error}"))?;
+
+            // Бонусов не хватило — значит их потратил счёт, открытый секунду
+            // назад с другого устройства. Счёт не выставлен вовсе; говорим
+            // об этом и не выставляем втихую по полной цене: человек ждёт
+            // скидку и заплатит, не глядя на сумму.
+            if !opened {
+                return Err(
+                    "бонусы уже заняты другим счётом — откройте его или подождите, \
+                     пока он истечёт"
+                        .to_owned(),
+                );
+            }
 
             // Владелец узнаёт о счёте сразу, а не когда вспомнит про
             // /pending. Счёт живёт двадцать минут: человек, заплативший и
@@ -889,10 +944,17 @@ fn apply(
                 config,
                 telegram,
                 &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id}\n  \
+                    "Счёт <b>{}</b> · {} · от {telegram_id}{}\n  \
                      подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
                     plan.title,
+                    // Скидка называется владельцу: иначе сумма, не похожая ни
+                    // на один тариф, выглядит как ошибка, а не как бонусы.
+                    if discounted.spent > 0 {
+                        format!("\n  со скидкой {} за приглашённых", discounted.spent)
+                    } else {
+                        String::new()
+                    },
                     amount.to_decimal(),
                 ),
             );
@@ -921,8 +983,16 @@ fn apply(
                     Ok(page) => {
                         return Ok(Some(Extra {
                             text: format!(
-                                "К оплате: <b>{}</b>\n\nСчёт действует 20 минут.",
-                                atlas_bot::menu::price_label(amount)
+                                "К оплате: <b>{}</b>{}\n\nСчёт действует 20 минут.",
+                                atlas_bot::menu::price_label(amount),
+                                // Та же оговорка, что и на ручном пути: счёт
+                                // меньше витринной цены без объяснения
+                                // выглядит ошибкой, а не подарком.
+                                if discounted.spent > 0 {
+                                    format!("\nСписано бонусов: {}", discounted.spent)
+                                } else {
+                                    String::new()
+                                }
                             ),
                             keyboard: Some(Keyboard {
                                 rows: vec![vec![Button::link("Оплатить", page)]],
@@ -940,7 +1010,7 @@ fn apply(
                 }
             }
 
-            Ok(Some(transfer_invoice(config, amount)))
+            Ok(Some(transfer_invoice(config, amount, discounted.spent)))
         }
 
         flow::Effect::ClaimPaid { minor } => {
@@ -1288,6 +1358,15 @@ fn settle_order(
             day_month_year(expires_at)
         );
         tell(telegram, buyer, &text);
+
+        // Пригласившему — сообщение о начислении. Молча пополнять счёт
+        // нельзя: человек узнал бы о бонусах, только заглянув в кабинет, а
+        // заглядывать туда без повода незачем. Сообщение и есть повод
+        // рассказать про ссылку ещё кому-то.
+        if let Err(error) = thank_the_inviter(telegram, store, buyer, paid) {
+            // Зачисление уже состоялось и от этого не зависит.
+            eprintln!("Бонусы пригласившему {buyer}: {error}");
+        }
     }
 
     Ok(match settled {
@@ -1310,6 +1389,59 @@ fn settle_order(
         ),
         Settled::NoSuchOrder => "Такого заказа нет.".to_owned(),
     })
+}
+
+/// Сказать пригласившему, что ему начислены бонусы.
+///
+/// Начисляет их само зачисление, в одной транзакции с продлением подписки;
+/// здесь — только письмо. Поэтому неудача письма ничего не отменяет: бонусы
+/// уже на счету, и человек увидит их в кабинете.
+fn thank_the_inviter(
+    telegram: &Telegram,
+    store: &mut Store,
+    buyer: i64,
+    paid: Money,
+) -> Result<(), String> {
+    let Some(inviter) = store
+        .inviter_of(buyer)
+        .map_err(|error| format!("база: {error}"))?
+    else {
+        return Ok(());
+    };
+
+    let Some(earned) = bonus::earned(paid).filter(|earned| *earned > 0) else {
+        return Ok(());
+    };
+
+    let balance = store
+        .bonus_balance(inviter)
+        .map_err(|error| format!("база: {error}"))?;
+
+    // Номера покупателя в сообщении нет намеренно. Пригласивший знает, кого
+    // звал; называть, кто именно и сколько заплатил, значит рассказывать
+    // одному человеку о покупках другого.
+    tell(
+        telegram,
+        inviter,
+        &format!(
+            "Ваш друг оплатил подписку — начислено {earned} \
+             {}.\n\nВсего у вас {balance} {} — их можно списать при следующей \
+             оплате, до половины суммы.",
+            atlas_bot::flow::plural(
+                i64::try_from(earned).unwrap_or(i64::MAX),
+                "бонус",
+                "бонуса",
+                "бонусов"
+            ),
+            atlas_bot::flow::plural(
+                i64::try_from(balance).unwrap_or(i64::MAX),
+                "бонус",
+                "бонуса",
+                "бонусов"
+            ),
+        ),
+    );
+    Ok(())
 }
 
 /// Перевыпустить ссылку на подписку.
@@ -1393,17 +1525,39 @@ pub(crate) fn open_order_for(
             .lock()
             .map_err(|_| "замок базы испорчен".to_owned())?;
 
+        // Бонусы применяются и здесь — тем же порядком, что и в боте. Иначе
+        // одно и то же действие даёт разную цену, смотря откуда нажали.
+        store
+            .reclaim_expired_bonuses(telegram_id, now, catalog::INVOICE_LIFETIME)
+            .map_err(|error| format!("возврат бонусов: {error}"))?;
+        let balance = store
+            .bonus_balance(telegram_id)
+            .map_err(|error| format!("бонусы: {error}"))?;
+        let discounted = bonus::apply(plan.price, balance);
+
         let taken = store
             .taken_amounts(now, catalog::INVOICE_LIFETIME)
             .map_err(|error| format!("занятые суммы: {error}"))?;
 
-        let amount = invoice::allocate(plan.price, &taken)
+        let amount = invoice::allocate(discounted.to_pay, &taken)
             .map_err(|_| "сейчас слишком много открытых счетов".to_owned())?;
 
         let order_id = format!("u{telegram_id}-{}-{now}", plan.id);
-        store
-            .open_order(&order_id, telegram_id, &plan.id, plan.days, amount, now)
+        let opened = store
+            .open_order(
+                &order_id,
+                telegram_id,
+                &plan.id,
+                plan.days,
+                amount,
+                discounted.spent,
+                now,
+            )
             .map_err(|error| format!("счёт: {error}"))?;
+
+        if !opened {
+            return Err("бонусы уже заняты другим счётом".to_owned());
+        }
 
         (order_id, amount)
     };
@@ -1599,12 +1753,29 @@ fn ensure_panel_user(
 /// Сумму человек вводит сам, и это не недоделка: по ней, скопеечной и
 /// уникальной среди открытых счетов, владелец находит платёж в выписке.
 /// Ссылка с зашитой суммой сломала бы поиск, а не упростила его.
-fn transfer_invoice(config: &Config, amount: atlas_billing::Money) -> Extra {
+fn transfer_invoice(config: &Config, amount: atlas_billing::Money, bonus: u64) -> Extra {
     let sum = atlas_bot::menu::price_label(amount);
+
+    // Скидку называем прямо. Счёт на 139 ₽ там, где на витрине 199 ₽, без
+    // объяснения выглядит не подарком, а ошибкой — и человек скорее
+    // переспросит, чем заплатит.
+    let discount = if bonus > 0 {
+        format!(
+            "\n\nСписано {bonus} {} за приглашённых — цена уменьшена на эту сумму.",
+            atlas_bot::flow::plural(
+                i64::try_from(bonus).unwrap_or(i64::MAX),
+                "бонус",
+                "бонуса",
+                "бонусов"
+            )
+        )
+    } else {
+        String::new()
+    };
 
     let Some(link) = &config.pay_link else {
         return format!(
-            "К оплате: <b>{sum}</b>\n\n\
+            "К оплате: <b>{sum}</b>{discount}\n\n\
              Приём оплаты ещё настраивается — напишите @GloriaVPNSupport_Bot, \
              и подписку выдадут вручную."
         )
@@ -1618,7 +1789,7 @@ fn transfer_invoice(config: &Config, amount: atlas_billing::Money) -> Extra {
     // неожиданностью это не станет.
     Extra {
         text: format!(
-            "К оплате: <b>{sum}</b>\n\n\
+            "К оплате: <b>{sum}</b>{discount}\n\n\
              Нажмите «Оплатить» — откроется ваше банковское приложение. \
              Введите сумму <b>{sum}</b>: она должна совпасть до копейки, по ней \
              я нахожу ваш платёж.\n\n\

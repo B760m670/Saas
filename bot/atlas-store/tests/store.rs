@@ -78,6 +78,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0007_support.sql"),
         "\n",
         include_str!("../../../db/migrations/0008_support_one_at_a_time.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0009_bonuses.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -156,7 +158,7 @@ fn a_paid_order_extends_the_subscription() {
         return;
     };
     subscriber(&mut store, 42);
-    let _ = store.open_order("u42-d30-01", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("u42-d30-01", 42, "d30", 30, rub(19_899), 0, NOW);
 
     assert_eq!(
         store
@@ -177,7 +179,7 @@ fn the_same_payment_delivered_twice_gives_nothing_extra() {
         return;
     };
     subscriber(&mut store, 42);
-    let _ = store.open_order("u42-d365-01", 42, "d365", 365, rub(128_999), NOW);
+    let _ = store.open_order("u42-d365-01", 42, "d365", 365, rub(128_999), 0, NOW);
 
     let first = store
         .settle(
@@ -226,7 +228,7 @@ fn a_second_payment_for_the_same_order_is_refused() {
         return;
     };
     subscriber(&mut store, 42);
-    let _ = store.open_order("u42-d30-02", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("u42-d30-02", 42, "d30", 30, rub(19_899), 0, NOW);
 
     let _ = store.settle("u42-d30-02", "yookassa", "pay-1", rub(19_899), "{}", NOW);
     assert_eq!(
@@ -245,12 +247,12 @@ fn renewals_add_up_instead_of_resetting() {
     };
     subscriber(&mut store, 42);
 
-    let _ = store.open_order("u42-d30-a", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("u42-d30-a", 42, "d30", 30, rub(19_899), 0, NOW);
     let _ = store.settle("u42-d30-a", "yookassa", "p1", rub(19_899), "{}", NOW);
 
     // Через 20 дней докупает год: 10 оставшихся + 365.
     let later = NOW + 20 * DAY;
-    let _ = store.open_order("u42-d365-a", 42, "d365", 365, rub(128_999), NOW);
+    let _ = store.open_order("u42-d365-a", 42, "d365", 365, rub(128_999), 0, NOW);
     assert_eq!(
         store
             .settle("u42-d365-a", "yookassa", "p2", rub(128_999), "{}", later)
@@ -268,7 +270,7 @@ fn an_underpayment_does_not_hand_out_a_subscription() {
         return;
     };
     subscriber(&mut store, 42);
-    let _ = store.open_order("u42-d30-03", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("u42-d30-03", 42, "d30", 30, rub(19_899), 0, NOW);
 
     assert_eq!(
         store
@@ -296,7 +298,7 @@ fn an_overpayment_still_hands_out_the_subscription() {
         return;
     };
     subscriber(&mut store, 42);
-    let _ = store.open_order("u42-d30-04", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("u42-d30-04", 42, "d30", 30, rub(19_899), 0, NOW);
 
     assert_eq!(
         store
@@ -318,9 +320,9 @@ fn only_open_invoices_hold_their_amounts() {
     };
     subscriber(&mut store, 42);
 
-    let _ = store.open_order("open-1", 42, "d30", 30, rub(19_899), NOW);
-    let _ = store.open_order("open-2", 42, "d30", 30, rub(19_898), NOW);
-    let _ = store.open_order("paid-1", 42, "d30", 30, rub(19_897), NOW);
+    let _ = store.open_order("open-1", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.open_order("open-2", 42, "d30", 30, rub(19_898), 0, NOW);
+    let _ = store.open_order("paid-1", 42, "d30", 30, rub(19_897), 0, NOW);
     let _ = store.settle("paid-1", "yookassa", "p-paid", rub(19_897), "{}", NOW);
 
     let Ok(taken) = store.taken_amounts(NOW, LIFETIME) else {
@@ -346,8 +348,8 @@ fn a_payment_finds_its_order_by_the_amount_alone() {
     subscriber(&mut store, 42);
     subscriber(&mut store, 43);
 
-    let _ = store.open_order("for-42", 42, "d30", 30, rub(19_899), NOW);
-    let _ = store.open_order("for-43", 43, "d30", 30, rub(19_898), NOW);
+    let _ = store.open_order("for-42", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.open_order("for-43", 43, "d30", 30, rub(19_898), 0, NOW);
 
     assert_eq!(
         store.order_by_amount(rub(19_898), NOW, LIFETIME).ok(),
@@ -374,8 +376,8 @@ fn a_payment_is_found_by_what_the_person_said_they_sent() {
     subscriber(&mut store, 42);
     subscriber(&mut store, 43);
 
-    let _ = store.open_order("rounded", 42, "d30", 30, rub(19_897), NOW);
-    let _ = store.open_order("exact", 43, "d30", 30, rub(19_896), NOW);
+    let _ = store.open_order("rounded", 42, "d30", 30, rub(19_897), 0, NOW);
+    let _ = store.open_order("exact", 43, "d30", 30, rub(19_896), 0, NOW);
 
     // Пока никто ничего не сказал, по 199 не находится ничего.
     assert!(expect(store.orders_claiming(rub(19_900), NOW, LIFETIME), "поиск").is_empty());
@@ -423,9 +425,9 @@ fn an_invoice_can_be_found_by_its_buyer_when_the_amount_does_not_match() {
     subscriber(&mut store, 42);
     subscriber(&mut store, 43);
 
-    let _ = store.open_order("older", 42, "d30", 30, rub(19_899), NOW);
-    let _ = store.open_order("newer", 42, "d90", 90, rub(49_899), NOW + 60);
-    let _ = store.open_order("someone-else", 43, "d30", 30, rub(19_898), NOW);
+    let _ = store.open_order("older", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.open_order("newer", 42, "d90", 90, rub(49_899), 0, NOW + 60);
+    let _ = store.open_order("someone-else", 43, "d30", 30, rub(19_898), 0, NOW);
 
     // Берётся самый свежий: по нему человек и платил — тот у него на экране.
     assert_eq!(
@@ -477,9 +479,9 @@ fn the_admin_screen_lists_only_open_invoices() {
     };
     subscriber(&mut store, 42);
 
-    let _ = store.open_order("adm-1", 42, "d30", 30, rub(19_899), NOW);
-    let _ = store.open_order("adm-2", 42, "d90", 90, rub(49_898), NOW);
-    let _ = store.open_order("adm-3", 42, "d30", 30, rub(19_897), NOW);
+    let _ = store.open_order("adm-1", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.open_order("adm-2", 42, "d90", 90, rub(49_898), 0, NOW);
+    let _ = store.open_order("adm-3", 42, "d30", 30, rub(19_897), 0, NOW);
     let _ = store.settle("adm-3", "manual", "m-1", rub(19_897), "{}", NOW);
 
     let Ok(pending) = store.pending_orders(NOW, LIFETIME) else {
@@ -511,8 +513,8 @@ fn whoever_says_they_paid_comes_first() {
     subscriber(&mut store, 42);
     subscriber(&mut store, 43);
 
-    let _ = store.open_order("waits-1", 42, "d30", 30, rub(19_899), NOW);
-    let _ = store.open_order("waits-2", 43, "d30", 30, rub(19_898), NOW + 10);
+    let _ = store.open_order("waits-1", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.open_order("waits-2", 43, "d30", 30, rub(19_898), 0, NOW + 10);
 
     // Пока никто ничего не говорил, первым идёт свежий.
     let quiet = expect(store.pending_orders(NOW + 20, LIFETIME), "список счетов");
@@ -592,7 +594,7 @@ fn confirming_the_same_invoice_twice_changes_nothing() {
         return;
     };
     subscriber(&mut store, 42);
-    let _ = store.open_order("adm-4", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("adm-4", 42, "d30", 30, rub(19_899), 0, NOW);
 
     let reference = "19899-adm-4";
     let first = store
@@ -674,7 +676,7 @@ fn a_payment_puts_the_person_back_in_the_queue() {
     let _ = store.grant_trial(42, 3, NOW);
     let _ = store.mark_panel_synced(42, NOW + 3 * DAY);
 
-    let _ = store.open_order("ord-9", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("ord-9", 42, "d30", 30, rub(19_899), 0, NOW);
     let _ = store.settle("ord-9", "manual", "19899-ord-9", rub(19_899), "{}", NOW);
 
     let Ok(work) = store.panel_work(10, NOW) else {
@@ -703,7 +705,7 @@ fn a_late_confirmation_does_not_swallow_a_newer_payment() {
     let carried = NOW + 3 * DAY;
 
     // Пока он ходил, человек оплатил.
-    let _ = store.open_order("ord-8", 42, "d30", 30, rub(19_899), NOW);
+    let _ = store.open_order("ord-8", 42, "d30", 30, rub(19_899), 0, NOW);
     let _ = store.settle("ord-8", "manual", "19899-ord-8", rub(19_899), "{}", NOW);
 
     // Ответ панели пришёл — но он про старую дату.
@@ -937,7 +939,7 @@ fn extending_the_subscription_starts_a_new_set_of_reminders() {
     };
 
     // Оплата продлевает срок — и прежняя отметка к нему уже не относится.
-    let Ok(()) = store.open_order("u42-d30-1", 42, "d30", 30, rub(19_899), NOW) else {
+    let Ok(_) = store.open_order("u42-d30-1", 42, "d30", 30, rub(19_899), 0, NOW) else {
         return;
     };
     let Ok(Settled::Extended { expires_at: longer }) =
@@ -1185,4 +1187,234 @@ fn one_persons_wait_does_not_silence_another() {
         !expect(store.open_support_request(43, NOW + 1, PATIENCE), "второй"),
         "ответ одному открыл дорогу другому"
     );
+}
+
+// --- бонусы за приглашённых ------------------------------------------------
+
+/// Приглашение записывается один раз и первым: иначе «привёл» означало бы
+/// «прислал ссылку последним», и чужая работа доставалась бы тому, кто
+/// подсуетился позже.
+#[test]
+fn an_invitation_is_remembered_once_and_by_the_first() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 2);
+    subscriber(&mut store, 42);
+
+    assert!(expect(store.remember_invite(42, 1), "первый"));
+    assert!(
+        !expect(store.remember_invite(42, 2), "второй"),
+        "второй пригласивший переписал первого"
+    );
+}
+
+/// Три отказа, каждый закрывает свою дыру.
+#[test]
+fn an_invitation_that_makes_no_sense_is_refused() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 42);
+
+    // Сам себя.
+    assert!(!expect(store.remember_invite(42, 42), "сам себя"));
+
+    // Пригласившего нет в базе: номер в ссылке пишет кто угодно.
+    assert!(!expect(store.remember_invite(42, 999), "выдуманный"));
+
+    // Уже платил — значит пришёл сам, и приводить его задним числом некому.
+    let _ = store.open_order("u42-d30", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_899), "{}", NOW);
+    assert!(
+        !expect(store.remember_invite(42, 1), "заплативший"),
+        "заплатившего записали приведённым"
+    );
+}
+
+/// Главное в разделе: бонусы появляются от подтверждения оплаты, а не от
+/// слов покупателя, и появляются ровно один раз.
+#[test]
+fn a_confirmed_payment_pays_the_inviter_once() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 42);
+    assert!(expect(store.remember_invite(42, 1), "приглашение"));
+
+    assert_eq!(expect(store.bonus_balance(1), "до оплаты"), 0);
+
+    // Счёт на месяц с обычным хвостом: 198,99.
+    let _ = store.open_order("u42-d30", 42, "d30", 30, rub(19_899), 0, NOW);
+    assert_eq!(expect(store.bonus_balance(1), "счёт без оплаты"), 0);
+
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_899), "{}", NOW);
+    assert_eq!(
+        expect(store.bonus_balance(1), "после оплаты"),
+        20,
+        "десятая часть от 198,99 с округлением вверх — двадцать"
+    );
+
+    // Повтор подтверждения бонусы не удваивает.
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_899), "{}", NOW);
+    let _ = store.settle("u42-d30", "manual", "p-2", rub(19_899), "{}", NOW);
+    assert_eq!(
+        expect(store.bonus_balance(1), "после повторов"),
+        20,
+        "повторное подтверждение начислило бонусы заново"
+    );
+}
+
+/// Некого благодарить — никто и не получает.
+#[test]
+fn a_payment_without_an_inviter_pays_nobody() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.open_order("u42-d30", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_899), "{}", NOW);
+
+    assert_eq!(expect(store.bonus_balance(42), "сам себе"), 0);
+}
+
+/// Бонусы списываются при выставлении счёта, а не при оплате. Иначе один и
+/// тот же запас уходит в скидку столько раз, сколько счетов человек откроет.
+#[test]
+fn the_same_bonuses_cannot_be_spent_twice() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 42);
+    let _ = store.remember_invite(42, 1);
+    let _ = store.open_order("u42-d30", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_899), "{}", NOW);
+    assert_eq!(expect(store.bonus_balance(1), "начислено"), 20);
+
+    // Первый счёт со скидкой проходит и забирает все двадцать.
+    assert!(expect(
+        store.open_order("u1-a", 1, "d30", 30, rub(17_899), 20, NOW),
+        "первый счёт"
+    ));
+    assert_eq!(expect(store.bonus_balance(1), "после резерва"), 0);
+
+    // Второй на те же бонусы — нет, и счёт при этом не выставлен вовсе.
+    assert!(
+        !expect(
+            store.open_order("u1-b", 1, "d30", 30, rub(17_899), 20, NOW),
+            "второй счёт"
+        ),
+        "скидка выдана дважды на одни и те же бонусы"
+    );
+    assert!(
+        expect(store.pending_order_of(1, NOW, LIFETIME), "счёт").is_some(),
+        "первый счёт потерялся"
+    );
+}
+
+/// Счёт истёк неоплаченным — бонусы возвращаются. Иначе передумавший теряет
+/// их молча, и понять, куда они делись, нельзя ниоткуда.
+#[test]
+fn bonuses_come_back_from_an_expired_invoice() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 42);
+    let _ = store.remember_invite(42, 1);
+    let _ = store.open_order("u42-d30", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_899), "{}", NOW);
+
+    let _ = store.open_order("u1-a", 1, "d30", 30, rub(17_899), 20, NOW);
+    assert_eq!(expect(store.bonus_balance(1), "после резерва"), 0);
+
+    // Пока счёт жив — не возвращаются.
+    assert_eq!(
+        expect(
+            store.reclaim_expired_bonuses(1, NOW + LIFETIME - 1, LIFETIME),
+            "рано"
+        ),
+        0
+    );
+    assert_eq!(expect(store.bonus_balance(1), "пока жив"), 0);
+
+    // Истёк — вернулись, и ровно один раз.
+    assert_eq!(
+        expect(
+            store.reclaim_expired_bonuses(1, NOW + LIFETIME, LIFETIME),
+            "возврат"
+        ),
+        20
+    );
+    assert_eq!(expect(store.bonus_balance(1), "после возврата"), 20);
+
+    assert_eq!(
+        expect(
+            store.reclaim_expired_bonuses(1, NOW + LIFETIME * 9, LIFETIME),
+            "повтор"
+        ),
+        0,
+        "возврат случился дважды"
+    );
+    assert_eq!(expect(store.bonus_balance(1), "после повтора"), 20);
+}
+
+/// Оплаченный счёт бонусы не возвращает: они ушли в скидку, которой человек
+/// уже воспользовался.
+#[test]
+fn a_paid_invoice_keeps_its_discount() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 42);
+    let _ = store.remember_invite(42, 1);
+    let _ = store.open_order("u42-d30", 42, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_899), "{}", NOW);
+
+    let _ = store.open_order("u1-a", 1, "d30", 30, rub(17_899), 20, NOW);
+    let _ = store.settle("u1-a", "manual", "p-2", rub(17_899), "{}", NOW);
+
+    assert_eq!(
+        expect(
+            store.reclaim_expired_bonuses(1, NOW + LIFETIME * 9, LIFETIME),
+            "возврат"
+        ),
+        0,
+        "скидка вернулась после того, как ею воспользовались"
+    );
+}
+
+/// Экран «Друзья» отличает пришедших от платящих: бонусы приносят только
+/// вторые, и одно число на двоих обещало бы за всех подряд.
+#[test]
+fn the_friends_screen_separates_visitors_from_payers() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    for friend in [10, 11, 12] {
+        subscriber(&mut store, friend);
+        let _ = store.remember_invite(friend, 1);
+    }
+
+    let stats = expect(store.referral_stats(1), "до оплат");
+    assert_eq!((stats.invited, stats.paying, stats.earned), (3, 0, 0));
+
+    let _ = store.open_order("u10", 10, "d30", 30, rub(19_899), 0, NOW);
+    let _ = store.settle("u10", "manual", "p-10", rub(19_899), "{}", NOW);
+
+    let stats = expect(store.referral_stats(1), "после оплаты");
+    assert_eq!((stats.invited, stats.paying, stats.earned), (3, 1, 20));
+
+    // Потраченное из «начислено за всё время» не вычитается: это ответ на
+    // вопрос «сколько дала рекомендация», а не «сколько осталось».
+    let _ = store.open_order("u1-a", 1, "d30", 30, rub(17_899), 20, NOW);
+    let stats = expect(store.referral_stats(1), "после траты");
+    assert_eq!(stats.earned, 20);
+    assert_eq!(expect(store.bonus_balance(1), "баланс"), 0);
 }

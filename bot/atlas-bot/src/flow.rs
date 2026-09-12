@@ -98,6 +98,29 @@ pub fn plural(
     }
 }
 
+/// Чей номер стоит в реферальной ссылке `/start ref_777`.
+///
+/// Только разбор: существует ли такой человек, не сам ли это себя приглашает
+/// и не поздно ли записывать — решает хранилище, которое одно про это и
+/// знает.
+///
+/// Вынесено под тесты отдельно от [`on_message`] потому, что от этого разбора
+/// зависят чужие деньги: ошибка здесь либо тихо теряет приглашение, либо
+/// приписывает его не тому.
+#[must_use]
+pub fn parse_invite(text: &str) -> Option<i64> {
+    let mut parts = text.split_whitespace();
+    if parts.next()?.split('@').next()? != "/start" {
+        return None;
+    }
+
+    let id: i64 = parts.next()?.strip_prefix("ref_")?.parse().ok()?;
+
+    // Номера Telegram положительны. Ноль и минус — не чей-то номер, а мусор
+    // в ссылке, и записывать по ним некого.
+    (id > 0).then_some(id)
+}
+
 /// Ответ на текстовое сообщение.
 #[must_use]
 pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
@@ -452,8 +475,8 @@ fn buy(plan_id: &str) -> (Reply, Effect) {
 #[cfg(test)]
 mod tests {
     use super::{
-        claim_options, on_action, on_message, other_amount_screen, paid_screen, plural, Effect,
-        View,
+        claim_options, on_action, on_message, other_amount_screen, paid_screen, parse_invite,
+        plural, Effect, View,
     };
     use crate::menu::{Action, Device};
 
@@ -552,6 +575,36 @@ mod tests {
     fn a_referral_payload_still_behaves_like_a_plain_start() {
         let (_, effect) = on_message("/start ref_777", &newcomer());
         assert_eq!(effect, Effect::GrantTrial);
+    }
+
+    /// От этого разбора зависят чужие деньги: бонусы за приведённого уйдут
+    /// тому, чей номер отсюда вернётся.
+    #[test]
+    fn an_invite_link_names_its_inviter() {
+        assert_eq!(parse_invite("/start ref_777"), Some(777));
+
+        // В группах Telegram дописывает к команде имя бота.
+        assert_eq!(parse_invite("/start@GloriaVPN_Bot ref_42"), Some(42));
+    }
+
+    /// А из всего остального приглашения не делается: угадать здесь значит
+    /// подарить чужие бонусы постороннему.
+    #[test]
+    fn anything_else_is_not_an_invitation() {
+        for text in [
+            "/start",
+            "/start d30",
+            "/start ref_",
+            "/start ref_abc",
+            "/start ref_0",
+            "/start ref_-5",
+            "/start ref_1.5",
+            "/menu ref_777",
+            "ref_777",
+            "",
+        ] {
+            assert_eq!(parse_invite(text), None, "принято приглашение из {text:?}");
+        }
     }
 
     /// В группах Telegram дописывает к команде имя бота, и без отсечения

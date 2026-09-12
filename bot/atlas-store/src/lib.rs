@@ -24,6 +24,7 @@
 
 #![forbid(unsafe_code)]
 
+use atlas_billing::bonus;
 use atlas_billing::invoice::TakenAmounts;
 use atlas_billing::money::{Currency, Money};
 use atlas_billing::subscription;
@@ -159,6 +160,24 @@ pub struct Pending {
     /// быть и `None` при уже нажатой кнопке: так выглядят отметки,
     /// поставленные до того, как сумму начали спрашивать.
     pub claimed: Option<Money>,
+}
+
+/// Что показывает экран «Друзья».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Referrals {
+    /// Сколько человек пришло по ссылке.
+    pub invited: i64,
+    /// Сколько из них хоть раз заплатило.
+    ///
+    /// Отдельно от общего числа намеренно: бонусы приносят только эти, и
+    /// показывать одно число значило бы обещать за всех пришедших.
+    pub paying: i64,
+    /// Сколько бонусов начислено за всё время.
+    ///
+    /// Не баланс: потраченное отсюда не вычитается. Это ответ на вопрос
+    /// «сколько мне дала рекомендация», а баланс — на вопрос «сколько у меня
+    /// сейчас».
+    pub earned: i64,
 }
 
 /// Разобрать строку вида «номер, сумма, валюта» в номер и сумму.
@@ -583,6 +602,20 @@ impl Store {
     /// `created_at` ставила бы база, у заказа могло бы оказаться время оплаты
     /// раньше времени создания. Заодно это делает проверяемым всё, что
     /// зависит от срока жизни счёта.
+    /// `bonus` — сколько бонусов уходит в скидку. Списываются они здесь же,
+    /// **до** оплаты, и это не осторожность, а необходимость: иначе человек
+    /// с сорока бонусами открыл бы три счёта подряд и получил скидку трижды
+    /// на одни и те же сорок.
+    ///
+    /// Счёт и списание — одна транзакция под замком строки покупателя. Будь
+    /// они порознь, нашёлся бы порядок, при котором счёт со скидкой выставлен,
+    /// а бонусы за него не списаны.
+    ///
+    /// Отвечает `false`, если бонусов не хватило; счёт при этом не выставлен
+    /// вовсе — выставить его по полной цене решает тот, кто вызывал.
+    // Восемь доводов — это восемь полей заказа, и сворачивать их в структуру
+    // ради счётчика не стоит: она существовала бы ровно в одном вызове.
+    #[allow(clippy::too_many_arguments)]
     pub fn open_order(
         &mut self,
         id: &str,
@@ -590,13 +623,38 @@ impl Store {
         plan: &str,
         days: u32,
         amount: Money,
+        bonus: u64,
         now: i64,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         let minor = i64::try_from(amount.minor())
             .map_err(|_| Error::Inconsistent("сумма не помещается в базу"))?;
-        self.client.execute(
-            "INSERT INTO orders (id, telegram_id, plan, days, amount_minor, currency, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::bigint))",
+        let bonus = i64::try_from(bonus)
+            .map_err(|_| Error::Inconsistent("списание бонусов не помещается в базу"))?;
+
+        let mut tx = self.client.transaction()?;
+
+        if bonus > 0 {
+            // Замок на покупателе, а не на журнале: за его бонусы спорят
+            // только его собственные счета.
+            tx.execute(
+                "SELECT 1 FROM users WHERE telegram_id = $1 FOR UPDATE",
+                &[&telegram_id],
+            )?;
+
+            let row = tx.query_one(
+                "SELECT COALESCE(SUM(amount), 0)::bigint FROM bonus_ledger
+                  WHERE telegram_id = $1",
+                &[&telegram_id],
+            )?;
+            if row.try_get::<_, i64>(0)? < bonus {
+                return Ok(false);
+            }
+        }
+
+        tx.execute(
+            "INSERT INTO orders
+                 (id, telegram_id, plan, days, amount_minor, currency, bonus_spent, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::bigint))",
             &[
                 &id,
                 &telegram_id,
@@ -604,10 +662,21 @@ impl Store {
                 &i32::try_from(days).unwrap_or(i32::MAX),
                 &minor,
                 &amount.currency().code(),
+                &bonus,
                 &now,
             ],
         )?;
-        Ok(())
+
+        if bonus > 0 {
+            tx.execute(
+                "INSERT INTO bonus_ledger (telegram_id, amount, reason, order_id)
+                 VALUES ($1, $2, 'reserve', $3)",
+                &[&telegram_id, &(-bonus), &id],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Найти открытый счёт по пришедшей сумме.
@@ -914,6 +983,123 @@ impl Store {
         Ok(())
     }
 
+    // --- бонусы -----------------------------------------------------------
+
+    /// Запомнить, кто кого привёл.
+    ///
+    /// Возвращает `true`, если приглашение засчитано.
+    ///
+    /// Засчитывается не всякий переход по ссылке. Отказывают три условия, и
+    /// каждое закрывает свою дыру:
+    ///
+    /// - у человека уже есть пригласивший — иначе последняя открытая ссылка
+    ///   переписывала бы первую, и «привёл» означало бы «написал позже всех»;
+    /// - человек уже платил — заплативший пришёл сам, и задним числом его
+    ///   приводить некому;
+    /// - пригласившего нет в базе или это он сам — выдуманный номер в ссылке
+    ///   иначе создал бы приглашение в никуда.
+    pub fn remember_invite(&mut self, telegram_id: i64, inviter: i64) -> Result<bool, Error> {
+        let changed = self.client.execute(
+            "UPDATE users SET invited_by = $2
+              WHERE telegram_id = $1
+                AND invited_by IS NULL
+                AND $2 <> $1
+                AND EXISTS (SELECT 1 FROM users AS who WHERE who.telegram_id = $2)
+                AND NOT EXISTS (SELECT 1 FROM orders
+                                 WHERE orders.telegram_id = $1
+                                   AND orders.status = 'paid')",
+            &[&telegram_id, &inviter],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Сколько у человека бонусов.
+    ///
+    /// Сумма журнала, а не отдельное поле: второе место, где живёт баланс,
+    /// однажды разойдётся с первым, и какое из них правда — решить будет
+    /// нечем.
+    pub fn bonus_balance(&mut self, telegram_id: i64) -> Result<u64, Error> {
+        let row = self.client.query_one(
+            "SELECT COALESCE(SUM(amount), 0)::bigint FROM bonus_ledger
+              WHERE telegram_id = $1",
+            &[&telegram_id],
+        )?;
+        let total: i64 = row.try_get(0)?;
+        u64::try_from(total).map_err(|_| Error::Inconsistent("баланс бонусов ушёл в минус"))
+    }
+
+    /// Вернуть бонусы, зарезервированные под счета, которые никто не оплатил.
+    ///
+    /// Возвращает, сколько вернулось.
+    ///
+    /// Вызывается перед всякой работой с балансом — «подметает» перед тем,
+    /// как показать или потратить. Отдельной службы по расписанию для этого
+    /// нет намеренно: она была бы третьим местом, где живёт та же логика, и
+    /// её падение никто бы не заметил, пока человек не пожаловался бы на
+    /// пропавшие бонусы.
+    pub fn reclaim_expired_bonuses(
+        &mut self,
+        telegram_id: i64,
+        now: i64,
+        lifetime: i64,
+    ) -> Result<u64, Error> {
+        let row = self.client.query_one(
+            "WITH stale AS (
+                 SELECT id, bonus_spent FROM orders
+                  WHERE telegram_id = $1
+                    AND status = 'pending'
+                    AND bonus_spent > 0
+                    AND created_at <= to_timestamp($2::bigint)
+                    AND NOT EXISTS (SELECT 1 FROM bonus_ledger
+                                     WHERE bonus_ledger.order_id = orders.id
+                                       AND bonus_ledger.reason = 'refund')
+             ), returned AS (
+                 INSERT INTO bonus_ledger (telegram_id, amount, reason, order_id)
+                 SELECT $1, bonus_spent, 'refund', id FROM stale
+                 RETURNING amount
+             )
+             SELECT COALESCE(SUM(amount), 0)::bigint FROM returned",
+            &[&telegram_id, &(now - lifetime)],
+        )?;
+        let total: i64 = row.try_get(0)?;
+        u64::try_from(total).map_err(|_| Error::Inconsistent("возврат бонусов отрицателен"))
+    }
+
+    /// Кто привёл этого человека.
+    pub fn inviter_of(&mut self, telegram_id: i64) -> Result<Option<i64>, Error> {
+        let row = self.client.query_opt(
+            "SELECT invited_by FROM users WHERE telegram_id = $1 AND invited_by IS NOT NULL",
+            &[&telegram_id],
+        )?;
+        Ok(match row {
+            Some(row) => Some(row.try_get(0)?),
+            None => None,
+        })
+    }
+
+    /// Кто привёл человека и сколько у него бонусов — для экрана «Друзья».
+    pub fn referral_stats(&mut self, telegram_id: i64) -> Result<Referrals, Error> {
+        let row = self.client.query_one(
+            "SELECT
+                 (SELECT COUNT(*) FROM users AS friend
+                   WHERE friend.invited_by = $1)::bigint,
+                 (SELECT COUNT(*) FROM users AS friend
+                   WHERE friend.invited_by = $1
+                     AND EXISTS (SELECT 1 FROM orders
+                                  WHERE orders.telegram_id = friend.telegram_id
+                                    AND orders.status = 'paid'))::bigint,
+                 (SELECT COALESCE(SUM(amount), 0) FROM bonus_ledger
+                   WHERE telegram_id = $1 AND reason = 'referral')::bigint",
+            &[&telegram_id],
+        )?;
+
+        Ok(Referrals {
+            invited: row.try_get::<_, i64>(0)?.max(0),
+            paying: row.try_get::<_, i64>(1)?.max(0),
+            earned: row.try_get::<_, i64>(2)?.max(0),
+        })
+    }
+
     /// Пересоздать схему. **Только для тестов.**
     ///
     /// Метод отказывается работать, если имя базы не содержит `test`. Это не
@@ -1062,6 +1248,31 @@ fn settle_in(
         "UPDATE users SET expires_at = to_timestamp($2::bigint) WHERE telegram_id = $1",
         &[&telegram_id, &expires_at],
     )?;
+
+    // 4. Бонусы пригласившему — в той же транзакции, что и продление.
+    //
+    //    Начисление висит именно здесь, а не на нажатии «Я оплатил»: слова
+    //    покупателя бонусов не приносят. Пока владелец не подтвердил, что
+    //    деньги пришли, приглашение ничего не стоит — и накрутка ссылками
+    //    теряет смысл сама, без единой дополнительной проверки.
+    //
+    //    Повтор невозможен: `bonus_referral_once` не даёт записать второе
+    //    начисление по тому же заказу. Стережёт схема, а не внимательность.
+    let earned = bonus::earned(Money::from_minor(
+        u64::try_from(paid_minor).unwrap_or(0),
+        currency,
+    ));
+
+    if let Some(earned) = earned.filter(|earned| *earned > 0) {
+        let earned =
+            i64::try_from(earned).map_err(|_| Error::Inconsistent("бонус не помещается в базу"))?;
+        tx.execute(
+            "INSERT INTO bonus_ledger (telegram_id, amount, reason, order_id)
+             SELECT invited_by, $2, 'referral', $3 FROM users
+              WHERE telegram_id = $1 AND invited_by IS NOT NULL",
+            &[&telegram_id, &earned, &order_id],
+        )?;
+    }
 
     Ok(Settled::Extended { expires_at })
 }

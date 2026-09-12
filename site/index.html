@@ -165,6 +165,8 @@ h2 {
 }
 p { margin: 0 0 12px; }
 .muted { color: var(--muted); }
+/* Правило под числами: объясняет их, но не спорит с ними за внимание. */
+.note { color: var(--muted); font-size: 13px; line-height: 1.5; margin: 14px 0 0; }
 .small { font-size: 13px; }
 
 /* -------------------------------- стекло --------------------------------- */
@@ -666,13 +668,16 @@ a.btn.off { opacity: 0.45; }
 <!-- =========================== РЕФЕРАЛЫ ============================== -->
 <section class="screen" id="s-ref">
   <h1>Приглашайте</h1>
-  <p class="sub">За каждого, кто оплатит подписку, вам добавляются дни</p>
+  <p class="sub">Десятая часть каждой оплаты друга возвращается вам бонусами</p>
 
   <div class="stats">
     <div class="stat"><div class="n" id="rf-invited">0</div><div class="k">перешли</div></div>
     <div class="stat"><div class="n" id="rf-paying">0</div><div class="k">оплатили</div></div>
-    <div class="stat"><div class="n" id="rf-days">0</div><div class="k">дней вам</div></div>
+    <div class="stat"><div class="n" id="rf-balance">0</div><div class="k">бонусов</div></div>
   </div>
+
+  <p class="note" id="rf-rule">Бонус — это рубль скидки. При оплате списывается
+    до половины суммы.</p>
 
   <h2>Ваша ссылка</h2>
   <div class="copy" data-act="copy-ref">
@@ -1062,8 +1067,17 @@ a.btn.off { opacity: 0.45; }
     var r = s.referral || {};
     document.getElementById('rf-invited').textContent = r.invited || 0;
     document.getElementById('rf-paying').textContent = r.paying || 0;
-    document.getElementById('rf-days').textContent = r.bonusDays || 0;
+    document.getElementById('rf-balance').textContent = r.balance || 0;
     document.getElementById('ref-url').textContent = r.link || '—';
+
+    /* Потолок скидки — числом с сервера, а не правилом в уме. «До половины
+       суммы» человек пересчитывает сам и ошибается; «до 99 ₽ с месяца» —
+       уже ответ. Правило остаётся рядом: оно объясняет, откуда взялось число. */
+    if (r.spendCap) {
+      document.getElementById('rf-rule').textContent =
+        'Бонус — это рубль скидки. При оплате списывается до половины суммы: '
+        + 'до ' + r.spendCap + ' ₽ с месячной подписки.';
+    }
 
     var name = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.first_name) || '';
     document.getElementById('hello').textContent = name ? name + ', рады видеть' : 'Gloria VPN';

@@ -16,7 +16,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atlas_billing::{subscription, Callback, Money, PaymentStatus, Wata, YooKassa};
+use atlas_billing::{bonus, subscription, Callback, Money, PaymentStatus, Wata, YooKassa};
 use atlas_bot::catalog;
 use atlas_panel::Panel;
 use atlas_store::{Settled, Store};
@@ -582,6 +582,28 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
     // обещать ещё неделю.
     let trial_left = crate::trial_left(&shared.panel, &subscriber);
 
+    // Бонусы. Сначала возвращаем зависшие на истёкших счетах: кабинет — то
+    // место, куда человек идёт посмотреть баланс, и показать там число
+    // меньшее, чем есть на самом деле, — это спор на ровном месте.
+    let (referrals, balance) = {
+        let mut store = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?;
+
+        store
+            .reclaim_expired_bonuses(telegram_id, now, catalog::INVOICE_LIFETIME)
+            .map_err(|error| format!("возврат бонусов: {error}"))?;
+
+        let referrals = store
+            .referral_stats(telegram_id)
+            .map_err(|error| format!("рефералы: {error}"))?;
+        let balance = store
+            .bonus_balance(telegram_id)
+            .map_err(|error| format!("бонусы: {error}"))?;
+        (referrals, balance)
+    };
+
     Ok(serde_json::json!({
         "status": status,
         "daysLeft": subscription::days_left(expires_at, now),
@@ -600,10 +622,14 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         "botUsername": shared.bot_username,
         "referral": {
             "link": referral_link,
-            // Начислений пока нет, и нули здесь — правда, а не заглушка.
-            "invited": 0,
-            "paying": 0,
-            "bonusDays": 0,
+            "invited": referrals.invited,
+            "paying": referrals.paying,
+            "earned": referrals.earned,
+            "balance": balance,
+            // Потолок скидки показывается числом, а не правилом: «до
+            // половины суммы» человек пересчитывает в уме и ошибается,
+            // а «до 99 ₽ с месяца» — уже ответ.
+            "spendCap": catalog::monthly_base().map_or(0, bonus::cap),
         },
     })
     .to_string())
