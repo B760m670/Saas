@@ -1453,6 +1453,18 @@ a.btn.off { opacity: 0.45; }
     document.getElementById('bill-methods').hidden = true;
     document.getElementById('bill-transfer').hidden = false;
 
+    /* Уведомить владельца, что выбран перевод. Раньше это уходило при
+       открытии счёта — то есть до выбора способа, и владелец получал
+       «ждите перевод» даже когда человек платил картой или закрывал экран.
+       Теперь — только здесь. Ответа не ждём: перевод человек сделает
+       независимо от того, дошло ли уведомление. */
+    if (o.orderId) {
+      fetch('/api/transfer/' + encodeURIComponent(o.orderId), {
+        method: 'POST',
+        headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      }).catch(function () {});
+    }
+
     var bonus = o.bonusSpent ? 'Списано бонусов: ' + o.bonusSpent + '. ' : '';
     document.getElementById('bill-note').textContent = bonus +
       'Введите сумму ' + (o.label || '') + ' — до копейки, по ней я нахожу ваш платёж. ' +

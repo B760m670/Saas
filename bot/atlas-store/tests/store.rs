@@ -1418,3 +1418,38 @@ fn the_friends_screen_separates_visitors_from_payers() {
     assert_eq!(stats.earned, 20);
     assert_eq!(expect(store.bonus_balance(1), "баланс"), 0);
 }
+
+/// Уведомление о переводе шлётся по номеру счёта, и номер приходит от
+/// клиента. Значит счёт обязан принадлежать тому, кто его называет, и быть
+/// открытым — иначе чужим номером можно было бы вызвать чужое уведомление.
+#[test]
+fn a_transfer_notice_is_only_for_the_owner_of_an_open_order() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    subscriber(&mut store, 43);
+    let _ = store.open_order("u42-d30", 42, "d30", 30, rub(19_897), 0, NOW);
+
+    // Владельцу открытого счёта — сумма, тариф, бонусы.
+    let notice = expect(store.transfer_notice("u42-d30", 42), "свой счёт");
+    assert_eq!(notice, Some((rub(19_897), "d30".to_owned(), 0)));
+
+    // Чужому — ничего, даже с верным номером.
+    assert_eq!(
+        expect(store.transfer_notice("u42-d30", 43), "чужой"),
+        None,
+        "чужой номер вызвал уведомление"
+    );
+
+    // Несуществующий номер — ничего.
+    assert_eq!(expect(store.transfer_notice("нет-такого", 42), "нет"), None);
+
+    // Оплаченный счёт больше не открыт — уведомлять не о чем.
+    let _ = store.settle("u42-d30", "manual", "p-1", rub(19_897), "{}", NOW);
+    assert_eq!(
+        expect(store.transfer_notice("u42-d30", 42), "закрытый"),
+        None,
+        "закрытый счёт всё ещё шлёт уведомление"
+    );
+}

@@ -806,6 +806,40 @@ impl Store {
         row.map(named_order).transpose()
     }
 
+    /// Детали открытого счёта для уведомления владельцу о переводе.
+    ///
+    /// Возвращает сумму, тариф и списанные бонусы, только если счёт открыт и
+    /// принадлежит этому человеку. Чужой или закрытый — `None`: уведомление
+    /// о переводе шлётся по выбору «Перевод» в кабинете, и подставить сюда
+    /// чужой номер быть не должно.
+    pub fn transfer_notice(
+        &mut self,
+        order_id: &str,
+        telegram_id: i64,
+    ) -> Result<Option<(Money, String, i64)>, Error> {
+        let row = self.client.query_opt(
+            "SELECT amount_minor, currency, plan, bonus_spent FROM orders
+              WHERE id = $1 AND telegram_id = $2 AND status = 'pending'",
+            &[&order_id, &telegram_id],
+        )?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let minor: i64 = row.try_get(0)?;
+        let currency: String = row.try_get(1)?;
+        let Some(currency) = Currency::parse(&currency) else {
+            return Err(Error::Inconsistent("валюта заказа неизвестна"));
+        };
+        let minor =
+            u64::try_from(minor).map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
+        let plan: String = row.try_get(2)?;
+        let bonus: i64 = row.try_get(3)?;
+
+        Ok(Some((Money::from_minor(minor, currency), plan, bonus)))
+    }
+
     /// Отметить, что покупатель сказал «я оплатил», и сколько отправил.
     ///
     /// Отметка **не подтверждение**: нажимает её покупатель, а поступление

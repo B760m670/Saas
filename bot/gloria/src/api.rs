@@ -187,12 +187,22 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         .strip_prefix("/api/paid/")
         .map(atlas_bot::menu::parse_claim);
 
+    // Выбор «Перевод» в кабинете. Номер счёта в пути; уведомить владельца
+    // надо только теперь, когда человек выбрал перевод, а не при открытии
+    // счёта.
+    let transfer_order = request
+        .path
+        .strip_prefix("/api/transfer/")
+        .map(str::to_owned)
+        .filter(|id| !id.is_empty());
+
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
     if request.path != "/api/me"
         && request.path != "/api/reissue"
         && claimed.is_none()
         && order_plan.is_none()
+        && transfer_order.is_none()
     {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
@@ -231,6 +241,19 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
             Err(error) => {
                 eprintln!("Счёт из кабинета: {error}");
                 send(&mut stream, 500, r#"{"error":"счёт не выставился"}"#)
+            }
+        };
+    }
+
+    if let Some(order_id) = transfer_order {
+        return match crate::announce_transfer(shared, verified.user_id(), &order_id) {
+            Ok(()) => send(&mut stream, 200, r#"{"ok":true}"#),
+            Err(error) => {
+                eprintln!("Уведомление о переводе: {error}");
+                // Не ошибка для человека: перевод он всё равно сделает, а
+                // владелец увидит платёж в выписке. Отвечаем успехом, чтобы
+                // кабинет не пугал его тем, чего он не поймёт.
+                send(&mut stream, 200, r#"{"ok":true}"#)
             }
         };
     }

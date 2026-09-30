@@ -1612,29 +1612,13 @@ pub(crate) fn open_order_for(
         (order_id, amount, discounted.spent)
     };
 
-    // Владелец узнаёт о счёте сразу, а не когда вспомнит про `/pending`:
-    // подтверждает оплату он, и человек, заплативший и ждущий, довольно
-    // быстро решает, что его обманули.
-    if let Some(telegram) = &shared.telegram {
-        for admin in &shared.admins {
-            tell(
-                telegram,
-                *admin,
-                &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id} (из кабинета){}\n  \
-                     подтвердить: <code>/ok {}</code>",
-                    atlas_bot::menu::price_label(amount),
-                    plan.title,
-                    if spent > 0 {
-                        format!("\n  со скидкой {spent} за приглашённых")
-                    } else {
-                        String::new()
-                    },
-                    amount.to_decimal(),
-                ),
-            );
-        }
-    }
+    // Владельца о счёте здесь **не** уведомляем. Раньше уведомление уходило
+    // в момент открытия счёта — то есть до того, как человек выбрал способ.
+    // Выбрал он карту или закрыл экран — а владелец уже получил «ждите
+    // перевод», которого не будет. Теперь уведомление шлёт `announce_transfer`
+    // по выбору «Перевод»: подтверждать вручную надо только перевод, у
+    // Freekassa зачисление приходит само.
+    let _ = spent;
 
     let pay = match &shared.pay_link {
         Some(url) => format!(r#""payUrl":"{}","#, atlas_tg::escape_json(url)),
@@ -1663,6 +1647,60 @@ pub(crate) fn open_order_for(
         atlas_bot::menu::price_label(amount),
         atlas_tg::escape_json(&catalog::invoice_lifetime_label()),
     ))
+}
+
+/// Уведомить владельца, что человек выбрал оплату **переводом**.
+///
+/// Шлётся по выбору «Перевод по СБП» в кабинете, а не при открытии счёта:
+/// перевод подтверждается вручную, и владельцу надо знать сумму, чтобы
+/// поймать её в выписке. У Freekassa зачисление автоматическое, и такого
+/// уведомления там нет вовсе.
+///
+/// Счёт берётся из базы по номеру и **только** если принадлежит этому
+/// человеку: номер приходит от клиента, и подставить чужой нельзя.
+pub(crate) fn announce_transfer(
+    shared: &api::Shared,
+    telegram_id: i64,
+    order_id: &str,
+) -> Result<(), String> {
+    let notice = {
+        let mut store = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?;
+        store
+            .transfer_notice(order_id, telegram_id)
+            .map_err(|error| format!("база: {error}"))?
+    };
+
+    // Нет счёта — молчим. Либо номер чужой, либо счёт уже закрыт: ни то ни
+    // другое не повод беспокоить владельца.
+    let Some((amount, plan_id, spent)) = notice else {
+        return Ok(());
+    };
+
+    let title = catalog::plan(&plan_id).map_or(plan_id, |plan| plan.title);
+
+    if let Some(telegram) = &shared.telegram {
+        for admin in &shared.admins {
+            tell(
+                telegram,
+                *admin,
+                &format!(
+                    "Счёт <b>{}</b> · {title} · от {telegram_id} (перевод){}\n  \
+                     подтвердить: <code>/ok {}</code>",
+                    atlas_bot::menu::price_label(amount),
+                    if spent > 0 {
+                        format!("\n  со скидкой {spent} за приглашённых")
+                    } else {
+                        String::new()
+                    },
+                    amount.to_decimal(),
+                ),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// То же, что кнопка «Я оплатил» в чате, но нажатая в кабинете.
