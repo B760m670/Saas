@@ -1641,12 +1641,23 @@ pub(crate) fn open_order_for(
         None => String::new(),
     };
 
+    // Ссылка Freekassa — второй способ оплаты. Тот же заказ и та же сумма:
+    // Freekassa опознаёт платёж по номеру заказа, а не по сумме, так что
+    // уникальный хвост ей не мешает и один счёт годится обоим способам.
+    // Кабинет по наличию этой ссылки и решает, показывать ли выбор.
+    let freekassa = shared
+        .freekassa
+        .as_ref()
+        .and_then(|service| checkout_freekassa(service, &order_id, telegram_id, &plan, amount).ok())
+        .map(|url| format!(r#""freekassaUrl":"{}","#, atlas_tg::escape_json(&url)))
+        .unwrap_or_default();
+
     // `minor` — то же число в копейках. Из него кабинет строит варианты
     // «сколько вы отправили», ровно как их строит чат: считать их на
     // сервере и везти списком значило бы завести второе место, где живёт
     // одно правило округления.
     Ok(format!(
-        r#"{{"amount":"{}","minor":{},"label":"{}","bonusSpent":{spent},{pay}"life":"{}","orderId":"{order_id}"}}"#,
+        r#"{{"amount":"{}","minor":{},"label":"{}","bonusSpent":{spent},{pay}{freekassa}"life":"{}","orderId":"{order_id}"}}"#,
         amount.to_decimal(),
         amount.minor(),
         atlas_bot::menu::price_label(amount),

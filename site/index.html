@@ -870,6 +870,20 @@ a.btn.off { opacity: 0.45; }
   <h1 style="font-size:20px;margin-bottom:6px">К оплате</h1>
   <div class="days" id="bill-sum" style="font-size:34px;margin:6px 0 2px">—</div>
   <p class="sub" id="bill-note">Счёт готовится…</p>
+
+  <!-- Выбор способа. Показывается только когда способов правда два: есть и
+       перевод, и Freekassa. С одним способом выбирать не из чего, и лишний
+       экран лишь удлиняет дорогу к оплате. -->
+  <div id="bill-methods" hidden>
+    <button class="btn primary" id="m-card" data-act="pay-card" style="margin-top:16px">Картой или СБП</button>
+    <button class="btn ghost" id="m-transfer" data-act="pay-transfer" style="margin-top:10px">Перевод по СБП</button>
+  </div>
+
+  <!-- Перевод: сумма до копейки и «Я оплатил». Своя группа, потому что при
+       выборе Freekassa она не нужна вовсе — там подтверждение приходит
+       само. Показывается либо сразу (если Freekassa не подключена), либо по
+       кнопке «Перевод». -->
+  <div id="bill-transfer" hidden>
   <a class="btn primary" id="bill-pay" style="margin-top:16px">Оплатить</a>
   <!-- Появляется только вместе со ссылкой на перевод: без неё платить негде,
        и говорить «я оплатил» не о чем. -->
@@ -893,6 +907,7 @@ a.btn.off { opacity: 0.45; }
       <button class="btn ghost" data-act="sent-typed">Готово</button>
     </div>
   </div>
+  </div><!-- /bill-transfer -->
 
   <button class="btn ghost" data-act="close-bill">Закрыть</button>
 </div>
@@ -1267,6 +1282,19 @@ a.btn.off { opacity: 0.45; }
       return openOut(app.site);
     }
 
+    /* Выбор способа на экране счёта. Freekassa — редирект на её страницу,
+       подтверждение придёт само. Перевод — раскрываем сумму и «Я оплатил». */
+    if (act === 'pay-card') {
+      if (!currentOrder || !currentOrder.freekassaUrl) return;
+      haptic();
+      return openOut(currentOrder.freekassaUrl);
+    }
+    if (act === 'pay-transfer') {
+      if (!currentOrder) return;
+      haptic();
+      return showTransfer(currentOrder);
+    }
+
     if (act === 'paid') {
       /* Сразу отправить «оплатил» нельзя: непонятно, что искать в выписке.
          Банк сообщает владельцу сумму и не сообщает отправителя, а человек
@@ -1357,12 +1385,19 @@ a.btn.off { opacity: 0.45; }
      Сумму считает сервер, и это не формальность: она уникальна среди
      открытых счетов, по ней потом опознаётся платёж. Придуманная страницей
      совпала бы с чужой или не совпала ни с чем. */
+  /* Заказ, который сейчас на экране счёта. Нужен кнопкам выбора способа:
+     по нажатию они берут отсюда ссылку. */
+  var currentOrder = null;
+
   function order(plan) {
     if (!plan) return;
 
     sheet(false);
+    currentOrder = null;
     document.getElementById('bill-sum').textContent = '—';
     document.getElementById('bill-note').textContent = 'Счёт готовится…';
+    document.getElementById('bill-methods').hidden = true;
+    document.getElementById('bill-transfer').hidden = true;
     document.getElementById('bill-pay').removeAttribute('href');
     document.getElementById('bill-pay').classList.add('off');
     document.getElementById('bill-paid').hidden = true;
@@ -1377,38 +1412,61 @@ a.btn.off { opacity: 0.45; }
       if (!r.ok) throw new Error('счёт не выставился');
       return r.json();
     }).then(function (o) {
+      currentOrder = o;
       document.getElementById('bill-sum').textContent = o.label || '—';
-      var pay = document.getElementById('bill-pay');
 
-      if (!o.payUrl) {
-        document.getElementById('bill-note').textContent =
+      /* Скидка называется первой, где бы ни показывалась: счёт меньше
+         витринной цены без объяснения выглядит ошибкой, а не подарком. */
+      var bonus = o.bonusSpent ? 'Списано бонусов: ' + o.bonusSpent + '. ' : '';
+
+      if (!o.payUrl && !o.freekassaUrl) {
+        document.getElementById('bill-note').textContent = bonus +
           'Приём оплаты ещё настраивается — напишите в поддержку, и подписку выдадут вручную.';
         return;
       }
 
-      /* Сумму человек вводит сам: перевод по ссылке её не несёт. Поэтому она
-         названа дважды — крупно сверху и в строке под ней.
-
-         Скидка называется первой. Счёт на 158,99 там, где на витрине 199 ₽,
-         без объяснения выглядит не подарком, а ошибкой — и человек скорее
-         переспросит, чем заплатит. */
-      document.getElementById('bill-note').textContent =
-        (o.bonusSpent ? 'Списано бонусов: ' + o.bonusSpent + '. ' : '') +
-        'Введите сумму ' + (o.label || '') + ' — до копейки, по ней я нахожу ваш платёж. ' +
-        'Счёт действует ' + (o.life || 'сутки') + '. После перевода нажмите «Я оплатил».';
-
-      document.getElementById('bill-paid').hidden = false;
-      sentOptions(o.minor);
-
-      pay.classList.remove('off');
-      pay.onclick = function () {
-        haptic();
-        openOut(o.payUrl);
-      };
+      /* Два способа — показываем выбор. Один — сразу его, без лишнего шага. */
+      if (o.freekassaUrl && o.payUrl) {
+        document.getElementById('bill-note').textContent = bonus + 'Выберите способ оплаты.';
+        document.getElementById('m-card').hidden = false;
+        document.getElementById('m-transfer').hidden = false;
+        document.getElementById('bill-methods').hidden = false;
+      } else if (o.freekassaUrl) {
+        document.getElementById('bill-note').textContent = bonus +
+          'Нажмите «Оплатить» — откроется страница оплаты картой или СБП.';
+        document.getElementById('m-card').hidden = false;
+        document.getElementById('m-transfer').hidden = true;
+        document.getElementById('bill-methods').hidden = false;
+      } else {
+        showTransfer(o);
+      }
     }).catch(function () {
       document.getElementById('bill-note').textContent =
         'Счёт не выставился. Попробуйте ещё раз или напишите в поддержку.';
     });
+  }
+
+  /* Показать оплату переводом: сумма до копейки и «Я оплатил».
+     Вызывается либо сразу (Freekassa не подключена), либо по кнопке
+     «Перевод по СБП». */
+  function showTransfer(o) {
+    document.getElementById('bill-methods').hidden = true;
+    document.getElementById('bill-transfer').hidden = false;
+
+    var bonus = o.bonusSpent ? 'Списано бонусов: ' + o.bonusSpent + '. ' : '';
+    document.getElementById('bill-note').textContent = bonus +
+      'Введите сумму ' + (o.label || '') + ' — до копейки, по ней я нахожу ваш платёж. ' +
+      'Счёт действует ' + (o.life || 'сутки') + '. После перевода нажмите «Я оплатил».';
+
+    document.getElementById('bill-paid').hidden = false;
+    sentOptions(o.minor);
+
+    var pay = document.getElementById('bill-pay');
+    pay.classList.remove('off');
+    pay.onclick = function () {
+      haptic();
+      openOut(o.payUrl);
+    };
   }
 
   /* Сказать, сколько отправлено.

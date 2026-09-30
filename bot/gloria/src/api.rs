@@ -126,7 +126,7 @@ pub(crate) struct Shared {
     panel: Panel,
     wata: Option<Wata>,
     yookassa: Option<YooKassa>,
-    freekassa: Option<atlas_billing::Freekassa>,
+    pub(crate) freekassa: Option<atlas_billing::Freekassa>,
     pub(crate) telegram: Option<Telegram>,
     bot_token: String,
     bot_username: Option<String>,
