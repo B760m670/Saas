@@ -36,6 +36,7 @@
 
 pub mod bonus;
 pub mod event;
+pub mod freekassa;
 pub mod http;
 pub mod invoice;
 pub mod manual;
@@ -48,6 +49,7 @@ pub mod wata;
 pub mod yookassa;
 
 pub use event::{PaymentEvent, PaymentStatus};
+pub use freekassa::Freekassa;
 pub use http::{Callback, Checkout, Method, Request};
 pub use invoice::{allocate, TakenAmounts};
 pub use manual::Manual;

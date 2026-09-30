@@ -79,6 +79,20 @@ fn main() -> ExitCode {
         _ => None,
     };
 
+    // Freekassa проверяется при запуске по той же причине: неполные или
+    // негодные реквизиты не должны всплыть в момент, когда человек нажал
+    // «оплатить». `config.freekassa()` собирает клиента, только если все три
+    // реквизита на месте и годны.
+    let freekassa = if config.freekassa_merchant.is_some() {
+        let Some(service) = config.freekassa() else {
+            eprintln!("Настройки: реквизиты Freekassa неполны или негодны");
+            return ExitCode::FAILURE;
+        };
+        Some(service)
+    } else {
+        None
+    };
+
     // WATA отдаёт СБП, карты, T-Pay и SberPay одной ссылкой, поэтому если
     // её токен задан, счёт открывает она. ЮKassa остаётся запасной.
     let wata = match &config.wata_token {
@@ -118,6 +132,7 @@ fn main() -> ExitCode {
         panel: &panel,
         yookassa: yookassa.as_ref(),
         wata: wata.as_ref(),
+        freekassa: freekassa.as_ref(),
     };
     run(&deps, &mut store);
     ExitCode::SUCCESS
@@ -135,6 +150,8 @@ struct Deps<'a> {
     yookassa: Option<&'a YooKassa>,
     /// Отсутствует, пока не подключена WATA. Если есть — счёт открывает она.
     wata: Option<&'a Wata>,
+    /// Отсутствует, пока не подключена Freekassa.
+    freekassa: Option<&'a atlas_billing::Freekassa>,
 }
 
 /// Основной цикл. Из него не выходят: любая ошибка — повод подождать и
@@ -835,6 +852,28 @@ fn checkout_wata(
         .map_err(|error| format!("ответ: {error}"))
 }
 
+/// То же через Freekassa.
+///
+/// Самый простой из трёх: `checkout` отдаёт готовую ссылку сразу, без
+/// похода в сеть — подпись формы считается на месте. Поэтому здесь нет ни
+/// запроса, ни разбора ответа.
+fn checkout_freekassa(
+    service: &atlas_billing::Freekassa,
+    order_id: &str,
+    telegram_id: i64,
+    plan: &atlas_billing::Plan,
+    amount: Money,
+) -> Result<String, String> {
+    let order = order_for(order_id, telegram_id, plan, amount)?;
+    match service
+        .checkout(&order)
+        .map_err(|error| format!("форма не собралась: {error}"))?
+    {
+        Checkout::Page(url) => Ok(url),
+        _ => Err("Freekassa не отдала ссылку".to_owned()),
+    }
+}
+
 /// Что намерение дописывает к ответу.
 struct Extra {
     /// Текст под ответом экрана.
@@ -962,9 +1001,20 @@ fn apply(
             // Сначала пробуем открыть страницу оплаты. Не вышло — счёт
             // остаётся в базе и подтверждается вручную: терять уже открытый
             // заказ из-за недоступности сервиса нельзя, человек его видел.
-            // Порядок неслучаен: WATA первая, потому что даёт СБП вместе с
-            // картами одной ссылкой. Обе заданы — берём её.
-            let page = if let Some(service) = deps.wata {
+            //
+            // Порядок: Freekassa, затем WATA, затем ЮKassa. Freekassa первой,
+            // потому что её подключают под СБП без процессинга; WATA даёт СБП
+            // и карты одной ссылкой; ЮKassa запасная. Задан не один — берём
+            // тот, что выше.
+            let page = if let Some(service) = deps.freekassa {
+                Some(checkout_freekassa(
+                    service,
+                    &order_id,
+                    telegram_id,
+                    &plan,
+                    amount,
+                ))
+            } else if let Some(service) = deps.wata {
                 Some(checkout_wata(
                     service,
                     &order_id,

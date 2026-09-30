@@ -56,6 +56,13 @@ pub struct Config {
     pub yookassa_secret: Option<String>,
     /// Токен терминала WATA, если приём оплаты идёт через неё.
     pub wata_token: Option<String>,
+    /// Номер магазина Freekassa и два его секрета. Все три вместе или
+    /// никак — с неполным набором счёт выставится, а подпись не сойдётся.
+    pub freekassa_merchant: Option<String>,
+    /// Секретное слово 1 — подпись формы оплаты.
+    pub freekassa_form_secret: Option<String>,
+    /// Секретное слово 2 — проверка уведомления.
+    pub freekassa_notice_secret: Option<String>,
     /// Адрес мини-приложения. Из него делается кнопка «Меню» у поля ввода.
     pub miniapp_url: Option<String>,
     /// Токен бота поддержки. Свой, отдельный от основного.
@@ -81,6 +88,7 @@ impl core::fmt::Debug for Config {
             .field("принимает переводы", &self.accepts_transfers())
             .field("принимает карты", &self.accepts_cards())
             .field("принимает WATA", &self.accepts_wata())
+            .field("принимает Freekassa", &self.accepts_freekassa())
             .finish()
     }
 }
@@ -98,6 +106,9 @@ pub const BOT_USERNAME: &str = "GLORIA_BOT_USERNAME";
 pub const YOOKASSA_SHOP_ID: &str = "GLORIA_YOOKASSA_SHOP_ID";
 pub const YOOKASSA_SECRET: &str = "GLORIA_YOOKASSA_SECRET";
 pub const WATA_TOKEN: &str = "GLORIA_WATA_TOKEN";
+pub const FREEKASSA_MERCHANT: &str = "GLORIA_FREEKASSA_MERCHANT";
+pub const FREEKASSA_FORM_SECRET: &str = "GLORIA_FREEKASSA_SECRET1";
+pub const FREEKASSA_NOTICE_SECRET: &str = "GLORIA_FREEKASSA_SECRET2";
 pub const MINIAPP_URL: &str = "GLORIA_MINIAPP_URL";
 const SUPPORT_TOKEN: &str = "GLORIA_SUPPORT_TOKEN";
 
@@ -224,6 +235,9 @@ impl Config {
             yookassa_shop_id: optional(vars, YOOKASSA_SHOP_ID),
             yookassa_secret: optional(vars, YOOKASSA_SECRET),
             wata_token: optional(vars, WATA_TOKEN),
+            freekassa_merchant: optional(vars, FREEKASSA_MERCHANT),
+            freekassa_form_secret: optional(vars, FREEKASSA_FORM_SECRET),
+            freekassa_notice_secret: optional(vars, FREEKASSA_NOTICE_SECRET),
             miniapp_url,
             support_token: optional(vars, SUPPORT_TOKEN),
         })
@@ -252,6 +266,28 @@ impl Config {
     #[must_use]
     pub fn accepts_wata(&self) -> bool {
         self.wata_token.is_some()
+    }
+
+    /// Подключён ли приём оплаты через Freekassa.
+    ///
+    /// Нужны все три реквизита: номер магазина и оба секретных слова.
+    /// С неполным набором форма выставится, но подпись уведомления не
+    /// сойдётся — то есть деньги придут, а подписка не включится.
+    #[must_use]
+    pub fn accepts_freekassa(&self) -> bool {
+        self.freekassa_merchant.is_some()
+            && self.freekassa_form_secret.is_some()
+            && self.freekassa_notice_secret.is_some()
+    }
+
+    /// Собрать клиента Freekassa, если реквизиты полны и годны.
+    #[must_use]
+    pub fn freekassa(&self) -> Option<atlas_billing::Freekassa> {
+        atlas_billing::Freekassa::new(
+            self.freekassa_merchant.as_deref()?,
+            self.freekassa_form_secret.as_deref()?,
+            self.freekassa_notice_secret.as_deref()?,
+        )
     }
 
     /// Разрешены ли этому человеку админские действия.

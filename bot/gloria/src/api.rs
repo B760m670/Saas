@@ -16,7 +16,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atlas_billing::{bonus, subscription, Callback, Money, PaymentStatus, Wata, YooKassa};
+use atlas_billing::{
+    bonus, subscription, Callback, Money, PaymentStatus, Provider, Wata, YooKassa,
+};
 use atlas_bot::catalog;
 use atlas_panel::Panel;
 use atlas_store::{Settled, Store};
@@ -89,6 +91,7 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         panel,
         wata,
         yookassa,
+        freekassa: config.freekassa(),
         telegram: Telegram::new(&config.bot_token),
         bot_token: config.bot_token.clone(),
         bot_username: config.bot_username.clone(),
@@ -123,6 +126,7 @@ pub(crate) struct Shared {
     panel: Panel,
     wata: Option<Wata>,
     yookassa: Option<YooKassa>,
+    freekassa: Option<atlas_billing::Freekassa>,
     pub(crate) telegram: Option<Telegram>,
     bot_token: String,
     bot_username: Option<String>,
@@ -161,6 +165,9 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     }
     if request.path == "/api/pay/wata" {
         return wata_notice(shared, &mut stream, &request);
+    }
+    if request.path == "/api/pay/freekassa" {
+        return freekassa_notice(shared, &mut stream, &request);
     }
 
     // Счёт из кабинета. Тариф — в пути, а не в теле: разбирать JSON ради
@@ -405,30 +412,101 @@ fn wata_notice(shared: &Shared, stream: &mut TcpStream, request: &Request) -> Re
     settle_payment(shared, stream, "wata", &event)
 }
 
-/// Записать зачисление и сказать покупателю. Общее для всех сервисов.
-fn settle_payment(
+/// Уведомление Freekassa о платеже.
+///
+/// В отличие от ЮKassa и WATA, здесь уведомлению **верят**: оно подписано
+/// секретным словом 2, и подпись покрывает сумму и номер заказа. Поэтому
+/// перезапроса нет — проверенное уведомление сразу зачисляется.
+///
+/// Ответ Freekassa обязан быть ровно `YES`. Не получив его, она повторяет
+/// уведомление — что нам на руку при временном сбое базы.
+///
+/// Метод берётся из настройки магазина: в форме можно выбрать GET или POST.
+/// Мы принимаем оба — при GET поля лежат в строке запроса, при POST в теле,
+/// и в обоих случаях это `x-www-form-urlencoded`. Адаптер разбирает то, что
+/// мы ему передадим телом.
+fn freekassa_notice(
     shared: &Shared,
     stream: &mut TcpStream,
+    request: &Request,
+) -> Result<(), String> {
+    let Some(service) = shared.freekassa.as_ref() else {
+        return send(stream, 404, r#"{"error":"нет такого пути"}"#);
+    };
+
+    // Отсев по адресу — второй рубеж, до разбора. Настоящая защита ниже, в
+    // проверке подписи; это лишь снимает шум переборщиков.
+    if let Some(chain) = request.forwarded_for.as_deref() {
+        let seen = chain.rsplit(',').next().unwrap_or("").trim();
+        if !seen.is_empty() && !atlas_billing::freekassa::TRUSTED_V4.contains(&seen) {
+            eprintln!("Freekassa: уведомление с чужого адреса {seen}");
+            return send(stream, 403, r#"{"error":"не ваш адрес"}"#);
+        }
+    }
+
+    // GET кладёт поля в строку запроса, POST — в тело. Разбирает их адаптер
+    // одинаково, ему нужны сами байты пар.
+    let params = if request.method == "GET" {
+        request.query.clone().unwrap_or_default().into_bytes()
+    } else {
+        request.body.clone()
+    };
+
+    let event = match service.callback(&Callback::new(Vec::new(), params)) {
+        Ok(event) => event,
+        Err(atlas_billing::provider::Error::BadSignature) => {
+            // Подпись не сошлась — либо подделка, либо разъехавшийся секрет.
+            // Ни зачислять, ни отвечать «YES»: пусть это будет видно.
+            eprintln!("Freekassa: подпись уведомления не сошлась");
+            return send(stream, 403, r#"{"error":"подпись не сошлась"}"#);
+        }
+        Err(error) => {
+            eprintln!("Freekassa: уведомление не разобралось: {error}");
+            // 200 без «YES»: повтор неразбираемого тела ничего не изменит,
+            // но и подтверждать нечего.
+            return send(stream, 200, r#"{"ok":false}"#);
+        }
+    };
+
+    match record_payment(shared, "freekassa", &event) {
+        // Обработано — отвечаем ровно «YES», иначе Freekassa шлёт снова.
+        Ok(()) => send_text(stream, 200, atlas_billing::freekassa::OK_REPLY),
+        // Сбой базы — не «YES»: пусть пришлёт ещё раз, платёж мог пройти.
+        Err(()) => send(stream, 500, r#"{"error":"попробуйте позже"}"#),
+    }
+}
+
+/// Записать зачисление и известить покупателя. Общее для всех сервисов.
+///
+/// `Ok(())` — уведомление обработано, сервису надо ответить успехом.
+/// `Err(())` — временный сбой (база не ответила), и сервис должен прислать
+/// уведомление снова: платёж мог и правда пройти.
+///
+/// Ответ сервису шлёт вызывающий: у ЮKassa и WATA это JSON, у Freekassa —
+/// слово «YES», и мешать здесь код зачисления с форматом ответа значило бы
+/// повторять зачисление ради разной обёртки.
+fn record_payment(
+    shared: &Shared,
     provider: &str,
     event: &atlas_billing::PaymentEvent,
-) -> Result<(), String> {
+) -> Result<(), ()> {
     if event.status != PaymentStatus::Paid {
-        // Ожидание и отказ — не наше дело: заказ просто останется открытым
-        // и истечёт сам.
-        return send(stream, 200, r#"{"ok":true}"#);
+        // Ожидание и отказ — не наше дело: заказ останется открытым и
+        // истечёт сам.
+        return Ok(());
     }
 
     let Some(paid) = event.paid else {
         eprintln!("{provider}: платёж прошёл, но суммы в ответе нет");
-        return send(stream, 200, r#"{"ok":true}"#);
+        return Ok(());
     };
 
     let now = crate::unix_now();
     let settled = {
-        let mut store = shared
-            .store
-            .lock()
-            .map_err(|_| "замок базы испорчен".to_owned())?;
+        let Ok(mut store) = shared.store.lock() else {
+            eprintln!("{provider}: замок базы испорчен");
+            return Err(());
+        };
         store.settle(
             event.order.as_str(),
             provider,
@@ -442,7 +520,7 @@ fn settle_payment(
     match settled {
         // Повтор доставки — обычное дело: сервис шлёт уведомление, пока не
         // получит успех, и второй раз не должен давать ни дня.
-        Ok(Settled::AlreadyCounted | Settled::OrderAlreadyPaid) => {}
+        Ok(Settled::AlreadyCounted | Settled::OrderAlreadyPaid) => Ok(()),
         Ok(Settled::Extended { expires_at }) => {
             println!(
                 "Оплата {} зачтена по счёту {} ({provider})",
@@ -450,15 +528,30 @@ fn settle_payment(
                 event.order.as_str()
             );
             tell_buyer(shared, event.order.as_str(), expires_at);
+            Ok(())
         }
-        Ok(other) => eprintln!("Оплата по счёту {}: {other:?}", event.order.as_str()),
+        Ok(other) => {
+            eprintln!("Оплата по счёту {}: {other:?}", event.order.as_str());
+            Ok(())
+        }
         Err(error) => {
             eprintln!("{provider}: база не приняла зачисление: {error}");
-            return send(stream, 500, r#"{"error":"попробуйте позже"}"#);
+            Err(())
         }
     }
+}
 
-    send(stream, 200, r#"{"ok":true}"#)
+/// Обёртка для ЮKassa и WATA: записать и ответить сервису его форматом (JSON).
+fn settle_payment(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    provider: &str,
+    event: &atlas_billing::PaymentEvent,
+) -> Result<(), String> {
+    match record_payment(shared, provider, event) {
+        Ok(()) => send(stream, 200, r#"{"ok":true}"#),
+        Err(()) => send(stream, 500, r#"{"error":"попробуйте позже"}"#),
+    }
 }
 
 /// Сказать покупателю, что деньги дошли.
@@ -658,6 +751,9 @@ const MAX_BODY: u64 = 64 * 1024;
 struct Request {
     method: String,
     path: String,
+    /// Строка запроса после «?», если она была. Нужна одному месту —
+    /// уведомлению Freekassa, настроенному на GET: поля платежа лежат там.
+    query: Option<String>,
     init_data: Option<String>,
     /// Тело. Пустое у всего, кроме уведомлений о платеже.
     body: Vec<u8>,
@@ -684,9 +780,13 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
         return Err("строка запроса не разобралась".to_owned());
     };
 
-    // Отрезаем всё после «?»: у нас нет путей с параметрами, а сравнивать
-    // путь вместе с ними значило бы промахиваться мимо своего же адреса.
-    let path = target.split('?').next().unwrap_or(target).to_owned();
+    // Путь и строку запроса разделяем: путь сравнивается с маршрутами, а
+    // параметры нужны одному Freekassa на GET. Сравнивать путь вместе с
+    // «?…» значило бы промахиваться мимо своего же адреса.
+    let (path, query) = match target.split_once('?') {
+        Some((path, query)) => (path.to_owned(), Some(query.to_owned())),
+        None => (target.to_owned(), None),
+    };
 
     let mut init_data = None;
     let mut forwarded_for = None;
@@ -735,6 +835,7 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
     Ok(Request {
         method: method.to_owned(),
         path,
+        query,
         init_data,
         body,
         forwarded_for,
@@ -763,6 +864,24 @@ fn redirect(stream: &mut TcpStream, location: &str) -> Result<(), String> {
 }
 
 /// Отправить ответ и закрыть соединение.
+/// Ответить простым текстом. Нужен Freekassa: она ждёт ровно тело «YES»,
+/// а не JSON.
+fn send_text(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
+    let head = format!(
+        "HTTP/1.1 {status} OK\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .and_then(|()| stream.write_all(body.as_bytes()))
+        .and_then(|()| stream.flush())
+        .map_err(|error| format!("отправка: {error}"))
+}
+
 fn send(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
