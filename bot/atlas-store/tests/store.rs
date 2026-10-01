@@ -380,7 +380,10 @@ fn a_payment_is_found_by_what_the_person_said_they_sent() {
     let _ = store.open_order("exact", 43, "d30", 30, rub(19_896), 0, NOW);
 
     // Пока никто ничего не сказал, по 199 не находится ничего.
-    assert!(expect(store.orders_claiming(rub(19_900), NOW, LIFETIME), "поиск").is_empty());
+    assert_eq!(
+        expect(store.orders_claiming(rub(19_900), NOW, LIFETIME), "поиск").len(),
+        0
+    );
 
     let _ = store.mark_claimed(42, rub(19_900), NOW + 10, LIFETIME);
 
@@ -497,7 +500,7 @@ fn the_admin_screen_lists_only_open_invoices() {
     let Ok(later) = store.pending_orders(NOW + LIFETIME + 1, LIFETIME) else {
         return;
     };
-    assert!(later.is_empty());
+    assert_eq!(later.len(), 0);
 }
 
 /// Сказавший «я оплатил» стоит в списке первым.

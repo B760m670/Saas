@@ -162,7 +162,7 @@ mod tests {
         let scheme = Scheme::Sha256;
         let full = scheme.sign(b"abc");
         let short = full.get(..32).unwrap_or_default();
-        assert!(!short.is_empty());
+        assert_ne!(short.len(), 0);
         assert!(!scheme.verify(b"abc", short));
     }
 }

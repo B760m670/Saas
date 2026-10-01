@@ -541,7 +541,7 @@ mod tests {
         let Ok(config) = Config::from_map(&vars) else {
             return;
         };
-        assert!(config.admins.is_empty());
+        assert_eq!(config.admins.len(), 0);
         assert!(!config.is_admin(42));
     }
 

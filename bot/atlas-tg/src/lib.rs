@@ -768,7 +768,7 @@ mod tests {
         ) else {
             return;
         };
-        assert!(list.is_empty());
+        assert_eq!(list.len(), 0);
     }
 
     #[test]

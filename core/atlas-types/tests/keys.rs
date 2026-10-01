@@ -42,7 +42,7 @@ fn vless_reality_vision_full() {
     assert_eq!(reality.spider_x.as_deref(), Some("/"));
 
     key.validate().unwrap();
-    assert!(key.warnings().is_empty());
+    assert_eq!(key.warnings().len(), 0);
 }
 
 #[test]
@@ -284,6 +284,6 @@ fn subscription_mixes_schemes() {
     );
     let sub = Subscription::parse(&body);
     assert_eq!(sub.len(), 3);
-    assert!(sub.rejected.is_empty());
+    assert_eq!(sub.rejected.len(), 0);
     assert_eq!(sub.keys[2].protocol, Protocol::Hysteria2);
 }

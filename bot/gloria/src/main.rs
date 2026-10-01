@@ -2193,6 +2193,6 @@ mod excerpt_tests {
     /// промежуточного сервера. Журнал от этого не должен ломаться.
     #[test]
     fn bytes_that_are_not_text_do_not_break_anything() {
-        assert!(!excerpt(&[0xff, 0xfe, 0x00, 0x41]).is_empty());
+        assert_ne!(excerpt(&[0xff, 0xfe, 0x00, 0x41]).len(), 0);
     }
 }
