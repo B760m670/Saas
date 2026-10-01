@@ -699,10 +699,12 @@ a.btn.off { opacity: 0.45; }
     <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
 
-  <h2>Документы</h2>
-  <!-- Открываются во встроенном браузере Telegram, а не внутри кабинета:
-       документы длинные, и читать их, теряя место в мини-приложении,
-       неудобно. Плюс их адрес видно — его спрашивает платёжный сервис. -->
+  <h2>О сервисе</h2>
+  <!-- Раздел «О сервисе» объединяет то, что спрашивает платёжный сервис:
+       соглашение, политику обработки данных и контакт поддержки. Документы
+       открываются во встроенном браузере Telegram, а не внутри кабинета:
+       они длинные, и читать их, теряя место в мини-приложении, неудобно.
+       Плюс их адрес видно — его тоже спрашивает платёжный сервис. -->
   <button class="row" data-doc="terms.html">
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg>
     <span class="body"><span class="title">Пользовательское соглашение</span><span class="hint">Условия, цены, возврат, правила</span></span>
@@ -712,6 +714,12 @@ a.btn.off { opacity: 0.45; }
   <button class="row" data-doc="privacy.html">
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><path d="M9 12l2 2 4-4"/></svg>
     <span class="body"><span class="title">Персональные данные</span><span class="hint">Что храним и чего не храним</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
+  <button class="row" data-act="support">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+    <span class="body"><span class="title">Поддержка</span><span class="hint">@GloriaVPNSupport_Bot — отвечает человек</span></span>
     <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
 </section>
