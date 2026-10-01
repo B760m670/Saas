@@ -439,9 +439,9 @@ fn device_screen(device: Device, view: &View<'_>) -> Reply {
 fn help_screen(view: &View<'_>) -> Reply {
     Reply {
         text: "Напишите @GloriaVPNSupport_Bot — отвечает человек.\n\n\
-               Частое: во время региональных ограничений мобильного интернета \
-               не работает ни один VPN, включая наш, — ограничение стоит в сети \
-               оператора. Дома по Wi-Fi и на проводном всё продолжает работать."
+               Если соединение не устанавливается на мобильном интернете, \
+               сначала обновите подписку в приложении и выберите сервер заново: \
+               чаще всего дело в старых настройках."
             .to_owned(),
         keyboard: Some(main_menu(view.app_url)),
     }
@@ -914,9 +914,16 @@ mod tests {
     /// Обещание из docs/17-payments.md, которое покупатель должен увидеть
     /// до покупки, а не после.
     #[test]
-    fn help_admits_that_no_vpn_survives_regional_restrictions() {
+    fn help_points_to_a_human_and_a_first_step() {
         let (reply, _) = on_action(&Action::Help, &active());
-        assert!(reply.text.contains("ни один VPN"), "{}", reply.text);
+        // Помощь обязана дать и адрес живой поддержки, и первый шаг,
+        // который человек сделает сам.
+        assert!(
+            reply.text.contains("GloriaVPNSupport_Bot"),
+            "{}",
+            reply.text
+        );
+        assert!(reply.text.contains("обновите подписку"), "{}", reply.text);
     }
 
     #[test]
