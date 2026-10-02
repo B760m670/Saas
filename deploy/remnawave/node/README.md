@@ -172,12 +172,36 @@ sysctl net.core.default_qdisc            # ожидаем: fq
 
 ```bash
 install -m 755 node-watchdog.sh /opt/remnanode/node-watchdog.sh
-# запускать раз в минуту
-( crontab -l 2>/dev/null; echo '* * * * * /opt/remnanode/node-watchdog.sh' ) | crontab -
-# проверить разовым запуском — при живом узле молчит и ничего не трогает:
+# проверить разово — при живом узле молчит и ничего не трогает:
 /opt/remnanode/node-watchdog.sh; echo "код выхода: $?"
-# смотреть действия вотчдога:
-journalctl -t node-watchdog --no-pager | tail
+```
+
+Запускать раз в минуту. На минимальных образах **cron часто не установлен**
+(`crontab: command not found`), а systemd есть всегда — поэтому таймер
+systemd, а не crontab:
+
+```bash
+cat >/etc/systemd/system/node-watchdog.service <<'SVC'
+[Unit]
+Description=remnanode watchdog
+[Service]
+Type=oneshot
+ExecStart=/opt/remnanode/node-watchdog.sh
+SVC
+cat >/etc/systemd/system/node-watchdog.timer <<'TMR'
+[Unit]
+Description=run remnanode watchdog every minute
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+AccuracySec=10s
+[Install]
+WantedBy=timers.target
+TMR
+systemctl daemon-reload
+systemctl enable --now node-watchdog.timer
+systemctl list-timers node-watchdog.timer --no-pager   # должна быть строка таймера
+journalctl -t node-watchdog --no-pager | tail          # действия вотчдога
 ```
 
 Порог по умолчанию — 2 неудачи подряд (≈2 минуты), меняется переменной
