@@ -1060,7 +1060,20 @@ fn apply(
                 }
             }
 
-            Ok(Some(transfer_invoice(config, amount, discounted.spent)))
+            // Перевод — запасной способ, и его можно выключить
+            // (GLORIA_MANUAL_TRANSFER). Тогда на этом месте — не ручной счёт, а
+            // путь к человеку: иначе выключенный способ всё равно показался бы,
+            // когда карта недоступна.
+            if config.accepts_transfers() {
+                Ok(Some(transfer_invoice(config, amount, discounted.spent)))
+            } else {
+                Ok(Some(Extra {
+                    text: "Оплата сейчас недоступна — напишите в поддержку, \
+                           и подписку выдадут вручную."
+                        .to_owned(),
+                    keyboard: None,
+                }))
+            }
         }
 
         flow::Effect::ClaimPaid { minor } => {

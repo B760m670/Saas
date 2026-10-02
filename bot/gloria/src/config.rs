@@ -46,6 +46,10 @@ pub struct Config {
     /// приложении. Заменяет собой номер телефона: покупатель открывает её
     /// и видит уже готовую форму перевода, не набирая никаких реквизитов.
     pub pay_link: Option<String>,
+    /// Показывать ли способ «перевод по ссылке». Сама `pay_link` может быть
+    /// задана и готова, но способ скрыт, пока это выключено, — и включается
+    /// обратно одной переменной, без переписывания ссылки. По умолчанию да.
+    pub manual_transfer: bool,
     /// Где слушать мини-приложение. Только петля: наружу выставляет Caddy.
     pub api_addr: String,
     /// Имя бота без «@» — из него строится реферальная ссылка.
@@ -101,6 +105,7 @@ pub const DATABASE_URL: &str = "GLORIA_DATABASE_URL";
 pub const SQUADS: &str = "GLORIA_SQUADS";
 pub const ADMINS: &str = "GLORIA_ADMINS";
 pub const PAY_LINK: &str = "GLORIA_PAY_LINK";
+pub const MANUAL_TRANSFER: &str = "GLORIA_MANUAL_TRANSFER";
 pub const API_ADDR: &str = "GLORIA_API_ADDR";
 pub const BOT_USERNAME: &str = "GLORIA_BOT_USERNAME";
 pub const YOOKASSA_SHOP_ID: &str = "GLORIA_YOOKASSA_SHOP_ID";
@@ -219,6 +224,17 @@ impl Config {
             }
         }
 
+        // Показывать ли перевод по ссылке. По умолчанию да — поведение
+        // прежнее. Выключается явным «off» (а также 0/false/no/нет/выкл) и
+        // так же включается обратно; сама ссылка при этом остаётся в
+        // окружении готовой, просто способ скрыт.
+        let manual_transfer = vars.get(MANUAL_TRANSFER).is_none_or(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "off" | "0" | "false" | "no" | "нет" | "выкл"
+            )
+        });
+
         Ok(Self {
             bot_token: get(BOT_TOKEN)?,
             panel_url,
@@ -227,6 +243,7 @@ impl Config {
             squads,
             admins,
             pay_link,
+            manual_transfer,
             api_addr: optional(vars, API_ADDR).unwrap_or_else(|| DEFAULT_API_ADDR.to_owned()),
             bot_username: optional(vars, BOT_USERNAME).map(|name| {
                 // «@» люди дописывают по привычке, а в ссылке он лишний.
@@ -246,7 +263,7 @@ impl Config {
     /// Настроен ли приём оплаты переводом по ссылке.
     #[must_use]
     pub fn accepts_transfers(&self) -> bool {
-        self.pay_link.is_some()
+        self.manual_transfer && self.pay_link.is_some()
     }
 
     /// Подключён ли приём оплаты картой и СБП через ЮKassa.
@@ -385,7 +402,8 @@ fn optional(vars: &HashMap<String, String>, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, PANEL_TOKEN, PANEL_URL, PAY_LINK, SQUADS,
+        Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, MANUAL_TRANSFER, PANEL_TOKEN, PANEL_URL,
+        PAY_LINK, SQUADS,
     };
     use std::collections::HashMap;
 
@@ -639,6 +657,38 @@ mod tests {
             return;
         };
         assert!(config.accepts_transfers());
+    }
+
+    /// Способ перевода можно скрыть, не убирая ссылку: `off` выключает его, а
+    /// обратное значение включает назад. Это и есть «спрятать, но вернуть
+    /// в любой момент».
+    #[test]
+    fn a_transfer_can_be_hidden_by_flag() {
+        let mut vars = full();
+        vars.insert(
+            PAY_LINK.to_owned(),
+            "https://bank.example/rm/abc".to_owned(),
+        );
+
+        let Ok(config) = Config::from_map(&vars) else {
+            return;
+        };
+        assert!(config.accepts_transfers(), "по умолчанию перевод включён");
+
+        vars.insert(MANUAL_TRANSFER.to_owned(), "off".to_owned());
+        let Ok(config) = Config::from_map(&vars) else {
+            return;
+        };
+        assert!(
+            !config.accepts_transfers(),
+            "off обязан скрыть перевод даже при заданной ссылке"
+        );
+
+        vars.insert(MANUAL_TRANSFER.to_owned(), "on".to_owned());
+        let Ok(config) = Config::from_map(&vars) else {
+            return;
+        };
+        assert!(config.accepts_transfers(), "on обязан вернуть перевод");
     }
 
     /// Секреты не должны попадать в журнал через отладочную печать.

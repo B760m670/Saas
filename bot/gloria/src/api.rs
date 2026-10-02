@@ -95,7 +95,9 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         telegram: Telegram::new(&config.bot_token),
         bot_token: config.bot_token.clone(),
         bot_username: config.bot_username.clone(),
-        pay_link: config.pay_link.clone(),
+        // Перевод скрыт целиком, когда способ выключен (GLORIA_MANUAL_TRANSFER):
+        // без ссылки кабинет не покажет кнопку, а маршрут перевода её отвергнет.
+        pay_link: config.pay_link.clone().filter(|_| config.manual_transfer),
         admins: config.admins.clone(),
     };
 
@@ -246,6 +248,11 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     }
 
     if let Some(order_id) = transfer_order {
+        // Перевод выключен — маршрут закрыт, чтобы его нельзя было дёрнуть
+        // запросом в обход скрытой кнопки.
+        if shared.pay_link.is_none() {
+            return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
+        }
         return match crate::announce_transfer(shared, verified.user_id(), &order_id) {
             Ok(()) => send(&mut stream, 200, r#"{"ok":true}"#),
             Err(error) => {
