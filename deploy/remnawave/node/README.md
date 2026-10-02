@@ -192,15 +192,14 @@ cat >/etc/systemd/system/node-watchdog.timer <<'TMR'
 [Unit]
 Description=run remnanode watchdog every minute
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=1min
+OnCalendar=*:*:00
 AccuracySec=10s
 [Install]
 WantedBy=timers.target
 TMR
 systemctl daemon-reload
 systemctl enable --now node-watchdog.timer
-systemctl list-timers node-watchdog.timer --no-pager   # должна быть строка таймера
+systemctl list-timers node-watchdog.timer --no-pager   # в NEXT должно стоять время, не "-"
 journalctl -t node-watchdog --no-pager | tail          # действия вотчдога
 ```
 
