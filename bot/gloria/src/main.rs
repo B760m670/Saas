@@ -854,23 +854,75 @@ fn checkout_wata(
 
 /// То же через Freekassa.
 ///
-/// Самый простой из трёх: `checkout` отдаёт готовую ссылку сразу, без
-/// похода в сеть — подпись формы считается на месте. Поэтому здесь нет ни
-/// запроса, ни разбора ответа.
+/// Два пути. С ключом API (его требует Freekassa) — запрос на создание
+/// заказа и ссылка из ответа. Без ключа — старая форма SCI, которая
+/// собирается на месте без похода в сеть.
+///
+/// В заказ API уходят почта вида `id@telegram.org` — так Freekassa не
+/// просит покупателя вводить почту — и публичный IP сервера: бот за Caddy
+/// видит только `127.0.0.1`, а его Freekassa отвергает.
 fn checkout_freekassa(
     service: &atlas_billing::Freekassa,
+    server_ip: Option<&str>,
     order_id: &str,
     telegram_id: i64,
     plan: &atlas_billing::Plan,
     amount: Money,
 ) -> Result<String, String> {
     let order = order_for(order_id, telegram_id, plan, amount)?;
+
+    if service.uses_api() {
+        let Some(ip) = server_ip else {
+            return Err("для API Freekassa не задан GLORIA_SERVER_IP".to_owned());
+        };
+        let email = format!("{telegram_id}@telegram.org");
+        let request = service
+            .create_order(
+                &order,
+                &atlas_billing::freekassa::ApiOrder {
+                    nonce: next_nonce(),
+                    email: &email,
+                    ip,
+                    method: atlas_billing::freekassa::METHOD_SBP,
+                },
+            )
+            .map_err(|error| format!("заказ не собрался: {error}"))?;
+        return service
+            .checkout_page(&ask_for_page(&request)?)
+            .map_err(|error| format!("ответ: {error}"));
+    }
+
     match service
         .checkout(&order)
         .map_err(|error| format!("форма не собралась: {error}"))?
     {
         Checkout::Page(url) => Ok(url),
         _ => Err("Freekassa не отдала ссылку".to_owned()),
+    }
+}
+
+/// Номер запроса к API Freekassa.
+///
+/// Freekassa требует, чтобы он рос от запроса к запросу. Берём миллисекунды
+/// с эпохи — после перезапуска они заведомо больше прежних, — а внутри
+/// процесса не даём повториться: два счёта в одну миллисекунду (бот и
+/// кабинет работают в разных потоках) получат разные номера.
+fn next_nonce() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+
+    let mut previous = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(previous.saturating_add(1));
+        match LAST.compare_exchange_weak(previous, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(seen) => previous = seen,
+        }
     }
 }
 
@@ -946,8 +998,15 @@ fn apply(
                 .taken_amounts(now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("занятые суммы: {error}"))?;
 
-            let amount = invoice::allocate(discounted.to_pay, &taken)
-                .map_err(|_| "сейчас слишком много открытых счетов, попробуйте через минуту")?;
+            // Уникальный копеечный хвост нужен только переводу: платёж там
+            // опознаётся по сумме. Перевод выключен — платёжный сервис
+            // опознаёт заказ по номеру, и счёт выставляется ровной ценой.
+            let amount = if config.accepts_transfers() {
+                invoice::allocate(discounted.to_pay, &taken)
+                    .map_err(|_| "сейчас слишком много открытых счетов, попробуйте через минуту")?
+            } else {
+                discounted.to_pay
+            };
 
             // Номер заказа: кто, что и когда. Набор символов проверяется
             // и здесь, и в базе — он уходит в подпись платёжного сервиса.
@@ -1009,6 +1068,7 @@ fn apply(
             let page = if let Some(service) = deps.freekassa {
                 Some(checkout_freekassa(
                     service,
+                    config.server_ip.as_deref(),
                     &order_id,
                     telegram_id,
                     &plan,
@@ -1602,8 +1662,13 @@ pub(crate) fn open_order_for(
             .taken_amounts(now, catalog::INVOICE_LIFETIME)
             .map_err(|error| format!("занятые суммы: {error}"))?;
 
-        let amount = invoice::allocate(discounted.to_pay, &taken)
-            .map_err(|_| "сейчас слишком много открытых счетов".to_owned())?;
+        // Копеечный хвост — только ради перевода (см. путь из чата).
+        let amount = if shared.pay_link.is_some() {
+            invoice::allocate(discounted.to_pay, &taken)
+                .map_err(|_| "сейчас слишком много открытых счетов".to_owned())?
+        } else {
+            discounted.to_pay
+        };
 
         let order_id = format!("u{telegram_id}-{}-{now}", plan.id);
         let opened = store
@@ -1645,7 +1710,18 @@ pub(crate) fn open_order_for(
     let freekassa = shared
         .freekassa
         .as_ref()
-        .and_then(|service| checkout_freekassa(service, &order_id, telegram_id, &plan, amount).ok())
+        .and_then(|service| {
+            checkout_freekassa(
+                service,
+                shared.server_ip.as_deref(),
+                &order_id,
+                telegram_id,
+                &plan,
+                amount,
+            )
+            .map_err(|error| eprintln!("Freekassa для счёта {order_id}: {error}"))
+            .ok()
+        })
         .map(|url| format!(r#""freekassaUrl":"{}","#, atlas_tg::escape_json(&url)))
         .unwrap_or_default();
 

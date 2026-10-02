@@ -38,6 +38,8 @@ Caddy, и туда же бот ходит за ключами — все обр�
 | `GLORIA_YOOKASSA_SECRET` | нет | секретный ключ магазина |
 | `GLORIA_WATA_TOKEN` | нет | токен терминала WATA |
 | `GLORIA_FREEKASSA_MERCHANT` | нет | номер магазина Freekassa |
+| `GLORIA_FREEKASSA_API_KEY` | нет | ключ API Freekassa (Настройки в её кабинете). Задан — счёт создаётся через API, как требует Freekassa |
+| `GLORIA_SERVER_IP` | с ключом API — да | публичный IP сервера бота: Freekassa требует IP в заказе, а `127.0.0.1` отвергает |
 | `GLORIA_FREEKASSA_SECRET1` | нет | секретное слово 1 (подпись формы) |
 | `GLORIA_FREEKASSA_SECRET2` | нет | секретное слово 2 (проверка уведомления) |
 | `GLORIA_MINIAPP_URL` | нет | адрес кабинета — из него кнопка «Меню» |

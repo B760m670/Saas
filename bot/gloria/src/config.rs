@@ -67,6 +67,13 @@ pub struct Config {
     pub freekassa_form_secret: Option<String>,
     /// Секретное слово 2 — проверка уведомления.
     pub freekassa_notice_secret: Option<String>,
+    /// Ключ API Freekassa. Задан — счёт создаётся запросом к API (этого
+    /// требует Freekassa), не задан — старой формой SCI.
+    pub freekassa_api_key: Option<String>,
+    /// Публичный IP сервера. Freekassa требует в заказе IP покупателя или
+    /// сервера, а бот за Caddy видит только `127.0.0.1`, который она
+    /// отвергает. Обязателен, когда задан ключ API.
+    pub server_ip: Option<String>,
     /// Адрес мини-приложения. Из него делается кнопка «Меню» у поля ввода.
     pub miniapp_url: Option<String>,
     /// Токен бота поддержки. Свой, отдельный от основного.
@@ -93,6 +100,7 @@ impl core::fmt::Debug for Config {
             .field("принимает карты", &self.accepts_cards())
             .field("принимает WATA", &self.accepts_wata())
             .field("принимает Freekassa", &self.accepts_freekassa())
+            .field("Freekassa через API", &self.freekassa_api_key.is_some())
             .finish()
     }
 }
@@ -114,6 +122,8 @@ pub const WATA_TOKEN: &str = "GLORIA_WATA_TOKEN";
 pub const FREEKASSA_MERCHANT: &str = "GLORIA_FREEKASSA_MERCHANT";
 pub const FREEKASSA_FORM_SECRET: &str = "GLORIA_FREEKASSA_SECRET1";
 pub const FREEKASSA_NOTICE_SECRET: &str = "GLORIA_FREEKASSA_SECRET2";
+pub const FREEKASSA_API_KEY: &str = "GLORIA_FREEKASSA_API_KEY";
+pub const SERVER_IP: &str = "GLORIA_SERVER_IP";
 pub const MINIAPP_URL: &str = "GLORIA_MINIAPP_URL";
 const SUPPORT_TOKEN: &str = "GLORIA_SUPPORT_TOKEN";
 
@@ -214,6 +224,28 @@ impl Config {
         // Кнопка «Меню» ведёт в мини-приложение, а Telegram принимает там
         // только https. Негодный адрес он отвергнет при установке кнопки —
         // то есть при запуске, куда никто не смотрит. Лучше сказать сразу.
+        // Ключ API без адреса сервера — заказ, который Freekassa отвергнет на
+        // каждой оплате. Лучше сказать при запуске, чем на первом покупателе.
+        let freekassa_api_key = optional(vars, FREEKASSA_API_KEY);
+        let server_ip = optional(vars, SERVER_IP);
+        if let Some(ip) = &server_ip {
+            match ip.parse::<std::net::IpAddr>() {
+                Ok(addr) if !addr.is_loopback() && !addr.is_unspecified() => {}
+                _ => {
+                    return Err(Error::Invalid {
+                        name: SERVER_IP,
+                        why: "нужен публичный IP сервера; 127.0.0.1 Freekassa отвергает",
+                    })
+                }
+            }
+        }
+        if freekassa_api_key.is_some() && server_ip.is_none() {
+            return Err(Error::Invalid {
+                name: SERVER_IP,
+                why: "с ключом API Freekassa нужен публичный IP сервера для заказа",
+            });
+        }
+
         let miniapp_url = optional(vars, MINIAPP_URL);
         if let Some(url) = &miniapp_url {
             if !url.starts_with("https://") {
@@ -255,6 +287,8 @@ impl Config {
             freekassa_merchant: optional(vars, FREEKASSA_MERCHANT),
             freekassa_form_secret: optional(vars, FREEKASSA_FORM_SECRET),
             freekassa_notice_secret: optional(vars, FREEKASSA_NOTICE_SECRET),
+            freekassa_api_key,
+            server_ip,
             miniapp_url,
             support_token: optional(vars, SUPPORT_TOKEN),
         })
@@ -300,11 +334,15 @@ impl Config {
     /// Собрать клиента Freekassa, если реквизиты полны и годны.
     #[must_use]
     pub fn freekassa(&self) -> Option<atlas_billing::Freekassa> {
-        atlas_billing::Freekassa::new(
+        let service = atlas_billing::Freekassa::new(
             self.freekassa_merchant.as_deref()?,
             self.freekassa_form_secret.as_deref()?,
             self.freekassa_notice_secret.as_deref()?,
-        )
+        )?;
+        match &self.freekassa_api_key {
+            Some(key) => service.with_api_key(key),
+            None => Some(service),
+        }
     }
 
     /// Разрешены ли этому человеку админские действия.
@@ -402,8 +440,9 @@ fn optional(vars: &HashMap<String, String>, name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, MANUAL_TRANSFER, PANEL_TOKEN, PANEL_URL,
-        PAY_LINK, SQUADS,
+        Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, FREEKASSA_API_KEY, FREEKASSA_FORM_SECRET,
+        FREEKASSA_MERCHANT, FREEKASSA_NOTICE_SECRET, MANUAL_TRANSFER, PANEL_TOKEN, PANEL_URL,
+        PAY_LINK, SERVER_IP, SQUADS,
     };
     use std::collections::HashMap;
 
@@ -689,6 +728,61 @@ mod tests {
             return;
         };
         assert!(config.accepts_transfers(), "on обязан вернуть перевод");
+    }
+
+    fn with_freekassa() -> HashMap<String, String> {
+        let mut vars = full();
+        for (name, value) in [
+            (FREEKASSA_MERCHANT, "76467"),
+            (FREEKASSA_FORM_SECRET, "secret-one"),
+            (FREEKASSA_NOTICE_SECRET, "secret-two"),
+        ] {
+            vars.insert(name.to_owned(), value.to_owned());
+        }
+        vars
+    }
+
+    /// С ключом API без IP сервера бот не запускается: такой заказ Freekassa
+    /// отвергла бы на каждой оплате, и узнали бы об этом от покупателя.
+    #[test]
+    fn an_api_key_needs_the_server_ip() {
+        let mut vars = with_freekassa();
+        vars.insert(FREEKASSA_API_KEY.to_owned(), "api-key".to_owned());
+        assert!(matches!(
+            Config::from_map(&vars),
+            Err(Error::Invalid {
+                name: SERVER_IP,
+                ..
+            })
+        ));
+    }
+
+    /// Петлевой адрес Freekassa отвергает — отказ при запуске.
+    #[test]
+    fn a_loopback_server_ip_is_refused() {
+        let mut vars = with_freekassa();
+        vars.insert(SERVER_IP.to_owned(), "127.0.0.1".to_owned());
+        assert!(matches!(
+            Config::from_map(&vars),
+            Err(Error::Invalid {
+                name: SERVER_IP,
+                ..
+            })
+        ));
+    }
+
+    /// Ключ и публичный IP вместе включают создание счёта через API, а ключ
+    /// в отладочную печать не попадает.
+    #[test]
+    fn an_api_key_with_a_public_ip_switches_to_the_api() {
+        let mut vars = with_freekassa();
+        vars.insert(FREEKASSA_API_KEY.to_owned(), "api-key-secret".to_owned());
+        vars.insert(SERVER_IP.to_owned(), "193.109.69.126".to_owned());
+        let Ok(config) = Config::from_map(&vars) else {
+            unreachable!("настройки обязаны собраться");
+        };
+        assert!(config.freekassa().is_some_and(|service| service.uses_api()));
+        assert!(!format!("{config:?}").contains("api-key-secret"));
     }
 
     /// Секреты не должны попадать в журнал через отладочную печать.

@@ -98,6 +98,7 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         // Перевод скрыт целиком, когда способ выключен (GLORIA_MANUAL_TRANSFER):
         // без ссылки кабинет не покажет кнопку, а маршрут перевода её отвергнет.
         pay_link: config.pay_link.clone().filter(|_| config.manual_transfer),
+        server_ip: config.server_ip.clone(),
         admins: config.admins.clone(),
     };
 
@@ -135,6 +136,8 @@ pub(crate) struct Shared {
     /// Куда отправлять за переводом. Нет — счёт всё равно выставляется, но
     /// платить человеку негде, и он это увидит.
     pub(crate) pay_link: Option<String>,
+    /// Публичный IP сервера — для заказа через API Freekassa.
+    pub(crate) server_ip: Option<String>,
     /// Кому сообщать о новом счёте. Подтверждает оплату человек, и узнать о
     /// счёте он должен сразу, а не когда вспомнит про `/pending`.
     pub(crate) admins: Vec<i64>,
