@@ -1337,13 +1337,17 @@ a.btn.off { opacity: 0.45; }
 
       /* Два способа — показываем выбор. Один — сразу его, без лишнего шага. */
       if (o.freekassaUrl && o.payUrl) {
-        document.getElementById('bill-note').textContent = bonus + 'Выберите способ оплаты.';
+        /* Комиссию Freekassa платит покупатель — показываем её до оплаты.
+           Строку собирает сервер: там ставка и там же итог. */
+        var fee = o.feeNote ? ' ' + o.feeNote : '';
+        document.getElementById('bill-note').textContent = bonus + 'Выберите способ оплаты.' + fee;
         document.getElementById('m-card').hidden = false;
         document.getElementById('m-transfer').hidden = false;
         document.getElementById('bill-methods').hidden = false;
       } else if (o.freekassaUrl) {
         document.getElementById('bill-note').textContent = bonus +
-          'Нажмите «Оплатить» — откроется страница оплаты картой или СБП.';
+          'Нажмите «Оплатить» — откроется страница оплаты картой или СБП.' +
+          (o.feeNote ? ' ' + o.feeNote : '');
         document.getElementById('m-card').hidden = false;
         document.getElementById('m-transfer').hidden = true;
         document.getElementById('bill-methods').hidden = false;

@@ -99,6 +99,7 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         // без ссылки кабинет не покажет кнопку, а маршрут перевода её отвергнет.
         pay_link: config.pay_link.clone().filter(|_| config.manual_transfer),
         server_ip: config.server_ip.clone(),
+        freekassa_fee_bp: config.freekassa_fee_bp,
         admins: config.admins.clone(),
     };
 
@@ -138,6 +139,8 @@ pub(crate) struct Shared {
     pub(crate) pay_link: Option<String>,
     /// Публичный IP сервера — для заказа через API Freekassa.
     pub(crate) server_ip: Option<String>,
+    /// Комиссия Freekassa за СБП, сотые доли процента.
+    pub(crate) freekassa_fee_bp: u32,
     /// Кому сообщать о новом счёте. Подтверждает оплату человек, и узнать о
     /// счёте он должен сразу, а не когда вспомнит про `/pending`.
     pub(crate) admins: Vec<i64>,

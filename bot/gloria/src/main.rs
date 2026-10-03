@@ -901,6 +901,38 @@ fn checkout_freekassa(
     }
 }
 
+/// Сколько заплатит покупатель по СБП вместе с комиссией Freekassa.
+///
+/// Округление до копейки — к ближайшей, как у Freekassa: 199 ₽ при 6%
+/// дают ровно 210,94 ₽, это сверено с настоящим заказом.
+fn with_fee(amount: Money, fee_bp: u32) -> Money {
+    let total = (u128::from(amount.minor()) * u128::from(10_000 + fee_bp) + 5_000) / 10_000;
+    Money::from_minor(u64::try_from(total).unwrap_or(u64::MAX), amount.currency())
+}
+
+/// Строка о комиссии, которую покупатель видит до оплаты.
+///
+/// Называется ставка СБП и итог по ней: СБП выбрана на странице оплаты
+/// заранее. У карты ставка другая и выше, и обещать по ней точную сумму
+/// мы не можем — поэтому о ней сказано словами, а итог покажет сама
+/// страница оплаты, ещё до подтверждения.
+fn fee_note(amount: Money, fee_bp: u32) -> String {
+    if fee_bp == 0 {
+        return "Комиссии сверх цены нет.".to_owned();
+    }
+    let percent = match (fee_bp / 100, fee_bp % 100) {
+        (whole, 0) => format!("{whole}"),
+        (whole, part) if part % 10 == 0 => format!("{whole},{}", part / 10),
+        (whole, part) => format!("{whole},{part:02}"),
+    };
+    format!(
+        "Комиссию платёжной системы оплачивает покупатель: по СБП {percent}% — \
+         итого {}. Картой комиссия выше, точную сумму покажет страница оплаты \
+         до подтверждения.",
+        atlas_bot::menu::price_label(with_fee(amount, fee_bp)),
+    )
+}
+
 /// Номер запроса к API Freekassa.
 ///
 /// Freekassa требует, чтобы он рос от запроса к запросу. Берём миллисекунды
@@ -1093,8 +1125,16 @@ fn apply(
                     Ok(page) => {
                         return Ok(Some(Extra {
                             text: format!(
-                                "К оплате: <b>{}</b>{}\n\nСчёт действует 20 минут.",
+                                "К оплате: <b>{}</b>{}{}\n\nСчёт действует 20 минут.",
                                 atlas_bot::menu::price_label(amount),
+                                // Комиссию Freekassa платит покупатель — он
+                                // обязан увидеть её до оплаты, а не на
+                                // странице банка.
+                                if deps.freekassa.is_some() {
+                                    format!("\n\n{}", fee_note(amount, config.freekassa_fee_bp))
+                                } else {
+                                    String::new()
+                                },
                                 // Та же оговорка, что и на ручном пути: счёт
                                 // меньше витринной цены без объяснения
                                 // выглядит ошибкой, а не подарком.
@@ -1722,7 +1762,13 @@ pub(crate) fn open_order_for(
             .map_err(|error| eprintln!("Freekassa для счёта {order_id}: {error}"))
             .ok()
         })
-        .map(|url| format!(r#""freekassaUrl":"{}","#, atlas_tg::escape_json(&url)))
+        .map(|url| {
+            format!(
+                r#""freekassaUrl":"{}","feeNote":"{}","#,
+                atlas_tg::escape_json(&url),
+                atlas_tg::escape_json(&fee_note(amount, shared.freekassa_fee_bp)),
+            )
+        })
         .unwrap_or_default();
 
     // `minor` — то же число в копейках. Из него кабинет строит варианты
@@ -2283,5 +2329,30 @@ mod excerpt_tests {
     #[test]
     fn bytes_that_are_not_text_do_not_break_anything() {
         assert_ne!(excerpt(&[0xff, 0xfe, 0x00, 0x41]).len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod fee_tests {
+    use super::{fee_note, with_fee};
+    use atlas_billing::{Currency, Money};
+
+    /// Итог с комиссией сверен с настоящим заказом Freekassa: 199 ₽ при 6%
+    /// у покупателя стали 210,94 ₽.
+    #[test]
+    fn the_fee_total_matches_freekassa() {
+        let price = Money::from_minor(19_900, Currency::Rub);
+        assert_eq!(with_fee(price, 600).minor(), 21_094);
+        assert_eq!(with_fee(price, 0).minor(), 19_900);
+    }
+
+    /// Покупатель видит и процент, и итог.
+    #[test]
+    fn the_fee_note_names_the_percent_and_the_total() {
+        let price = Money::from_minor(19_900, Currency::Rub);
+        let note = fee_note(price, 600);
+        assert!(note.contains("6%"), "{note}");
+        assert!(note.contains("210,94"), "{note}");
+        assert!(fee_note(price, 650).contains("6,5%"));
     }
 }

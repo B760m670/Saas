@@ -74,6 +74,10 @@ pub struct Config {
     /// сервера, а бот за Caddy видит только `127.0.0.1`, который она
     /// отвергает. Обязателен, когда задан ключ API.
     pub server_ip: Option<String>,
+    /// Комиссия Freekassa за СБП в сотых долях процента (600 = 6%).
+    /// Её платит покупатель сверх цены, и он видит её до оплаты: из этого
+    /// числа бот считает, сколько выйдет итого.
+    pub freekassa_fee_bp: u32,
     /// Адрес мини-приложения. Из него делается кнопка «Меню» у поля ввода.
     pub miniapp_url: Option<String>,
     /// Токен бота поддержки. Свой, отдельный от основного.
@@ -124,6 +128,11 @@ pub const FREEKASSA_FORM_SECRET: &str = "GLORIA_FREEKASSA_SECRET1";
 pub const FREEKASSA_NOTICE_SECRET: &str = "GLORIA_FREEKASSA_SECRET2";
 pub const FREEKASSA_API_KEY: &str = "GLORIA_FREEKASSA_API_KEY";
 pub const SERVER_IP: &str = "GLORIA_SERVER_IP";
+pub const FREEKASSA_FEE: &str = "GLORIA_FREEKASSA_FEE";
+
+/// Комиссия Freekassa за СБП, если не задана: 6%, как в первом же заказе
+/// (199 ₽ превратились у покупателя в 210,94 ₽).
+pub const DEFAULT_FREEKASSA_FEE_BP: u32 = 600;
 pub const MINIAPP_URL: &str = "GLORIA_MINIAPP_URL";
 const SUPPORT_TOKEN: &str = "GLORIA_SUPPORT_TOKEN";
 
@@ -246,6 +255,17 @@ impl Config {
             });
         }
 
+        // Покупателю показывается и процент, и итог. Неверная ставка — значит
+        // обещание суммы, которой на странице оплаты не будет; лучше отказ
+        // при запуске, чем расхождение у покупателя.
+        let freekassa_fee_bp = match optional(vars, FREEKASSA_FEE) {
+            None => DEFAULT_FREEKASSA_FEE_BP,
+            Some(value) => parse_percent(&value).ok_or(Error::Invalid {
+                name: FREEKASSA_FEE,
+                why: "процент числом от 0 до 50, например 6 или 6,5",
+            })?,
+        };
+
         let miniapp_url = optional(vars, MINIAPP_URL);
         if let Some(url) = &miniapp_url {
             if !url.starts_with("https://") {
@@ -289,6 +309,7 @@ impl Config {
             freekassa_notice_secret: optional(vars, FREEKASSA_NOTICE_SECRET),
             freekassa_api_key,
             server_ip,
+            freekassa_fee_bp,
             miniapp_url,
             support_token: optional(vars, SUPPORT_TOKEN),
         })
@@ -430,6 +451,28 @@ fn carries_a_phone_number(link: &str) -> bool {
 }
 
 /// Необязательное значение: пустое считается незаданным.
+/// Процент в сотых долях: «6» → 600, «6,5» и «6.5» → 650, «6.25» → 625.
+/// Больше двух знаков после запятой и больше 50% — отказ: такая ставка
+/// почти наверняка опечатка.
+fn parse_percent(value: &str) -> Option<u32> {
+    let normalized = value.trim().replace(',', ".");
+    let (whole, fraction) = normalized.split_once('.').unwrap_or((&normalized, ""));
+    if whole.is_empty() || fraction.len() > 2 {
+        return None;
+    }
+    if !whole.bytes().all(|b| b.is_ascii_digit()) || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let whole: u32 = whole.parse().ok()?;
+    let fraction: u32 = match fraction.len() {
+        0 => 0,
+        1 => fraction.parse::<u32>().ok()? * 10,
+        _ => fraction.parse().ok()?,
+    };
+    let total = whole.checked_mul(100)?.checked_add(fraction)?;
+    (total <= 5_000).then_some(total)
+}
+
 fn optional(vars: &HashMap<String, String>, name: &str) -> Option<String> {
     vars.get(name)
         .map(|value| value.trim())
@@ -783,6 +826,28 @@ mod tests {
         };
         assert!(config.freekassa().is_some_and(|service| service.uses_api()));
         assert!(!format!("{config:?}").contains("api-key-secret"));
+    }
+
+    /// Ставка комиссии читается в привычной записи и отвергает опечатки.
+    #[test]
+    fn a_fee_is_read_as_a_percent() {
+        assert_eq!(super::parse_percent("6"), Some(600));
+        assert_eq!(super::parse_percent("6,5"), Some(650));
+        assert_eq!(super::parse_percent("6.25"), Some(625));
+        assert_eq!(super::parse_percent("0"), Some(0));
+        assert_eq!(super::parse_percent("6.255"), None);
+        assert_eq!(super::parse_percent("60"), None);
+        assert_eq!(super::parse_percent("шесть"), None);
+        assert_eq!(super::parse_percent(".5"), None);
+    }
+
+    /// Не задана — 6%, как в первом заказе.
+    #[test]
+    fn the_fee_defaults_to_six_percent() {
+        let Ok(config) = Config::from_map(&full()) else {
+            unreachable!("настройки обязаны собраться");
+        };
+        assert_eq!(config.freekassa_fee_bp, 600);
     }
 
     /// Секреты не должны попадать в журнал через отладочную печать.
