@@ -1,0 +1,848 @@
+//! Экраны, кнопки и то, что кнопка присылает обратно.
+//!
+//! Меню плоское: ни одного пункта, ведущего в подменю ради подменю. На
+//! телефоне вложенность — это тупик, из которого половина не возвращается
+//! (docs/14-bot.md §7).
+//!
+//! Модуль намеренно ничего не знает ни о Telegram, ни о сети: он строит
+//! описания кнопок и разбирает то, что приходит с них обратно. Поэтому его
+//! можно проверить целиком, не поднимая ни бота, ни базу.
+
+use atlas_billing::{Money, Plan};
+
+/// Предел Telegram на `callback_data` — 64 байта.
+///
+/// Кнопка с более длинным полем не отправляется вовсе, и узнаётся это не по
+/// ошибке, а по тому, что у части покупателей меню просто пустое.
+pub const CALLBACK_LIMIT: usize = 64;
+
+/// Устройство, под которое показывается инструкция подключения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    Iphone,
+    Android,
+    Desktop,
+}
+
+impl Device {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Iphone => "ios",
+            Self::Android => "android",
+            Self::Desktop => "pc",
+        }
+    }
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::Iphone => "iPhone",
+            Self::Android => "Android",
+            Self::Desktop => "Компьютер",
+        }
+    }
+
+    fn parse(code: &str) -> Option<Self> {
+        match code {
+            "ios" => Some(Self::Iphone),
+            "android" => Some(Self::Android),
+            "pc" => Some(Self::Desktop),
+            _ => None,
+        }
+    }
+
+    /// Все устройства в том порядке, в каком они показываются.
+    #[must_use]
+    pub const fn all() -> [Self; 3] {
+        [Self::Iphone, Self::Android, Self::Desktop]
+    }
+}
+
+/// Что человек попросил, нажав кнопку.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Экран «Моя подписка».
+    Subscription,
+    /// Список тарифов.
+    Plans,
+    /// Выбран тариф с таким именем.
+    Buy(String),
+    /// Выбор устройства.
+    Connect,
+    /// Инструкция под конкретное устройство.
+    ConnectTo(Device),
+    /// Помощь.
+    Help,
+    /// Назад в главное меню.
+    Home,
+    /// «Я оплатил» под счётом. Внутри — сумма счёта в копейках.
+    ///
+    /// Доступа **не даёт**: подтвердить перевод может только владелец, у
+    /// которого перед глазами выписка. Нажатие лишь сообщает ему, что пора
+    /// заглянуть в банк, — без него он узнаёт о счёте в момент выставления и
+    /// дальше гадает, заплатили или нет.
+    ///
+    /// Сумма едет в самой кнопке, а не берётся из базы при нажатии: из неё
+    /// строится следующий экран — список того, что человек мог отправить, —
+    /// и лишний поход в базу ради числа, которое мы только что написали в
+    /// том же сообщении, не нужен.
+    Paid(u64),
+    /// Человек говорит, сколько отправил. Внутри — эта сумма в копейках.
+    ///
+    /// Отдельное действие, а не поле у [`Action::Paid`]: то, что мы выставили,
+    /// и то, что человек отправил, — разные числа, и весь смысл вопроса в
+    /// том, что второе нам неизвестно.
+    Sent(u64),
+    /// «Отправил другую сумму» — ту, которой нет среди готовых.
+    ///
+    /// Готовых три, и они покрывают почти всё: счёт, целые рубли, следующая
+    /// сотня. Но отправить можно и 250, и 500 — а упереться на этом в
+    /// «напишите в поддержку» значит вернуть ту самую переписку вручную,
+    /// ради ухода от которой всё и заведено.
+    SentOther,
+}
+
+/// Почему нажатие нельзя принять.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unknown {
+    /// Такого действия у нас нет.
+    NoSuchAction,
+    /// Имя тарифа содержит недопустимые символы.
+    ///
+    /// Поле приходит обратно от клиента, а не из нашей памяти. Обычный
+    /// клиент вернёт ровно то, что мы послали, но полагаться на это нельзя:
+    /// имя тарифа идёт дальше — в номер заказа и в запрос к базе.
+    BadPlanName,
+    /// Сумма в кнопке — не число, пустая или неправдоподобно большая.
+    ///
+    /// Та же причина, что и у имени тарифа, только опаснее: это число
+    /// уходит в сообщение владельцу как готовая команда зачисления.
+    BadAmount,
+}
+
+impl Action {
+    /// Строка, которая уедет в кнопку и вернётся с нажатием.
+    #[must_use]
+    pub fn encode(&self) -> String {
+        match self {
+            Self::Subscription => "sub".to_owned(),
+            Self::Plans => "plans".to_owned(),
+            Self::Buy(plan) => format!("buy:{plan}"),
+            Self::Connect => "conn".to_owned(),
+            Self::ConnectTo(device) => format!("dev:{}", device.code()),
+            Self::Help => "help".to_owned(),
+            Self::Home => "home".to_owned(),
+            Self::Paid(minor) => format!("paid:{minor}"),
+            Self::Sent(minor) => format!("sent:{minor}"),
+            Self::SentOther => "other".to_owned(),
+        }
+    }
+
+    /// Разобрать то, что пришло с нажатием.
+    pub fn decode(data: &str) -> Result<Self, Unknown> {
+        if let Some(plan) = data.strip_prefix("buy:") {
+            if plan.is_empty()
+                || plan.len() > 32
+                || !plan.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            {
+                return Err(Unknown::BadPlanName);
+            }
+            return Ok(Self::Buy(plan.to_owned()));
+        }
+
+        if let Some(code) = data.strip_prefix("dev:") {
+            return Device::parse(code)
+                .map(Self::ConnectTo)
+                .ok_or(Unknown::NoSuchAction);
+        }
+
+        if let Some(minor) = data.strip_prefix("paid:") {
+            return parse_claim(minor).map(Self::Paid);
+        }
+
+        if let Some(minor) = data.strip_prefix("sent:") {
+            return parse_claim(minor).map(Self::Sent);
+        }
+
+        match data {
+            "sub" => Ok(Self::Subscription),
+            "plans" => Ok(Self::Plans),
+            "conn" => Ok(Self::Connect),
+            "other" => Ok(Self::SentOther),
+            "help" => Ok(Self::Help),
+            "home" => Ok(Self::Home),
+            _ => Err(Unknown::NoSuchAction),
+        }
+    }
+}
+
+/// Наибольшая сумма, которую кнопка вправе принести, — миллион рублей.
+///
+/// Предел не от жадности, а от разбора: число из кнопки попадает в
+/// сообщение владельцу готовой командой зачисления. Пусть невозможное
+/// отсекается здесь, а не читается им с экрана как правда.
+const MAX_CLAIM_MINOR: u64 = 100_000_000;
+
+/// Разобрать сумму, **написанную руками**.
+///
+/// Отдельно от [`parse_claim`], потому что источник другой. Там строка,
+/// которую мы сами положили в кнопку, — цифры и ничего больше. Здесь
+/// человек пишет как умеет: «250», «250,50», «250.5», «250 ₽», «250 руб».
+///
+/// Всё это одна и та же сумма, и переспрашивать из-за пробела значит
+/// возвращать его к тому, от чего он только что ушёл.
+///
+/// А вот «двести пятьдесят» словами не разбирается намеренно: угадывать
+/// число, которое уйдёт владельцу готовой командой зачисления, нельзя.
+/// Такому человеку честнее ответить, что не понял.
+#[must_use]
+pub fn parse_typed_amount(text: &str) -> Option<u64> {
+    // Разделитель целых от копеек — что запятая, что точка: на телефоне
+    // стоит то, что стоит, и выбирал его не человек.
+    let cleaned: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{00a0}')
+        .map(|c| if c == ',' { '.' } else { c })
+        .collect();
+
+    // Хвост вроде «₽» или «руб» отбрасывается: он ничего не добавляет, а
+    // пишут его часто.
+    let digits: String = cleaned
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    let tail = &cleaned[digits.len()..];
+    if !tail.is_empty() && !matches!(tail, "₽" | "р" | "р." | "руб" | "руб." | "рублей")
+    {
+        return None;
+    }
+
+    let (rubles, kopeks) = match digits.split_once('.') {
+        None => (digits.as_str(), "0"),
+        // «250.» и «250.505» — не суммы, а опечатки. Принять их значило бы
+        // самим решить, что человек имел в виду.
+        Some((_, after)) if after.is_empty() || after.len() > 2 => return None,
+        Some((before, after)) => (before, after),
+    };
+
+    if rubles.is_empty() || rubles.len() > 7 {
+        return None;
+    }
+
+    let rubles: u64 = rubles.parse().ok()?;
+    // «250.5» — это пятьдесят копеек, а не пять.
+    let kopeks: u64 = format!("{kopeks:0<2}").parse().ok()?;
+
+    let minor = rubles.checked_mul(100)?.checked_add(kopeks)?;
+    (minor > 0 && minor <= MAX_CLAIM_MINOR).then_some(minor)
+}
+
+/// Разобрать сумму, названную покупателем.
+///
+/// Только цифры: `+`, пробелы и прочее, что `parse` молча стерпел бы,
+/// пришли бы не от нашей кнопки.
+///
+/// Открыто наружу: кабинет присылает то же число тем же способом, и
+/// проверять его вторым, отдельно написанным разбором значило бы завести
+/// две двери с разными замками.
+pub fn parse_claim(text: &str) -> Result<u64, Unknown> {
+    if text.is_empty() || text.len() > 9 || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(Unknown::BadAmount);
+    }
+
+    match text.parse::<u64>() {
+        Ok(minor) if minor > 0 && minor <= MAX_CLAIM_MINOR => Ok(minor),
+        _ => Err(Unknown::BadAmount),
+    }
+}
+
+/// Что происходит при нажатии.
+///
+/// Два разных исхода, а не один с необязательным полем: кнопка либо
+/// возвращает нажатие нам, либо уводит человека наружу. Кнопка, у которой
+/// есть и то и другое, — это описание, которое врёт о происходящем.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Press {
+    /// Нажатие вернётся боту.
+    Act(Action),
+    /// Человек уйдёт по ссылке. Например, на страницу оплаты.
+    Open(String),
+    /// Нажатие вернётся ботом, но полем, которого нет в [`Action`].
+    ///
+    /// Заведено ради поддержки. У неё свой бот и свой словарь нажатий, и
+    /// складывать его в [`Action`] нельзя: тогда основной бот принимал бы
+    /// чужие кнопки, а поддержка — его. Два бота, две азбуки.
+    ///
+    /// Разбирает такое поле тот, кто его выдал, — [`Action::decode`] сюда не
+    /// заглядывает.
+    Data(String),
+    /// Откроется мини-приложение — сразу на нужном разделе.
+    ///
+    /// Отличается от [`Press::Open`] не адресом, а тем, чем Telegram его
+    /// открывает: кабинет запускается внутри Telegram и получает подпись
+    /// (`initData`), по которой мы узнаём, кто пришёл. Обычная ссылка
+    /// открылась бы браузером, без подписи и без входа.
+    App(String),
+}
+
+/// Кнопка: что написано и что произойдёт.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Button {
+    pub label: String,
+    pub press: Press,
+}
+
+impl Button {
+    /// Кнопка с произвольным полем — для ботов со своим словарём нажатий.
+    #[must_use]
+    pub fn data(label: impl Into<String>, data: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            press: Press::Data(data.into()),
+        }
+    }
+
+    /// Кнопка-действие: нажатие вернётся боту перепиской.
+    ///
+    /// Открыта наружу вместе с [`Button::link`] и [`Button::app`]: клавиатуру
+    /// собирает не только этот крейт — напоминания об окончании подписки
+    /// строит `gloria`, и кнопка «Продлить» нужна ему такой же.
+    pub fn new(label: impl Into<String>, action: Action) -> Self {
+        Self {
+            label: label.into(),
+            press: Press::Act(action),
+        }
+    }
+
+    /// Кнопка-ссылка: уводит наружу и ничего боту не возвращает.
+    pub fn link(label: impl Into<String>, url: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            press: Press::Open(url.into()),
+        }
+    }
+
+    /// Кнопка, открывающая кабинет на заданном разделе.
+    ///
+    /// Раздел уходит **в query-строку**, а не после решётки. Сначала было
+    /// наоборот, и не работало: открывая мини-приложение, Telegram дописывает
+    /// в хеш свои параметры (`tgWebAppData` и прочие), и наш раздел оттуда
+    /// пропадал. В их документации об этом не сказано; выяснилось это на
+    /// живом телефоне — все кнопки открывали главную.
+    ///
+    /// Query-строку Telegram не трогает, поэтому раздел до страницы доезжает.
+    /// Разбирает его `route()` в `site/index.html`.
+    pub fn app(label: impl Into<String>, base: &str, section: &str) -> Self {
+        let base = base.trim_end_matches('#');
+
+        let url = if section.is_empty() {
+            base.to_owned()
+        } else {
+            // У адреса уже может быть свой вопросительный знак — например,
+            // если кабинет выложен с параметром версии.
+            let sep = if base.contains('?') { '&' } else { '?' };
+            format!("{base}{sep}s={section}")
+        };
+
+        Self {
+            label: label.into(),
+            press: Press::App(url),
+        }
+    }
+
+    /// Действие, если кнопка его несёт. У кнопок-ссылок его нет.
+    #[must_use]
+    pub fn action(&self) -> Option<&Action> {
+        match &self.press {
+            Press::Act(action) => Some(action),
+            // У кнопки с произвольным полем действия в нашем смысле нет:
+            // разбирает её тот бот, который её и выдал.
+            Press::Data(_) | Press::Open(_) | Press::App(_) => None,
+        }
+    }
+}
+
+/// Раскладка кнопок: строки сверху вниз, в строке — слева направо.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Keyboard {
+    pub rows: Vec<Vec<Button>>,
+}
+
+impl Keyboard {
+    /// Все кнопки подряд, без разбиения на строки.
+    pub fn buttons(&self) -> impl Iterator<Item = &Button> {
+        self.rows.iter().flatten()
+    }
+}
+
+/// Главное меню. По кнопке в строке: на узком экране две в ряд слипаются,
+/// и промахнуться мимо нужной легче, чем кажется.
+///
+/// Когда адрес кабинета известен, все четыре ведут **в кабинет**, каждая в
+/// свой раздел. Переписка с ботом при этом не нужна: срок, тарифы,
+/// настройка и поддержка живут в одном месте, а не разбросаны между чатом
+/// и приложением. Второе место всегда отстаёт от первого — мы это уже
+/// проходили, когда кабинет показывал «Истекла» при работающем VPN.
+///
+/// Без адреса остаются прежние кнопки с перепиской. Это не запасной путь на
+/// всякий случай, а рабочее состояние: `GLORIA_MINIAPP_URL` необязателен, и
+/// бот без него обязан оставаться полезным.
+#[must_use]
+pub fn main_menu(app: Option<&str>) -> Keyboard {
+    let Some(base) = app else {
+        return Keyboard {
+            rows: vec![
+                vec![Button::new("Моя подписка", Action::Subscription)],
+                vec![Button::new("Продлить", Action::Plans)],
+                vec![Button::new("Подключить", Action::Connect)],
+                vec![Button::new("Помощь", Action::Help)],
+            ],
+        };
+    };
+
+    Keyboard {
+        rows: vec![
+            vec![Button::app("Моя подписка", base, "")],
+            vec![Button::app("Продлить", base, "plans")],
+            vec![Button::app("Подключить", base, "setup")],
+            vec![Button::app("Помощь", base, "help")],
+        ],
+    }
+}
+
+/// Выбор устройства.
+///
+/// Три ветки, и каждая ведёт к **одному** клиенту, а не к списку из шести.
+/// Список — это выбор, а выбор в этом месте делают неправильно и потом
+/// пишут в поддержку.
+#[must_use]
+pub fn connect_menu() -> Keyboard {
+    let mut rows: Vec<Vec<Button>> = Device::all()
+        .into_iter()
+        .map(|device| vec![Button::new(device.title(), Action::ConnectTo(device))])
+        .collect();
+    rows.push(vec![Button::new("Назад", Action::Home)]);
+    Keyboard { rows }
+}
+
+/// Кнопки тарифов.
+///
+/// Надпись собирается из самого тарифа, а не пишется руками: `1290 ₽` и
+/// `−46 %` вычисляются из цены и срока. Иначе правка цены оставляет на
+/// кнопке прежнюю выгоду, и расхождение первым замечает покупатель.
+#[must_use]
+pub fn plans_menu(plans: &[Plan], monthly_base: Money) -> Keyboard {
+    let mut rows: Vec<Vec<Button>> = plans
+        .iter()
+        .map(|plan| {
+            vec![Button::new(
+                plan_label(plan, monthly_base),
+                Action::Buy(plan.id.clone()),
+            )]
+        })
+        .collect();
+    rows.push(vec![Button::new("Назад", Action::Home)]);
+    Keyboard { rows }
+}
+
+/// Надпись на кнопке тарифа: `12 месяцев — 1290 ₽ (−46 %)`.
+#[must_use]
+pub fn plan_label(plan: &Plan, monthly_base: Money) -> String {
+    let price = price_label(plan.price);
+    match plan.discount_percent(monthly_base) {
+        Some(percent) if percent > 0 => format!("{} — {price} (−{percent} %)", plan.title),
+        _ => format!("{} — {price}", plan.title),
+    }
+}
+
+/// Цена для показа: `199 ₽`, но `199,50 ₽`, если копейки не нулевые.
+///
+/// Ровные `199.00` на кнопке выглядят как выгрузка из бухгалтерии. При этом
+/// молча отбрасывать ненулевые копейки нельзя: надпись перестанет совпадать
+/// с суммой к оплате, и первым это заметит покупатель.
+#[must_use]
+pub fn price_label(amount: Money) -> String {
+    let decimal = amount.to_decimal();
+    let whole = match decimal.split_once('.') {
+        Some((whole, fraction)) if fraction.bytes().all(|b| b == b'0') => whole,
+        // Разделитель дробной части в русском тексте — запятая.
+        _ => return format!("{} {}", decimal.replace('.', ","), symbol(amount)),
+    };
+    format!("{whole} {}", symbol(amount))
+}
+
+fn symbol(amount: Money) -> &'static str {
+    match amount.currency() {
+        atlas_billing::Currency::Rub => "₽",
+        atlas_billing::Currency::Usdt => "USDT",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        connect_menu, main_menu, plan_label, plans_menu, price_label, Action, Button, Device,
+        Keyboard, Press, Unknown, CALLBACK_LIMIT,
+    };
+    use atlas_billing::{Currency, Money, Plan};
+
+    /// Адрес кабинета в тестах. Настоящий берётся из настроек.
+    const APP: &str = "https://gloria.example/";
+
+    fn plan(id: &str, title: &str, days: u32, rubles: u64) -> Option<Plan> {
+        Some(Plan {
+            id: id.to_owned(),
+            title: title.to_owned(),
+            days,
+            devices: 4,
+            price: Money::from_major(rubles, Currency::Rub)?,
+        })
+    }
+
+    fn showcase() -> Vec<Plan> {
+        crate::catalog::plans()
+    }
+
+    fn base() -> Option<Money> {
+        crate::catalog::monthly_base()
+    }
+
+    fn every_keyboard() -> Vec<Keyboard> {
+        let Some(base) = base() else {
+            return Vec::new();
+        };
+        vec![
+            main_menu(None),
+            main_menu(Some(APP)),
+            connect_menu(),
+            plans_menu(&showcase(), base),
+        ]
+    }
+
+    /// Кнопка с полем длиннее 64 байт не уходит к покупателю вовсе, и
+    /// заметно это не по ошибке, а по пустому меню.
+    #[test]
+    fn no_button_exceeds_the_telegram_limit() {
+        let mut checked = 0;
+        for keyboard in every_keyboard() {
+            for button in keyboard.buttons() {
+                let data = button.action().map(Action::encode).unwrap_or_default();
+                assert!(
+                    data.len() <= CALLBACK_LIMIT,
+                    "кнопка {:?} несёт {} байт",
+                    button.label,
+                    data.len()
+                );
+                assert!(!button.label.is_empty(), "кнопка без надписи");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 11, "проверено всего {checked} кнопок");
+    }
+
+    /// Нажатие возвращается тем же, чем ушло. Ломается это молча: кнопка
+    /// есть, нажимается, и ничего не происходит.
+    #[test]
+    fn every_button_survives_the_round_trip() {
+        for keyboard in every_keyboard() {
+            for button in keyboard.buttons() {
+                assert_eq!(
+                    Action::decode(&button.action().map(Action::encode).unwrap_or_default()),
+                    button.action().cloned().ok_or(Unknown::NoSuchAction),
+                    "не разобралось: {:?}",
+                    button.label
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_action_is_refused() {
+        for data in ["", "sub2", "нажали", "dev:blackberry", "buy"] {
+            assert_eq!(
+                Action::decode(data),
+                Err(Unknown::NoSuchAction),
+                "принято {data:?}"
+            );
+        }
+    }
+
+    /// Имя тарифа приходит обратно от клиента и идёт дальше — в номер
+    /// заказа и в запрос к базе. Обычный клиент вернёт наше, изменённый —
+    /// что угодно.
+    #[test]
+    fn a_tampered_plan_name_is_refused() {
+        for data in [
+            "buy:",
+            "buy:d30;drop",
+            "buy:d30 or 1=1",
+            "buy:тариф",
+            "buy:d30:extra",
+            &format!("buy:{}", "d".repeat(33)),
+        ] {
+            assert_eq!(
+                Action::decode(data),
+                Err(Unknown::BadPlanName),
+                "принято имя тарифа из {data:?}"
+            );
+        }
+    }
+
+    /// «Я оплатил» стоит не в этих меню, а под счётом, который собирает
+    /// `gloria`, — и обход клавиатур её не проверяет. Проверяем отдельно:
+    /// не разобравшееся нажатие выглядит как молчащая кнопка.
+    ///
+    /// Суммы здесь везут деньги, поэтому проверяются и края: копейка,
+    /// круглая сумма, миллион.
+    #[test]
+    fn amounts_survive_the_round_trip() {
+        assert_eq!(
+            Action::decode(&Action::SentOther.encode()),
+            Ok(Action::SentOther)
+        );
+
+        for minor in [1_u64, 19_899, 20_000, 100_000_000] {
+            for action in [Action::Paid(minor), Action::Sent(minor)] {
+                assert_eq!(
+                    Action::decode(&action.encode()),
+                    Ok(action.clone()),
+                    "не разобралось: {action:?}"
+                );
+            }
+        }
+    }
+
+    /// Сумма приходит обратно от клиента и уходит владельцу готовой
+    /// командой зачисления. Обычный клиент вернёт наше, изменённый — что
+    /// угодно, и «зачислить −1» читалось бы с экрана как правда.
+    #[test]
+    fn a_tampered_amount_is_refused() {
+        for data in [
+            "paid:",
+            "sent:",
+            "paid:0",
+            "sent:-1",
+            "paid:+199",
+            "sent:19 899",
+            "paid:19899.5",
+            "sent:сто",
+            "paid:100000001",
+            "sent:999999999999",
+        ] {
+            assert_eq!(
+                Action::decode(data),
+                Err(Unknown::BadAmount),
+                "принята сумма из {data:?}"
+            );
+        }
+    }
+
+    /// Сумма, написанная руками. Человек пишет как умеет, и переспрашивать
+    /// из-за пробела значит возвращать его к тому, от чего он ушёл.
+    #[test]
+    fn a_typed_amount_is_read_the_way_people_write_it() {
+        use super::parse_typed_amount as parse;
+
+        for (text, minor) in [
+            ("250", 25_000),
+            ("250,50", 25_050),
+            ("250.50", 25_050),
+            // «250.5» — это пятьдесят копеек, а не пять.
+            ("250,5", 25_050),
+            ("250 ₽", 25_000),
+            ("250₽", 25_000),
+            ("250 руб", 25_000),
+            ("250 руб.", 25_000),
+            ("1 290", 129_000),
+            ("198,62", 19_862),
+            ("1", 100),
+        ] {
+            assert_eq!(parse(text), Some(minor), "не разобралось: {text:?}");
+        }
+    }
+
+    /// А угадывать нельзя: число уходит владельцу готовой командой
+    /// зачисления, и «примерно двести» там читалось бы как правда.
+    #[test]
+    fn a_typed_amount_that_is_not_a_number_is_refused() {
+        use super::parse_typed_amount as parse;
+
+        for text in [
+            "",
+            "двести пятьдесят",
+            "около 250",
+            "250 рублей ровно",
+            "-250",
+            "0",
+            "0,00",
+            "250.",
+            "250,505",
+            "2,5,0",
+            "250$",
+            "1000001",
+            "99999999999",
+            "/start",
+        ] {
+            assert_eq!(parse(text), None, "принято: {text:?}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_plan_name_passes() {
+        assert_eq!(
+            Action::decode("buy:d365"),
+            Ok(Action::Buy("d365".to_owned()))
+        );
+    }
+
+    /// Главная проверка витрины: то, что написано на кнопке, обязано
+    /// совпадать с тем, что записано в docs/14-bot.md §2.
+    #[test]
+    fn the_buttons_say_what_the_tariffs_say() {
+        let Some(base) = base() else { return };
+        let expected = [
+            "1 месяц — 199 ₽",
+            "3 месяца — 499 ₽ (−16 %)",
+            "6 месяцев — 790 ₽ (−33 %)",
+            "12 месяцев — 1290 ₽ (−46 %)",
+        ];
+
+        let plans = showcase();
+        assert_eq!(plans.len(), expected.len(), "витрина собралась не целиком");
+
+        for (plan, want) in plans.iter().zip(expected) {
+            assert_eq!(plan_label(plan, base), want);
+        }
+    }
+
+    /// Месячный тариф сравнивается сам с собой, и приписывать ему «−0 %»
+    /// значит выглядеть глупо на самой заметной кнопке.
+    #[test]
+    fn the_monthly_plan_carries_no_discount_tail() {
+        let Some(base) = base() else { return };
+        let Some(month) = plan("d30", "1 месяц", 30, 199) else {
+            return;
+        };
+        let label = plan_label(&month, base);
+        assert!(!label.contains('%'), "на кнопке лишняя выгода: {label}");
+    }
+
+    /// Ровные суммы показываются без копеек, неровные — с ними. Второе
+    /// важнее: надпись, разошедшаяся с суммой к оплате, — это спор.
+    #[test]
+    fn kopecks_are_shown_only_when_there_are_any() {
+        assert_eq!(
+            price_label(Money::from_minor(19_900, Currency::Rub)),
+            "199 ₽"
+        );
+        assert_eq!(
+            price_label(Money::from_minor(19_950, Currency::Rub)),
+            "199,50 ₽"
+        );
+        assert_eq!(price_label(Money::from_minor(1, Currency::Rub)), "0,01 ₽");
+    }
+
+    /// Из любого подменю должен быть выход, иначе человек упирается в
+    /// тупик и жмёт «стоп».
+    #[test]
+    fn every_submenu_leads_home() {
+        let Some(base) = base() else { return };
+        for keyboard in [connect_menu(), plans_menu(&showcase(), base)] {
+            assert!(
+                keyboard
+                    .buttons()
+                    .any(|b| b.action() == Some(&Action::Home)),
+                "из подменю некуда вернуться"
+            );
+        }
+    }
+
+    /// Главное меню плоское: из него никуда «назад» не ведёт, потому что
+    /// оно и есть верх.
+    #[test]
+    fn the_main_menu_has_no_way_back() {
+        for menu in [main_menu(None), main_menu(Some(APP))] {
+            assert!(!menu.buttons().any(|b| b.action() == Some(&Action::Home)));
+        }
+    }
+
+    /// Когда адрес кабинета известен, все кнопки главного меню ведут в
+    /// него — и ни одна не возвращается боту перепиской.
+    #[test]
+    fn with_an_app_the_main_menu_leads_only_into_it() {
+        let menu = main_menu(Some(APP));
+        assert!(
+            menu.buttons().all(|b| matches!(b.press, Press::App(_))),
+            "в меню осталась кнопка, ведущая в переписку"
+        );
+        assert!(menu.buttons().all(|b| b.action().is_none()));
+    }
+
+    /// Каждая ведёт в **свой** раздел, а не все на главную: иначе человек,
+    /// нажавший «Продлить», окажется там же, где нажавший «Помощь».
+    #[test]
+    fn each_button_opens_its_own_section() {
+        let menu = main_menu(Some(APP));
+        let mut seen: Vec<&str> = menu
+            .buttons()
+            .filter_map(|b| match &b.press {
+                Press::App(url) => Some(url.as_str()),
+                _ => None,
+            })
+            .collect();
+        let before = seen.len();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(before, seen.len(), "два раздела совпали: {seen:?}");
+    }
+
+    /// Раздел уходит в query-строку, а не в хеш: хеш Telegram затирает
+    /// своими параметрами, и раздел до страницы не доезжает.
+    #[test]
+    fn the_section_goes_into_the_query_not_the_hash() {
+        let button = Button::app("Продлить", APP, "plans");
+        assert!(
+            matches!(&button.press, Press::App(url) if url == "https://gloria.example/?s=plans"),
+            "получилось {:?}",
+            button.press
+        );
+    }
+
+    /// У адреса может быть свой вопросительный знак — тогда раздел
+    /// дописывается через «&», иначе получился бы второй «?».
+    #[test]
+    fn an_address_that_already_has_a_query_gets_an_ampersand() {
+        let button = Button::app("Продлить", "https://gloria.example/?v=7", "plans");
+        assert!(
+            matches!(&button.press, Press::App(url) if url == "https://gloria.example/?v=7&s=plans"),
+            "получилось {:?}",
+            button.press
+        );
+    }
+
+    /// Пустой раздел — это главная, и лишней решётки в адресе быть не должно.
+    #[test]
+    fn an_empty_section_leaves_the_address_alone() {
+        let button = Button::app("Моя подписка", APP, "");
+        assert!(matches!(&button.press, Press::App(url) if url == APP));
+    }
+
+    /// Без адреса кабинета остаются прежние кнопки с перепиской: переменная
+    /// необязательна, и бот без неё обязан оставаться полезным.
+    #[test]
+    fn without_an_app_the_menu_still_talks_to_the_bot() {
+        let menu = main_menu(None);
+        assert!(menu.buttons().all(|b| b.action().is_some()));
+    }
+
+    #[test]
+    fn every_device_has_its_own_button() {
+        let menu = connect_menu();
+        for device in Device::all() {
+            assert!(
+                menu.buttons()
+                    .any(|b| b.action() == Some(&Action::ConnectTo(device))),
+                "нет кнопки для {device:?}"
+            );
+        }
+    }
+}
