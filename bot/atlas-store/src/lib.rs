@@ -101,6 +101,14 @@ pub struct PanelWork {
     /// заплативший остался бы с потолком пробы — то есть купил бы месяц и
     /// упёрся в пять гигабайт.
     pub has_paid: bool,
+    /// Срок уже прошёл, и человека надо перевести на бесплатный доступ.
+    ///
+    /// Бывает только при включённом бесплатном доступе
+    /// ([`Store::panel_work`] с `with_free`). Тогда [`Self::expires_at`] —
+    /// по-прежнему наша прошедшая дата: в панель она не едет, но нужна
+    /// отметке [`Store::mark_panel_free`], чтобы не съесть оплату, случившуюся
+    /// между чтением очереди и ответом панели.
+    pub lapsed: bool,
 }
 
 /// Кому и о чём пора напомнить.
@@ -319,20 +327,47 @@ impl Store {
     /// дате, и рассказывать ей о прошлом незачем. А если её дата почему-то
     /// осталась в будущем, разницу заметит сверка (`reconcile` в `gloria`) и
     /// примет то, что записано в панели.
-    pub fn panel_work(&mut self, limit: i64, now: i64) -> Result<Vec<PanelWork>, Error> {
+    ///
+    /// # Бесплатный доступ
+    ///
+    /// С `with_free` работы прибавляется в двух местах.
+    ///
+    /// **Срок прошёл, а бесплатные отряды панель не подтвердила** — человека
+    /// надо перевести на них ([`PanelWork::lapsed`]). Прошедшая дата здесь
+    /// в панель не едет вовсе, поэтому оговорка про `400` выше её не
+    /// касается.
+    ///
+    /// **Срок идёт, а платные отряды панель не подтвердила** — даже если даты
+    /// совпали. Так при включении бесплатного доступа очередь сама отвозит
+    /// отряды всем, кто заведён раньше: у них `panel_plan` пуст.
+    ///
+    /// Без `with_free` запрос в точности прежний: бесплатный доступ выключен —
+    /// значит, и поведение старое, до последней строки.
+    pub fn panel_work(
+        &mut self,
+        limit: i64,
+        now: i64,
+        with_free: bool,
+    ) -> Result<Vec<PanelWork>, Error> {
         let rows = self.client.query(
             "SELECT telegram_id, panel_id, FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
                     EXISTS (SELECT 1 FROM orders
                              WHERE orders.telegram_id = users.telegram_id
-                               AND orders.status = 'paid')
+                               AND orders.status = 'paid'),
+                    expires_at <= to_timestamp($2::bigint)
                FROM users
               WHERE panel_id IS NOT NULL
                 AND expires_at IS NOT NULL
-                AND expires_at > to_timestamp($2::bigint)
-                AND expires_at IS DISTINCT FROM panel_expires_at
+                AND (
+                      (expires_at > to_timestamp($2::bigint)
+                       AND (expires_at IS DISTINCT FROM panel_expires_at
+                            OR ($3 AND panel_plan IS DISTINCT FROM 'paid')))
+                   OR ($3 AND expires_at <= to_timestamp($2::bigint)
+                          AND panel_plan IS DISTINCT FROM 'free')
+                )
               ORDER BY telegram_id
               LIMIT $1",
-            &[&limit, &now],
+            &[&limit, &now, &with_free],
         )?;
 
         rows.iter()
@@ -342,6 +377,7 @@ impl Store {
                     panel_id: row.try_get(1)?,
                     expires_at: row.try_get(2)?,
                     has_paid: row.try_get(3)?,
+                    lapsed: row.try_get(4)?,
                 })
             })
             .collect()
@@ -378,12 +414,50 @@ impl Store {
     /// мог оплатить ещё раз. Записав нынешнее значение, мы объявили бы
     /// согласованной дату, которой панель не видела, и продление потерялось
     /// бы молча. При таком же условии строка просто останется в очереди.
-    pub fn mark_panel_synced(&mut self, telegram_id: i64, sent: i64) -> Result<(), Error> {
+    ///
+    /// `with_free` — отвозили ли вместе с датой платные отряды. Тогда они и
+    /// отмечаются. Без бесплатного доступа отряды не отвозятся, и отметка о
+    /// них остаётся пустой: включи его потом — очередь отвезёт отряды заново,
+    /// а не сочтёт их уже стоящими.
+    pub fn mark_panel_synced(
+        &mut self,
+        telegram_id: i64,
+        sent: i64,
+        with_free: bool,
+    ) -> Result<(), Error> {
         self.client.execute(
             "UPDATE users
-                SET panel_expires_at = to_timestamp($2::bigint)
+                SET panel_expires_at = to_timestamp($2::bigint),
+                    panel_plan = CASE WHEN $3 THEN 'paid' ELSE panel_plan END
               WHERE telegram_id = $1 AND expires_at = to_timestamp($2::bigint)",
-            &[&telegram_id, &sent],
+            &[&telegram_id, &sent, &with_free],
+        )?;
+        Ok(())
+    }
+
+    /// Отметить, что панель перевела человека на бесплатный доступ.
+    ///
+    /// `ours` — наша прошедшая дата, та, что была в очереди. Условие на неё
+    /// стоит по той же причине, что в [`Self::mark_panel_synced`]: человек
+    /// мог оплатить, пока бот ходил в панель, и тогда отметка о бесплатном
+    /// доступе объявила бы согласованным то, чего панель не видела. Строка
+    /// останется в очереди, и следующий круг вернёт ему платные отряды.
+    ///
+    /// `panel_until` — дата, которую поставили в панели: далёкая, чтобы панель
+    /// человека не гасила. Её и запоминаем как подтверждённую — иначе сверка
+    /// с панелью приняла бы её за ручное продление.
+    pub fn mark_panel_free(
+        &mut self,
+        telegram_id: i64,
+        ours: i64,
+        panel_until: i64,
+    ) -> Result<(), Error> {
+        self.client.execute(
+            "UPDATE users
+                SET panel_expires_at = to_timestamp($3::bigint),
+                    panel_plan = 'free'
+              WHERE telegram_id = $1 AND expires_at = to_timestamp($2::bigint)",
+            &[&telegram_id, &ours, &panel_until],
         )?;
         Ok(())
     }

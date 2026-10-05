@@ -208,18 +208,7 @@ impl Panel {
         let username = Self::username_for(user.telegram_id)
             .ok_or(Error::Malformed("негодный номер Telegram"))?;
 
-        for squad in &user.squads {
-            if !squad.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') || squad.is_empty() {
-                return Err(Error::Malformed("негодный идентификатор отряда"));
-            }
-        }
-
-        let squads = user
-            .squads
-            .iter()
-            .map(|s| format!("\"{s}\""))
-            .collect::<Vec<_>>()
-            .join(",");
+        let squads = squads_json(&user.squads)?;
 
         let body = format!(
             concat!(
@@ -291,6 +280,43 @@ impl Panel {
             headers: self.headers(true),
             body: body.into_bytes(),
         }
+    }
+
+    /// Поставить срок вместе с отрядами.
+    ///
+    /// То же, что [`Self::set_expiry`], плюс список отрядов, через которые
+    /// пользователю разрешено ходить. Нужно бесплатному доступу: по
+    /// окончании подписки бот не даёт панели погасить человека, а оставляет
+    /// ему одни бесплатные отряды — и сам же возвращает платные после оплаты.
+    ///
+    /// Отряды уезжают **вместе** с датой, одним запросом. Два запроса
+    /// разошлись бы при обрыве связи между ними: человек с продлённой датой и
+    /// бесплатными отрядами заплатил бы и не получил ничего.
+    pub fn set_plan(
+        &self,
+        panel_id: i64,
+        expires_at: i64,
+        traffic_limit: u64,
+        squads: &[String],
+    ) -> Result<Request, Error> {
+        let squads = squads_json(squads)?;
+        let body = format!(
+            concat!(
+                r#"{{"id":{panel_id},"expireAt":"{expires}","#,
+                r#""trafficLimitBytes":{traffic},"status":"ACTIVE","#,
+                r#""activeInternalSquads":[{squads}]}}"#
+            ),
+            panel_id = panel_id,
+            expires = to_iso8601(expires_at),
+            traffic = traffic_limit,
+            squads = squads,
+        );
+        Ok(Request {
+            method: Method::Patch,
+            url: format!("{}/api/users", self.base),
+            headers: self.headers(true),
+            body: body.into_bytes(),
+        })
     }
 
     /// Перевыпустить ссылку на подписку.
@@ -411,6 +437,25 @@ impl Panel {
             traffic_limit: body.traffic_limit,
         })
     }
+}
+
+/// Отряды в виде тела JSON-массива, без скобок.
+///
+/// Идентификаторы попадают в тело запроса как есть, поэтому набор символов
+/// проверяется здесь: в JSON нельзя пускать ничего, что способно его
+/// изменить. Пустой список — не ошибка: у бесплатного доступа он не бывает
+/// пустым по настройкам, а здесь решать за них нечего.
+fn squads_json(squads: &[String]) -> Result<String, Error> {
+    for squad in squads {
+        if squad.is_empty() || !squad.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-') {
+            return Err(Error::Malformed("негодный идентификатор отряда"));
+        }
+    }
+    Ok(squads
+        .iter()
+        .map(|s| format!("\"{s}\""))
+        .collect::<Vec<_>>()
+        .join(","))
 }
 
 #[cfg(test)]
@@ -556,6 +601,47 @@ mod tests {
         let trial = panel.set_expiry(7, 1_788_000_000, 5 * 1024 * 1024 * 1024);
         let body = String::from_utf8_lossy(&trial.body);
         assert!(body.contains(r#""trafficLimitBytes":5368709120"#), "{body}");
+    }
+
+    /// Дата, потолок и отряды уходят одним запросом: два запроса разошлись
+    /// бы при обрыве связи, и заплативший остался бы на бесплатных отрядах.
+    #[test]
+    fn a_plan_carries_the_date_and_the_squads_together() {
+        let Some(panel) = panel() else { return };
+        let squads = vec![
+            "b6f5d810-8ef3-4be9-9012-3456789abcde".to_owned(),
+            "0a0b0c0d-0000-4000-8000-000000000001".to_owned(),
+        ];
+        let request = panel.set_plan(7, 1_788_000_000, 0, &squads);
+        assert!(request.is_ok(), "план не собрался: {request:?}");
+        let Ok(request) = request else { return };
+        assert_eq!(request.method, Method::Patch);
+        assert_eq!(request.url, "https://panel.example.org/api/users");
+
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(body.contains(r#""id":7"#), "{body}");
+        assert!(
+            body.contains(r#""expireAt":"2026-08-29T10:40:00.000Z""#),
+            "{body}"
+        );
+        assert!(body.contains(r#""trafficLimitBytes":0"#), "{body}");
+        assert!(body.contains(r#""status":"ACTIVE""#), "{body}");
+        assert!(
+            body.contains(
+                r#""activeInternalSquads":["b6f5d810-8ef3-4be9-9012-3456789abcde","0a0b0c0d-0000-4000-8000-000000000001"]"#
+            ),
+            "{body}"
+        );
+
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(&body);
+        assert!(parsed.is_ok(), "тело — не JSON: {body}");
+    }
+
+    #[test]
+    fn a_bad_squad_identifier_does_not_reach_the_plan() {
+        let Some(panel) = panel() else { return };
+        let squads = vec![r#"x","status":"ADMIN"#.to_owned()];
+        assert!(panel.set_plan(7, 1_788_000_000, 0, &squads).is_err());
     }
 
     #[test]
