@@ -80,6 +80,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0008_support_one_at_a_time.sql"),
         "\n",
         include_str!("../../../db/migrations/0009_bonuses.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0010_free_plan.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -635,7 +637,7 @@ fn a_person_the_panel_has_not_heard_of_is_queued() {
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
 
-    let Ok(work) = store.panel_work(10, NOW) else {
+    let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
     };
     assert_eq!(work.len(), 1, "человек не попал в очередь");
@@ -657,9 +659,9 @@ fn a_confirmed_date_leaves_the_queue() {
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
 
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
 
-    let Ok(work) = store.panel_work(10, NOW) else {
+    let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
     };
     assert!(work.is_empty(), "согласованный остался в очереди: {work:?}");
@@ -677,12 +679,12 @@ fn a_payment_puts_the_person_back_in_the_queue() {
     subscriber(&mut store, 42);
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
 
     let _ = store.open_order("ord-9", 42, "d30", 30, rub(19_899), 0, NOW);
     let _ = store.settle("ord-9", "manual", "19899-ord-9", rub(19_899), "{}", NOW);
 
-    let Ok(work) = store.panel_work(10, NOW) else {
+    let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
     };
     assert_eq!(work.len(), 1, "продление не встало в очередь");
@@ -712,9 +714,9 @@ fn a_late_confirmation_does_not_swallow_a_newer_payment() {
     let _ = store.settle("ord-8", "manual", "19899-ord-8", rub(19_899), "{}", NOW);
 
     // Ответ панели пришёл — но он про старую дату.
-    let _ = store.mark_panel_synced(42, carried);
+    let _ = store.mark_panel_synced(42, carried, false);
 
-    let Ok(work) = store.panel_work(10, NOW) else {
+    let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
     };
     assert_eq!(work.len(), 1, "оплата пропала из очереди");
@@ -739,7 +741,7 @@ fn a_person_the_panel_lost_is_forgotten_but_keeps_the_days() {
 
     let _ = store.forget_panel_link(42);
 
-    let Ok(work) = store.panel_work(10, NOW) else {
+    let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
     };
     assert!(work.is_empty(), "везём дату в пустоту: {work:?}");
@@ -763,7 +765,7 @@ fn a_person_without_a_panel_account_is_not_queued() {
     subscriber(&mut store, 42);
     let _ = store.grant_trial(42, 3, NOW);
 
-    let Ok(work) = store.panel_work(10, NOW) else {
+    let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
     };
     assert!(
@@ -785,7 +787,7 @@ fn the_queue_is_drained_in_portions() {
         let _ = store.grant_trial(id, 3, NOW);
     }
 
-    let Ok(work) = store.panel_work(2, NOW) else {
+    let Ok(work) = store.panel_work(2, NOW, false) else {
         return;
     };
     assert_eq!(work.len(), 2);
@@ -841,7 +843,7 @@ fn an_adopted_date_leaves_the_queue_empty() {
 
     // До принятия работа есть: проба выдана, а панель о ней не знает.
     assert_eq!(
-        store.panel_work(10, NOW).map(|work| work.len()).ok(),
+        store.panel_work(10, NOW, false).map(|work| work.len()).ok(),
         Some(1)
     );
 
@@ -849,7 +851,7 @@ fn an_adopted_date_leaves_the_queue_empty() {
         return;
     };
     assert_eq!(
-        store.panel_work(10, NOW).map(|work| work.len()).ok(),
+        store.panel_work(10, NOW, false).map(|work| work.len()).ok(),
         Some(0)
     );
 }
@@ -875,16 +877,179 @@ fn a_date_in_the_past_never_enters_the_queue() {
 
     // Пока срок в будущем — работа есть.
     assert_eq!(
-        store.panel_work(10, NOW).map(|work| work.len()).ok(),
+        store.panel_work(10, NOW, false).map(|work| work.len()).ok(),
         Some(1)
     );
 
     // Тот же срок неделей позже уже в прошлом — и работы нет.
     assert_eq!(
         store
-            .panel_work(10, NOW + 7 * DAY)
+            .panel_work(10, NOW + 7 * DAY, false)
             .map(|work| work.len())
             .ok(),
+        Some(0)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Бесплатный доступ после окончания
+// ---------------------------------------------------------------------------
+
+/// Срок прошёл — при включённом бесплатном доступе это работа: человека
+/// надо перевести на бесплатные отряды, а не оставить панели гасить его.
+#[test]
+fn a_lapsed_person_is_queued_for_the_free_plan() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, true);
+
+    let later = NOW + 7 * DAY;
+    let Ok(work) = store.panel_work(10, later, true) else {
+        return;
+    };
+    assert_eq!(work.len(), 1, "просроченный не встал в очередь: {work:?}");
+    let Some(item) = work.first() else {
+        return;
+    };
+    assert!(item.lapsed, "просроченного везут как платного");
+    assert_eq!(item.expires_at, NOW + 3 * DAY, "отметке нужна наша дата");
+}
+
+/// Без бесплатного доступа прошедшая дата — по-прежнему не работа: гасит
+/// панель, как и до этой правки.
+#[test]
+fn without_the_free_plan_a_lapsed_person_is_left_to_the_panel() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
+
+    assert_eq!(
+        store
+            .panel_work(10, NOW + 7 * DAY, false)
+            .map(|work| work.len())
+            .ok(),
+        Some(0)
+    );
+}
+
+/// Переведённый на бесплатный доступ уходит из очереди. Иначе бот возил бы
+/// одни и те же отряды в панель на каждом круге.
+#[test]
+fn a_person_moved_to_the_free_plan_leaves_the_queue() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+
+    let later = NOW + 7 * DAY;
+    let far = NOW + 100 * 365 * DAY;
+    let _ = store.mark_panel_free(42, NOW + 3 * DAY, far);
+
+    assert_eq!(
+        store
+            .panel_work(10, later, true)
+            .map(|work| work.len())
+            .ok(),
+        Some(0)
+    );
+
+    // Подтверждённой считается далёкая дата панели — иначе сверка приняла
+    // бы её за ручное продление.
+    let Ok(person) = store.ensure_subscriber(42) else {
+        return;
+    };
+    assert_eq!(person.panel_expires_at, Some(far));
+    assert_eq!(person.expires_at, Some(NOW + 3 * DAY), "наш срок подменили");
+}
+
+/// Оплата после бесплатного доступа возвращает платные отряды: человек
+/// снова в очереди, и уже как платный.
+#[test]
+fn a_payment_after_the_free_plan_brings_the_paid_plan_back() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+
+    let later = NOW + 7 * DAY;
+    let _ = store.mark_panel_free(42, NOW + 3 * DAY, NOW + 100 * 365 * DAY);
+
+    let _ = store.open_order("ord-7", 42, "d30", 30, rub(19_899), 0, later);
+    let _ = store.settle("ord-7", "manual", "19899-ord-7", rub(19_899), "{}", later);
+
+    let Ok(work) = store.panel_work(10, later, true) else {
+        return;
+    };
+    assert_eq!(work.len(), 1, "оплата не вернула платные отряды");
+    let Some(item) = work.first() else {
+        return;
+    };
+    assert!(!item.lapsed);
+    assert_eq!(item.expires_at, later + 30 * DAY);
+}
+
+/// Пока бот ходил в панель переводить человека на бесплатное, тот оплатил.
+/// Отметка о бесплатном не должна съесть оплату.
+#[test]
+fn a_late_free_mark_does_not_swallow_a_payment() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+
+    let later = NOW + 7 * DAY;
+    let _ = store.open_order("ord-6", 42, "d30", 30, rub(19_899), 0, later);
+    let _ = store.settle("ord-6", "manual", "19899-ord-6", rub(19_899), "{}", later);
+
+    // Ответ панели пришёл — про бесплатный доступ по старой дате.
+    let _ = store.mark_panel_free(42, NOW + 3 * DAY, NOW + 100 * 365 * DAY);
+
+    let Ok(work) = store.panel_work(10, later, true) else {
+        return;
+    };
+    assert_eq!(work.len(), 1, "оплата пропала из очереди");
+    let Some(item) = work.first() else {
+        return;
+    };
+    assert!(!item.lapsed, "оплатившего везут на бесплатное");
+}
+
+/// Включили бесплатный доступ — заведённым раньше надо отвезти отряды, хотя
+/// даты у них давно согласованы. Отдельного переноса данных нет: это делает
+/// очередь.
+#[test]
+fn turning_the_free_plan_on_queues_everyone_once() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
+
+    assert_eq!(
+        store.panel_work(10, NOW, true).map(|work| work.len()).ok(),
+        Some(1),
+        "отряды заведённым раньше не отвезутся"
+    );
+
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, true);
+    assert_eq!(
+        store.panel_work(10, NOW, true).map(|work| work.len()).ok(),
         Some(0)
     );
 }

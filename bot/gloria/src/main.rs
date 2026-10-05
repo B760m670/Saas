@@ -196,7 +196,7 @@ fn run(deps: &Deps<'_>, store: &mut Store) {
         // застрявший бот не поможет никому.
         offset = next_offset(&batch, offset);
 
-        sync_panel(deps.panel, store);
+        sync_panel(deps.config, deps.panel, store);
         remind(deps, store);
     }
 }
@@ -360,8 +360,14 @@ const SYNC_PER_ROUND: i64 = 20;
 ///
 /// Гасить просроченных не нужно: панель меняет статусы сама по той дате,
 /// которая у неё записана.
-fn sync_panel(panel: &Panel, store: &mut Store) {
-    let work = match store.panel_work(SYNC_PER_ROUND, unix_now()) {
+///
+/// Кроме случая, когда включён бесплатный доступ (`GLORIA_FREE_SQUADS`).
+/// Тогда гасит бот: просроченному оставляет одни бесплатные отряды и далёкую
+/// дату в панели, чтобы та его не погасила. Что именно везти — решает
+/// [`panel_plan`].
+fn sync_panel(config: &Config, panel: &Panel, store: &mut Store) {
+    let with_free = config.free_enabled();
+    let work = match store.panel_work(SYNC_PER_ROUND, unix_now(), with_free) {
         Ok(work) => work,
         Err(error) => {
             eprintln!("Очередь панели: {error}");
@@ -370,8 +376,25 @@ fn sync_panel(panel: &Panel, store: &mut Store) {
     };
 
     for item in work {
-        let request =
-            panel.set_expiry(item.panel_id, item.expires_at, traffic_limit(item.has_paid));
+        let plan = panel_plan(config, &item);
+        let request = match &plan {
+            Plan::Expiry {
+                expires_at,
+                traffic,
+            } => Ok(panel.set_expiry(item.panel_id, *expires_at, *traffic)),
+            Plan::Squads {
+                expires_at,
+                traffic,
+                squads,
+            } => panel.set_plan(item.panel_id, *expires_at, *traffic, squads),
+        };
+        let request = match request {
+            Ok(request) => request,
+            Err(error) => {
+                eprintln!("Панель для {}: {error}", item.telegram_id);
+                continue;
+            }
+        };
         let response = match http::send(&request) {
             Ok(response) => response,
             Err(error) => {
@@ -408,9 +431,80 @@ fn sync_panel(panel: &Panel, store: &mut Store) {
 
         // Отметка ставится только после ответа панели. Ставить её заранее
         // значило бы считать потерянный запрос выполненным.
-        if let Err(error) = store.mark_panel_synced(item.telegram_id, item.expires_at) {
+        let marked = if item.lapsed {
+            println!(
+                "Подписка {} закончилась: оставлен бесплатный доступ",
+                item.telegram_id
+            );
+            store.mark_panel_free(item.telegram_id, item.expires_at, FREE_UNTIL)
+        } else {
+            store.mark_panel_synced(item.telegram_id, item.expires_at, with_free)
+        };
+        if let Err(error) = marked {
             eprintln!("Отметка о панели для {}: {error}", item.telegram_id);
         }
+    }
+}
+
+/// Дата, которую панель видит у человека на бесплатном доступе.
+///
+/// Далёкая, чтобы панель его не гасила: гасит теперь бот — отрядами. Наша
+/// настоящая дата остаётся у нас, в панель она не едет.
+///
+/// 31.12.2099. Конкретное число неважно, важно, что до него никто не
+/// доживёт и что оно больше [`FREE_MARK`].
+const FREE_UNTIL: i64 = 4_102_358_400;
+
+/// Даты панели не раньше этой — метка бесплатного доступа, а не срок.
+///
+/// 01.01.2099. Сверка с панелью принимает ручные правки срока за истину —
+/// и далёкую дату бесплатного доступа приняла бы так же, подарив человеку
+/// подписку до конца века. Всё, что не раньше этой даты, сверка за правку не
+/// считает.
+const FREE_MARK: i64 = 4_070_908_800;
+
+/// Что везти в панель об одном человеке.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Plan {
+    /// Одну дату с потолком трафика — как было до бесплатного доступа.
+    Expiry { expires_at: i64, traffic: u64 },
+    /// Дату, потолок и отряды одним запросом.
+    Squads {
+        expires_at: i64,
+        traffic: u64,
+        squads: Vec<String>,
+    },
+}
+
+/// Решить, что везти. Чистая функция: здесь всё, что стоит проверять тестом.
+///
+/// - Бесплатный доступ выключен — одна дата, как раньше.
+/// - Подписка идёт — дата, потолок пробы и **платные вместе с бесплатными**
+///   отряды ([`Config::paid_squads`]).
+/// - Подписка кончилась — далёкая дата, потолка нет, **одни бесплатные**
+///   отряды. Потолка нет намеренно: проба на пять гигабайт, израсходованная
+///   до дна, иначе отрезала бы человека и от бесплатного сервера, а он
+///   открывает только Telegram и кабинет.
+fn panel_plan(config: &Config, item: &atlas_store::PanelWork) -> Plan {
+    if !config.free_enabled() {
+        return Plan::Expiry {
+            expires_at: item.expires_at,
+            traffic: traffic_limit(item.has_paid),
+        };
+    }
+
+    if item.lapsed {
+        return Plan::Squads {
+            expires_at: FREE_UNTIL,
+            traffic: 0,
+            squads: config.free_squads.clone(),
+        };
+    }
+
+    Plan::Squads {
+        expires_at: item.expires_at,
+        traffic: traffic_limit(item.has_paid),
+        squads: config.paid_squads(),
     }
 }
 
@@ -517,7 +611,9 @@ fn worth_asking(subscriber: &Subscriber, now: i64) -> bool {
 /// тестом, — остальное вокруг только возит байты.
 fn decide(subscriber: &Subscriber, user: &atlas_panel::User) -> Verdict {
     let known = subscriber.panel_expires_at.unwrap_or(0);
-    let same_date = (user.expires_at - known).abs() < PANEL_DRIFT;
+    // Далёкая дата бесплатного доступа — не правка срока, а метка: её
+    // поставил сам бот. Принять её значило бы подарить подписку до 2099 года.
+    let same_date = (user.expires_at - known).abs() < PANEL_DRIFT || user.expires_at >= FREE_MARK;
     let same_link = subscriber.subscription_url.as_deref() == Some(user.subscription_url.as_str())
         && subscriber.panel_id == Some(user.id);
 
@@ -574,7 +670,7 @@ fn apply_verdict(store: &mut Store, subscriber: &mut Subscriber, verdict: Verdic
             }
 
             let known = subscriber.panel_expires_at.unwrap_or(0);
-            if (expires_at - known).abs() < PANEL_DRIFT {
+            if (expires_at - known).abs() < PANEL_DRIFT || expires_at >= FREE_MARK {
                 return;
             }
 
@@ -1935,7 +2031,7 @@ fn ensure_panel_user(
         .create(&NewUser {
             telegram_id,
             expires_at,
-            squads: config.squads.clone(),
+            squads: config.paid_squads(),
             device_limit: catalog::DEVICES,
             traffic_limit: traffic_limit(has_paid),
         })
@@ -2121,7 +2217,7 @@ fn excerpt(body: &[u8]) -> String {
 
 #[cfg(test)]
 mod reconcile_tests {
-    use super::{decide, worth_asking, Verdict, PANEL_DRIFT};
+    use super::{decide, worth_asking, Verdict, FREE_MARK, FREE_UNTIL, PANEL_DRIFT};
     use atlas_store::Subscriber;
 
     const DAY: i64 = 86_400;
@@ -2209,6 +2305,36 @@ mod reconcile_tests {
     #[test]
     fn a_settled_subscriber_is_worth_asking_about() {
         assert!(worth_asking(&settled(), NOW));
+    }
+
+    /// Далёкую дату бесплатного доступа поставил сам бот. Принять её за
+    /// ручное продление значило бы подарить человеку подписку до 2099 года —
+    /// в том числе если отметка о бесплатном доступе не успела записаться.
+    #[test]
+    fn the_free_plan_date_is_never_taken_for_a_renewal() {
+        let mut subscriber = settled();
+        subscriber.expires_at = Some(NOW - DAY);
+        subscriber.panel_expires_at = Some(NOW - DAY);
+        for panel_date in [FREE_MARK, FREE_UNTIL, FREE_UNTIL + DAY] {
+            assert!(
+                matches!(decide(&subscriber, &in_panel(panel_date)), Verdict::Same),
+                "дата {panel_date} принята за продление"
+            );
+        }
+    }
+
+    /// А настоящее ручное продление бесплатного человека по-прежнему
+    /// принимается: владелец продлил в панели — очередь вернёт платное.
+    #[test]
+    fn a_real_renewal_of_a_free_person_is_still_adopted() {
+        let mut subscriber = settled();
+        subscriber.expires_at = Some(NOW - DAY);
+        subscriber.panel_expires_at = Some(FREE_UNTIL);
+        let verdict = decide(&subscriber, &in_panel(NOW + 30 * DAY));
+        assert!(
+            matches!(verdict, Verdict::Differs { expires_at, .. } if expires_at == NOW + 30 * DAY),
+            "ручное продление не замечено"
+        );
     }
 
     /// Совпало — записывать нечего.
@@ -2354,5 +2480,97 @@ mod fee_tests {
         assert!(note.contains("6%"), "{note}");
         assert!(note.contains("210,94"), "{note}");
         assert!(fee_note(price, 650).contains("6,5%"));
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::{panel_plan, traffic_limit, Plan, FREE_MARK, FREE_UNTIL};
+    use crate::config::{Config, FREE_SQUADS};
+    use atlas_store::PanelWork;
+    use std::collections::HashMap;
+
+    const NOW: i64 = 1_788_861_600;
+    const PAID: &str = "b6f5d810-8ef3-4be9-9012-3456789abcde";
+    const FREE: &str = "0a0b0c0d-0000-4000-8000-000000000001";
+
+    fn config(free: bool) -> Option<Config> {
+        let mut vars: HashMap<String, String> = [
+            ("GLORIA_BOT_TOKEN", "123456:AAHkTestToken"),
+            ("GLORIA_PANEL_URL", "https://panel.example.org"),
+            ("GLORIA_PANEL_TOKEN", "panel-token"),
+            ("GLORIA_DATABASE_URL", "postgres://gloria@localhost/gloria"),
+            ("GLORIA_SQUADS", PAID),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        if free {
+            vars.insert(FREE_SQUADS.to_owned(), FREE.to_owned());
+        }
+        let config = Config::from_map(&vars);
+        assert!(config.is_ok(), "настройки не собрались");
+        config.ok()
+    }
+
+    fn work(lapsed: bool, has_paid: bool) -> PanelWork {
+        PanelWork {
+            telegram_id: 42,
+            panel_id: 7,
+            expires_at: NOW,
+            has_paid,
+            lapsed,
+        }
+    }
+
+    #[test]
+    fn the_far_date_is_past_the_mark() {
+        const { assert!(FREE_UNTIL > FREE_MARK) };
+    }
+
+    /// Бесплатный доступ выключен — в панель едет одна дата, как раньше.
+    #[test]
+    fn without_the_free_plan_only_the_date_travels() {
+        let Some(config) = config(false) else { return };
+        assert_eq!(
+            panel_plan(&config, &work(false, true)),
+            Plan::Expiry {
+                expires_at: NOW,
+                traffic: 0
+            }
+        );
+    }
+
+    /// Подписка идёт — платные и бесплатные отряды вместе, и потолок пробы,
+    /// если это проба.
+    #[test]
+    fn a_running_subscription_gets_paid_and_free_squads() {
+        let Some(config) = config(true) else { return };
+        let plan = panel_plan(&config, &work(false, false));
+        assert_eq!(
+            plan,
+            Plan::Squads {
+                expires_at: NOW,
+                traffic: traffic_limit(false),
+                squads: vec![PAID.to_owned(), FREE.to_owned()],
+            }
+        );
+    }
+
+    /// Кончилась — одни бесплатные отряды, далёкая дата и никакого потолка:
+    /// израсходованная проба не должна отрезать человека от бесплатного
+    /// сервера, по которому он придёт продлевать.
+    #[test]
+    fn a_lapsed_subscription_keeps_only_the_free_squads() {
+        let Some(config) = config(true) else { return };
+        let plan = panel_plan(&config, &work(true, false));
+        assert_eq!(
+            plan,
+            Plan::Squads {
+                expires_at: FREE_UNTIL,
+                traffic: 0,
+                squads: vec![FREE.to_owned()],
+            }
+        );
     }
 }

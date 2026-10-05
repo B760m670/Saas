@@ -40,6 +40,14 @@ pub struct Config {
     pub database_url: String,
     /// Отряды, в которые попадает новый пользователь панели.
     pub squads: Vec<String>,
+    /// Бесплатные отряды: остаются у человека и после окончания подписки.
+    ///
+    /// Пусто — бесплатного доступа нет, и по окончании срока человека гасит
+    /// панель, как раньше. Задано — гасит бот: по нашей дате оставляет
+    /// человеку только эти отряды, а в панели держит его живым. Платные
+    /// серверы перестают работать, бесплатный (обычно — только Telegram и
+    /// кабинет) остаётся, и человеку есть чем зайти в бота и продлить.
+    pub free_squads: Vec<String>,
     /// Кому разрешены админские действия.
     pub admins: Vec<i64>,
     /// Ссылка на перевод — та, что стоит за QR-кодом в банковском
@@ -98,6 +106,7 @@ impl core::fmt::Debug for Config {
             .field("panel_token", &"<скрыт>")
             .field("database_url", &"<скрыт>")
             .field("squads", &self.squads.len())
+            .field("бесплатные отряды", &self.free_squads.len())
             .field("admins", &self.admins.len())
             .field("мини-приложение", &self.api_addr)
             .field("принимает переводы", &self.accepts_transfers())
@@ -115,6 +124,7 @@ pub const PANEL_URL: &str = "GLORIA_PANEL_URL";
 pub const PANEL_TOKEN: &str = "GLORIA_PANEL_TOKEN";
 pub const DATABASE_URL: &str = "GLORIA_DATABASE_URL";
 pub const SQUADS: &str = "GLORIA_SQUADS";
+pub const FREE_SQUADS: &str = "GLORIA_FREE_SQUADS";
 pub const ADMINS: &str = "GLORIA_ADMINS";
 pub const PAY_LINK: &str = "GLORIA_PAY_LINK";
 pub const MANUAL_TRANSFER: &str = "GLORIA_MANUAL_TRANSFER";
@@ -169,22 +179,36 @@ impl Config {
             });
         }
 
-        let squads: Vec<String> = vars
-            .get(SQUADS)
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|part| !part.is_empty())
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let squads = list(vars, SQUADS);
 
         if squads.is_empty() {
             return Err(Error::Invalid {
                 name: SQUADS,
                 why: "без отряда пользователь заведётся, но ходить ему будет некуда",
+            });
+        }
+
+        let free_squads = list(vars, FREE_SQUADS);
+
+        // Идентификатор уходит в тело запроса к панели. Проверка там тоже
+        // есть, но узнать о негодном значении при запуске лучше, чем в момент,
+        // когда у человека кончилась подписка и бот не смог её погасить.
+        if free_squads
+            .iter()
+            .any(|squad| !squad.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+        {
+            return Err(Error::Invalid {
+                name: FREE_SQUADS,
+                why: "UUID отрядов через запятую",
+            });
+        }
+
+        // Бесплатный отряд, стоящий и в платных, означал бы, что платные
+        // серверы остаются у человека и после окончания подписки.
+        if free_squads.iter().any(|squad| squads.contains(squad)) {
+            return Err(Error::Invalid {
+                name: FREE_SQUADS,
+                why: "бесплатный отряд не может быть и в GLORIA_SQUADS: платное осталось бы у всех навсегда",
             });
         }
 
@@ -293,6 +317,7 @@ impl Config {
             panel_token: get(PANEL_TOKEN)?,
             database_url: get(DATABASE_URL)?,
             squads,
+            free_squads,
             admins,
             pay_link,
             manual_transfer,
@@ -364,6 +389,28 @@ impl Config {
             Some(key) => service.with_api_key(key),
             None => Some(service),
         }
+    }
+
+    /// Включён ли бесплатный доступ после окончания подписки.
+    #[must_use]
+    pub fn free_enabled(&self) -> bool {
+        !self.free_squads.is_empty()
+    }
+
+    /// Отряды человека с действующей подпиской: платные и бесплатные вместе.
+    ///
+    /// Бесплатные стоят и у платящего. Иначе в день окончания подписки
+    /// бесплатный сервер появлялся бы у него в списке впервые — ровно тогда,
+    /// когда искать его некогда.
+    #[must_use]
+    pub fn paid_squads(&self) -> Vec<String> {
+        let mut all = self.squads.clone();
+        for squad in &self.free_squads {
+            if !all.contains(squad) {
+                all.push(squad.clone());
+            }
+        }
+        all
     }
 
     /// Разрешены ли этому человеку админские действия.
@@ -480,12 +527,26 @@ fn optional(vars: &HashMap<String, String>, name: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Список через запятую: пробелы по краям и пустые части отбрасываются.
+fn list(vars: &HashMap<String, String>, name: &str) -> Vec<String> {
+    vars.get(name)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, FREEKASSA_API_KEY, FREEKASSA_FORM_SECRET,
-        FREEKASSA_MERCHANT, FREEKASSA_NOTICE_SECRET, MANUAL_TRANSFER, PANEL_TOKEN, PANEL_URL,
-        PAY_LINK, SERVER_IP, SQUADS,
+        FREEKASSA_MERCHANT, FREEKASSA_NOTICE_SECRET, FREE_SQUADS, MANUAL_TRANSFER, PANEL_TOKEN,
+        PANEL_URL, PAY_LINK, SERVER_IP, SQUADS,
     };
     use std::collections::HashMap;
 
@@ -621,6 +682,65 @@ mod tests {
             return;
         };
         assert_eq!(config.squads, vec!["aaa", "bbb", "ccc"]);
+    }
+
+    #[test]
+    fn the_free_plan_is_off_unless_asked_for() {
+        let Ok(config) = Config::from_map(&full()) else {
+            return;
+        };
+        assert!(!config.free_enabled());
+        assert_eq!(config.paid_squads(), config.squads);
+    }
+
+    #[test]
+    fn free_squads_ride_along_with_the_paid_ones() {
+        let mut vars = full();
+        vars.insert(
+            FREE_SQUADS.to_owned(),
+            "0a0b0c0d-0000-4000-8000-000000000001".to_owned(),
+        );
+        let config = Config::from_map(&vars);
+        assert!(config.is_ok(), "бесплатный отряд не принят");
+        let Ok(config) = config else { return };
+        assert!(config.free_enabled());
+        assert_eq!(
+            config.paid_squads(),
+            vec![
+                "b6f5d810-8ef3-4be9-9012-3456789abcde",
+                "0a0b0c0d-0000-4000-8000-000000000001"
+            ]
+        );
+    }
+
+    /// Бесплатный отряд среди платных — платное у всех навсегда.
+    #[test]
+    fn a_free_squad_may_not_also_be_paid() {
+        let mut vars = full();
+        vars.insert(
+            FREE_SQUADS.to_owned(),
+            "b6f5d810-8ef3-4be9-9012-3456789abcde".to_owned(),
+        );
+        assert!(matches!(
+            Config::from_map(&vars),
+            Err(Error::Invalid {
+                name: FREE_SQUADS,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_malformed_free_squad_is_refused() {
+        let mut vars = full();
+        vars.insert(FREE_SQUADS.to_owned(), r#"x","status":"ADMIN"#.to_owned());
+        assert!(matches!(
+            Config::from_map(&vars),
+            Err(Error::Invalid {
+                name: FREE_SQUADS,
+                ..
+            })
+        ));
     }
 
     #[test]
