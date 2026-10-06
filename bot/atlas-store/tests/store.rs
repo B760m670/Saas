@@ -1751,20 +1751,3 @@ fn extending_a_stranger_changes_nothing() {
         Some(Extended::NoSuchUser)
     );
 }
-
-/// Перевыпуск оставляет след. Запрет удалять журнал проверяют сторожа
-/// схемы (`db/tests/invariants.sql`): удаления в хранилище нет вовсе.
-#[test]
-fn a_reissue_is_logged() {
-    let Some((mut store, _lock)) = store() else {
-        return;
-    };
-    subscriber(&mut store, 42);
-    let _ = store.admin_note_reissue(1001, 42);
-
-    let Ok(Some(card)) = store.admin_card(42) else {
-        return;
-    };
-    assert_eq!(card.log.len(), 1);
-    assert_eq!(card.log.first().map(|e| e.action.as_str()), Some("reissue"));
-}

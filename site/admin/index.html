@@ -122,7 +122,6 @@ button:disabled { opacity: 0.45; }
       <div class="actions">
         <button data-days="7">+7 дней</button>
         <button data-days="30">+30 дней</button>
-        <button id="reissue">Новая ссылка</button>
       </div>
       <form id="extend-form" style="margin-top: 8px">
         <input id="extend-days" inputmode="numeric" pattern="[0-9]*" placeholder="другой срок, дней" autocomplete="off">
@@ -305,16 +304,6 @@ button:disabled { opacity: 0.45; }
       return;
     }
     extend(days);
-  });
-
-  document.getElementById('reissue').addEventListener('click', function () {
-    if (!current) return;
-    confirmThen('Выдать ' + current + ' новую ссылку? Старая перестанет работать сразу.', function () {
-      api('POST', 'user/' + current + '/reissue').then(function () {
-        toast('Ссылка перевыпущена');
-        return loadUser(current);
-      }).catch(function (e) { toast('Не вышло: ' + e.message); });
-    });
   });
 
   document.getElementById('find').addEventListener('submit', function (event) {

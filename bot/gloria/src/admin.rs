@@ -18,7 +18,6 @@
 //! GET  /api/admin/summary                  сводка
 //! GET  /api/admin/user/<номер>             карточка покупателя
 //! POST /api/admin/user/<номер>/extend/<дней>  продлить руками
-//! POST /api/admin/user/<номер>/reissue     перевыпустить ссылку
 //! ```
 //!
 //! Всё, что меняет состояние, — только `POST`: ссылкой из чата или
@@ -34,7 +33,6 @@ pub(crate) enum Route {
     Summary,
     Card(i64),
     Extend(i64, u32),
-    Reissue(i64),
 }
 
 /// Разобрать путь и способ. Чистая функция: всё, что стоит проверить
@@ -50,7 +48,6 @@ pub(crate) fn route(method: &str, path: &str) -> Result<Route, (u16, &'static st
     let (route, wants) = match parts.as_slice() {
         ["summary"] => (Route::Summary, "GET"),
         ["user", id] => (Route::Card(telegram_id(id)?), "GET"),
-        ["user", id, "reissue"] => (Route::Reissue(telegram_id(id)?), "POST"),
         ["user", id, "extend", days] => {
             let days = days
                 .parse::<u32>()
@@ -128,20 +125,6 @@ fn run(shared: &Shared, admin_id: i64, route: Route, now: i64) -> Result<String,
             }
 
             Ok(serde_json::json!({ "expiresAt": day_month_year(expires_at) }).to_string())
-        }
-
-        Route::Reissue(id) => {
-            crate::reissue_for(&shared.panel, &shared.store, id).map_err(|error| {
-                eprintln!("Админка, перевыпуск для {id}: {error}");
-                (502, "панель не ответила".to_owned())
-            })?;
-            // Запись — после удачного ответа панели: запись о
-            // несостоявшемся перевыпуске врала бы.
-            if let Err(error) = lock(shared)?.admin_note_reissue(admin_id, id) {
-                eprintln!("Админка, запись перевыпуска для {id}: {error}");
-            }
-            println!("Админка: {admin_id} перевыпустил ссылку {id}");
-            Ok(serde_json::json!({ "ok": true }).to_string())
         }
     }
 }
@@ -222,10 +205,6 @@ mod tests {
             route("POST", "/api/admin/user/42/extend/30"),
             Ok(Route::Extend(42, 30))
         );
-        assert_eq!(
-            route("POST", "/api/admin/user/42/reissue"),
-            Ok(Route::Reissue(42))
-        );
     }
 
     /// Меняющее состояние — только POST: ссылкой из чата или предзагрузкой
@@ -234,10 +213,6 @@ mod tests {
     fn a_change_needs_post_and_a_look_needs_get() {
         assert!(matches!(
             route("GET", "/api/admin/user/42/extend/30"),
-            Err((405, _))
-        ));
-        assert!(matches!(
-            route("GET", "/api/admin/user/42/reissue"),
             Err((405, _))
         ));
         assert!(matches!(route("POST", "/api/admin/summary"), Err((405, _))));
@@ -272,6 +247,7 @@ mod tests {
         for path in [
             "/api/admin/",
             "/api/admin/users",
+            "/api/admin/user/42/reissue",
             "/api/admin/user/42/delete",
         ] {
             assert!(matches!(route("GET", path), Err((404, _))), "{path}");

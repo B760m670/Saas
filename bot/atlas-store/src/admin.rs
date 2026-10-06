@@ -258,19 +258,6 @@ impl Store {
         Ok(Extended::Until(expires_at))
     }
 
-    /// Записать в журнал перевыпуск ссылки.
-    ///
-    /// Сам перевыпуск идёт в панели, и транзакции на двоих у них нет. Поэтому
-    /// запись делается **после** удачного ответа панели: запись о
-    /// несостоявшемся перевыпуске врала бы.
-    pub fn admin_note_reissue(&mut self, admin_id: i64, telegram_id: i64) -> Result<(), Error> {
-        self.client.execute(
-            "INSERT INTO admin_log (admin_id, action, target_id) VALUES ($1, 'reissue', $2)",
-            &[&admin_id, &telegram_id],
-        )?;
-        Ok(())
-    }
-
     /// Оплаты: все или одного человека, свежие первыми.
     fn payments_where(
         &mut self,
