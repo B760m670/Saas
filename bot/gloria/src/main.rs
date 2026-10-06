@@ -10,6 +10,7 @@
 
 #![forbid(unsafe_code)]
 
+mod admin;
 mod api;
 mod config;
 mod http;
@@ -244,6 +245,7 @@ fn announce(config: &Config, telegram: &Telegram) {
             Command::new("pending", "открытые счета"),
             Command::new("ok", "подтвердить оплату по сумме"),
             Command::new("revoke", "перевыпустить ссылку человеку"),
+            Command::new("admin", "админка"),
         ]);
 
         for admin in &config.admins {
@@ -748,6 +750,9 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
     // Админские команды идут в обход обычного разговора: они не про
     // подписку, а про чужие платежи, и показывать их всем нельзя.
     if let Incoming::Message { text, .. } = incoming {
+        if config.is_admin(telegram_id) && is_command(text, "/admin") {
+            return open_admin(config, telegram, incoming.chat());
+        }
         if config.is_admin(telegram_id) {
             if let Some(answer) = admin(telegram, panel, store, text, now)? {
                 let request = telegram
@@ -1296,6 +1301,52 @@ fn apply(
 /// Подтверждение вручную — то, чем рублёвый канал живёт, пока не одобрен
 /// процессинг: банк не сообщает программе о зачислении, знает о нём только
 /// владелец счёта.
+/// Это команда `name` — с упоминанием бота или без (`/admin@gloria_bot`).
+fn is_command(text: &str, name: &str) -> bool {
+    text.split_whitespace()
+        .next()
+        .and_then(|word| word.split('@').next())
+        == Some(name)
+}
+
+/// Адрес админки: тот же сайт, что у кабинета, папка `admin/`.
+///
+/// Параметры и якорь кабинета отбрасываются: они про кабинет, и админке
+/// достались бы чужими.
+fn admin_url(miniapp_url: &str) -> String {
+    let base = miniapp_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(miniapp_url)
+        .trim_end_matches('/');
+    format!("{base}/admin/")
+}
+
+/// Ответить владельцу кнопкой, открывающей админку.
+///
+/// Кнопкой мини-приложения, а не ссылкой: только так страница получает
+/// подпись Telegram, по которой сервер узнаёт владельца. Ссылка открылась бы
+/// браузером, без подписи, и сервер справедливо отказал бы.
+fn open_admin(config: &Config, telegram: &Telegram, chat: i64) -> Result<(), String> {
+    let (text, keyboard) = match &config.miniapp_url {
+        Some(url) => (
+            "⚙️ Админка",
+            Some(Keyboard {
+                rows: vec![vec![Button::app("Открыть админку", &admin_url(url), "")]],
+            }),
+        ),
+        None => (
+            "Админке нужен адрес кабинета: задайте GLORIA_MINIAPP_URL.",
+            None,
+        ),
+    };
+    let request = telegram
+        .send_message(chat, text, keyboard.as_ref())
+        .map_err(|error| format!("сообщение: {error}"))?;
+    http::send(&request).map_err(|error| format!("отправка: {error}"))?;
+    Ok(())
+}
+
 fn admin(
     telegram: &Telegram,
     panel: &Panel,
@@ -2572,5 +2623,37 @@ mod plan_tests {
                 squads: vec![FREE.to_owned()],
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod admin_url_tests {
+    use super::{admin_url, is_command};
+
+    #[test]
+    fn the_admin_lives_next_to_the_cabinet() {
+        for (cabinet, admin) in [
+            ("https://gloria.example", "https://gloria.example/admin/"),
+            ("https://gloria.example/", "https://gloria.example/admin/"),
+            (
+                "https://gloria.example/?v=3",
+                "https://gloria.example/admin/",
+            ),
+            (
+                "https://gloria.example/#home",
+                "https://gloria.example/admin/",
+            ),
+        ] {
+            assert_eq!(admin_url(cabinet), admin, "{cabinet}");
+        }
+    }
+
+    #[test]
+    fn the_command_is_recognised_with_and_without_the_bot_name() {
+        assert!(is_command("/admin", "/admin"));
+        assert!(is_command("/admin@gloria_bot", "/admin"));
+        assert!(is_command("  /admin  ", "/admin"));
+        assert!(!is_command("/administrator", "/admin"));
+        assert!(!is_command("admin", "/admin"));
     }
 }

@@ -191,6 +191,18 @@ SELECT must_fail(
     $q$UPDATE users SET panel_plan = 'gold' WHERE telegram_id = 1002$q$,
     'неизвестный план в панели');
 
+-- --- журнал админки: не удаляется и не принимает выдуманного -------------
+
+INSERT INTO admin_log (admin_id, action, target_id, detail) VALUES (1, 'extend', 1001, '30');
+
+SELECT must_fail($q$DELETE FROM admin_log$q$, 'удаление журнала админки');
+SELECT must_fail(
+    $q$INSERT INTO admin_log (admin_id, action, target_id) VALUES (1, 'drop_all', 1001)$q$,
+    'неизвестное действие в журнале');
+SELECT must_fail(
+    $q$INSERT INTO admin_log (admin_id, action, target_id) VALUES (1, 'extend', 999999)$q$,
+    'запись о несуществующем покупателе');
+
 -- --- итог ------------------------------------------------------------------
 
 DO $$ BEGIN RAISE NOTICE 'все сторожа сработали'; END $$;

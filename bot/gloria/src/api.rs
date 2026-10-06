@@ -127,7 +127,7 @@ pub fn spawn(config: &Config) -> Result<(), String> {
 #[derive(Clone)]
 pub(crate) struct Shared {
     pub(crate) store: Arc<Mutex<Store>>,
-    panel: Panel,
+    pub(crate) panel: Panel,
     wata: Option<Wata>,
     yookassa: Option<YooKassa>,
     pub(crate) freekassa: Option<atlas_billing::Freekassa>,
@@ -176,6 +176,12 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     }
     if request.path == "/api/pay/freekassa" {
         return freekassa_notice(shared, &mut stream, &request);
+    }
+
+    // Админка. Своя ветка: пути, способы и вторая проверка — номер из
+    // подписи обязан быть в списке владельцев.
+    if request.path.starts_with("/api/admin/") {
+        return admin_request(shared, &mut stream, &request);
     }
 
     // Счёт из кабинета. Тариф — в пути, а не в теле: разбирать JSON ради
@@ -311,6 +317,35 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     };
 
     send(&mut stream, 200, &body)
+}
+
+/// Запрос админки.
+///
+/// Порядок проверок важен. Сначала путь — неизвестному отвечаем «нет», не
+/// глядя на подпись. Потом подпись Telegram — та же, что у кабинета. Потом
+/// список владельцев. Отказ на последнем шаге — `404`, а не `403`: чужому
+/// незачем знать, что админка здесь вообще есть.
+fn admin_request(shared: &Shared, stream: &mut TcpStream, request: &Request) -> Result<(), String> {
+    let route = match crate::admin::route(&request.method, &request.path) {
+        Ok(route) => route,
+        Err((status, body)) => return send(stream, status, body),
+    };
+
+    let Some(raw) = request.init_data.as_deref() else {
+        return send(stream, 401, r#"{"error":"нет подписи Telegram"}"#);
+    };
+    let now = crate::unix_now();
+    let Ok(verified) = telegram_init::verify(raw, &shared.bot_token, now, INIT_DATA_MAX_AGE) else {
+        return send(stream, 401, r#"{"error":"подпись не принята"}"#);
+    };
+
+    if !shared.admins.contains(&verified.user_id()) {
+        eprintln!("Админка: отказ {}", verified.user_id());
+        return send(stream, 404, r#"{"error":"нет такого пути"}"#);
+    }
+
+    let (status, body) = crate::admin::answer(shared, verified.user_id(), route, now);
+    send(stream, status, &body)
 }
 
 /// Уведомление ЮKassa о платеже.
@@ -924,7 +959,9 @@ fn send(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
+        403 => "Forbidden",
         405 => "Method Not Allowed",
+        502 => "Bad Gateway",
         _ => "Internal Server Error",
     };
 

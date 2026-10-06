@@ -30,6 +30,10 @@ use atlas_billing::money::{Currency, Money};
 use atlas_billing::subscription;
 use postgres::{Client, NoTls, Row, Transaction};
 
+mod admin;
+
+pub use admin::{Card, Extended, LogEntry, Payment, Summary, MAX_MANUAL_DAYS};
+
 /// Отказ при работе с хранилищем.
 #[derive(Debug)]
 pub enum Error {

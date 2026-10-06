@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Gloria · админка</title>
+<meta name="robots" content="noindex, nofollow">
+<!-- `async` по той же причине, что в кабинете: telegram.org из России
+     достаётся не всегда, и блокирующий тег подвесил бы страницу. -->
+<script async id="tg-sdk" src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+/* Палитра — кабинета (site/index.html): админка выглядит частью того же
+   сервиса, а не чужой панелью. */
+:root {
+  color-scheme: dark;
+  --mid:   #ee982e;
+  --bg:    #060507;
+  --card:  rgba(255, 236, 190, 0.045);
+  --card-2: rgba(255, 236, 190, 0.075);
+  --line:  rgba(255, 236, 190, 0.10);
+  --line-2: rgba(255, 236, 190, 0.18);
+  --text:  #f3ece1;
+  --muted: #9c9083;
+  --ok:    #4fbf8b;
+  --bad:   #e5544b;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; touch-action: pan-x pan-y; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+  max-width: 640px;
+  margin: 0 auto;
+}
+h1 { font-size: 20px; margin: 4px 0 16px; letter-spacing: -0.01em; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 24px 0 8px; font-weight: 600; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stat .n { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat .l { color: var(--muted); font-size: 13px; }
+.stat.wide { grid-column: span 2; }
+.rows > div {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 8px 0; border-top: 1px solid var(--line);
+}
+.rows > div:first-child { border-top: 0; }
+.rows .k { color: var(--muted); }
+.rows .v { text-align: right; overflow-wrap: anywhere; }
+.empty { color: var(--muted); }
+form { display: flex; gap: 8px; }
+input {
+  flex: 1; min-width: 0;
+  background: var(--card-2); color: var(--text);
+  border: 1px solid var(--line-2); border-radius: 12px;
+  padding: 11px 12px; font: inherit;
+}
+input:focus { outline: none; border-color: var(--mid); }
+button {
+  background: var(--card-2); color: var(--text);
+  border: 1px solid var(--line-2); border-radius: 12px;
+  padding: 11px 14px; font: inherit; font-weight: 600; cursor: pointer;
+}
+button.main { background: var(--mid); color: #1b0d03; border-color: var(--mid); }
+button:disabled { opacity: 0.45; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+.pill.active { background: rgba(79, 191, 139, 0.16); color: var(--ok); }
+.pill.trial  { background: rgba(238, 152, 46, 0.16); color: var(--mid); }
+.pill.expired, .pill.never { background: rgba(229, 84, 75, 0.14); color: var(--bad); }
+#gate { text-align: center; color: var(--muted); padding: 48px 8px; }
+#toast {
+  position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom));
+  transform: translateX(-50%) translateY(20px); opacity: 0;
+  background: #1a1410; border: 1px solid var(--line-2); border-radius: 12px;
+  padding: 10px 14px; transition: 0.25s; pointer-events: none; max-width: 90vw;
+}
+#toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="gate">Загружаем…</div>
+
+<main id="app" hidden>
+  <h1>⚙️ Админка</h1>
+
+  <h2>Покупатели</h2>
+  <div class="grid">
+    <div class="card stat"><div class="n" id="s-paid">—</div><div class="l">платят</div></div>
+    <div class="card stat"><div class="n" id="s-trial">—</div><div class="l">на пробе</div></div>
+    <div class="card stat"><div class="n" id="s-expired">—</div><div class="l">истекли</div></div>
+    <div class="card stat"><div class="n" id="s-users">—</div><div class="l">всего в боте</div></div>
+  </div>
+
+  <h2>Деньги</h2>
+  <div class="grid">
+    <div class="card stat"><div class="n" id="s-today">—</div><div class="l" id="s-today-n">сегодня</div></div>
+    <div class="card stat"><div class="n" id="s-month">—</div><div class="l" id="s-month-n">с начала месяца</div></div>
+  </div>
+
+  <h2>Последние оплаты</h2>
+  <div class="card rows" id="recent"></div>
+
+  <h2>Покупатель</h2>
+  <form id="find">
+    <input id="find-id" inputmode="numeric" pattern="[0-9]*" placeholder="номер в Telegram" autocomplete="off">
+    <button class="main" type="submit">Найти</button>
+  </form>
+
+  <div id="user" hidden>
+    <div class="card" style="margin-top: 8px">
+      <div class="rows" id="user-rows"></div>
+      <div class="actions">
+        <button data-days="7">+7 дней</button>
+        <button data-days="30">+30 дней</button>
+        <button id="reissue">Новая ссылка</button>
+      </div>
+      <form id="extend-form" style="margin-top: 8px">
+        <input id="extend-days" inputmode="numeric" pattern="[0-9]*" placeholder="другой срок, дней" autocomplete="off">
+        <button type="submit">Продлить</button>
+      </form>
+    </div>
+
+    <h2>Оплаты покупателя</h2>
+    <div class="card rows" id="user-payments"></div>
+
+    <h2>Что делали в админке</h2>
+    <div class="card rows" id="user-log"></div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var tg = null;
+  function connectTelegram() {
+    tg = (window.Telegram && window.Telegram.WebApp) || null;
+    if (!tg) return false;
+    tg.ready();
+    if (tg.expand) tg.expand();
+    return true;
+  }
+
+  /* Каждый запрос несёт подпись Telegram. По ней сервер узнаёт, кто открыл
+     страницу, и сверяет его со списком владельцев. Без подписи — отказ,
+     и страница честно говорит, что открывать её надо из бота. */
+  function api(method, path) {
+    return fetch('/api/admin/' + path, {
+      method: method,
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok) {
+          var error = new Error(body.error || ('код ' + r.status));
+          error.status = r.status;
+          throw error;
+        }
+        return body;
+      });
+    });
+  }
+
+  function toast(text) {
+    var el = document.getElementById('toast');
+    el.textContent = text;
+    el.classList.add('on');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(function () { el.classList.remove('on'); }, 2200);
+  }
+
+  function rub(minor) {
+    var whole = Math.floor((minor || 0) / 100);
+    return whole.toLocaleString('ru-RU') + ' ₽';
+  }
+
+  var PLANS = { d30: '1 мес', d90: '3 мес', d180: '6 мес', d365: '12 мес' };
+  var STATUS = { active: 'платит', trial: 'проба', expired: 'истекла', never: 'без подписки' };
+  var ACTIONS = { extend: 'продление', reissue: 'новая ссылка' };
+
+  /* Строки собираются через textContent, а не innerHTML: в данных бывает
+     то, что пришло извне, и разметкой оно стать не должно. */
+  function row(key, value, node) {
+    var div = document.createElement('div');
+    var k = document.createElement('span');
+    k.className = 'k';
+    k.textContent = key;
+    var v = document.createElement('span');
+    v.className = 'v';
+    if (node) v.appendChild(node); else v.textContent = value;
+    div.appendChild(k);
+    div.appendChild(v);
+    return div;
+  }
+
+  function fill(id, rows, emptyText) {
+    var box = document.getElementById(id);
+    box.textContent = '';
+    if (!rows.length) {
+      var empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = emptyText;
+      box.appendChild(empty);
+      return;
+    }
+    rows.forEach(function (r) { box.appendChild(r); });
+  }
+
+  function paymentRows(list, withUser) {
+    return list.map(function (p) {
+      var who = withUser && p.userId ? ' · ' + p.userId : '';
+      return row(p.at + who, rub(p.amount) + ' · ' + (PLANS[p.plan] || p.plan || '—') + ' · ' + p.provider);
+    });
+  }
+
+  function loadSummary() {
+    return api('GET', 'summary').then(function (s) {
+      document.getElementById('s-paid').textContent = s.activePaid;
+      document.getElementById('s-trial').textContent = s.activeTrial;
+      document.getElementById('s-expired').textContent = s.expired;
+      document.getElementById('s-users').textContent = s.users;
+      document.getElementById('s-today').textContent = rub(s.revenueToday);
+      document.getElementById('s-month').textContent = rub(s.revenueMonth);
+      document.getElementById('s-today-n').textContent = 'сегодня · оплат: ' + s.paymentsToday;
+      document.getElementById('s-month-n').textContent = 'с начала месяца · оплат: ' + s.paymentsMonth;
+      fill('recent', paymentRows(s.recent || [], true), 'Оплат пока не было');
+    });
+  }
+
+  var current = null;
+
+  function showUser(u) {
+    current = u.userId;
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + u.status;
+    pill.textContent = STATUS[u.status] || u.status;
+
+    var rows = [
+      row('Номер', String(u.userId)),
+      row('Состояние', '', pill),
+      row('Срок до', u.expiresAt ? u.expiresAt + (u.daysLeft != null ? ' (дней: ' + u.daysLeft + ')' : '') : '—'),
+      row('В боте с', u.since),
+      row('Проба', u.trialGranted || 'не брал'),
+      row('Отряды в панели', u.panelPlan === 'free' ? 'только бесплатный'
+                            : u.panelPlan === 'paid' ? 'платные + бесплатный'
+                            : (u.inPanel ? 'ещё не отвезены' : 'не заведён в панели')),
+      row('Пригласил', u.invitedBy ? String(u.invitedBy) : '—')
+    ];
+    fill('user-rows', rows, '');
+    fill('user-payments', paymentRows(u.payments || [], false), 'Оплат не было');
+    fill('user-log', (u.log || []).map(function (e) {
+      var what = ACTIONS[e.action] || e.action;
+      if (e.action === 'extend') what += ' +' + e.detail + ' дн.';
+      return row(e.at, what + ' · ' + e.adminId);
+    }), 'Ничего');
+    document.getElementById('user').hidden = false;
+  }
+
+  function loadUser(id) {
+    return api('GET', 'user/' + encodeURIComponent(id)).then(showUser);
+  }
+
+  /* Подтверждение — штатным окном Telegram, если оно есть: системное
+     confirm() внутри мини-приложения на части телефонов не показывается. */
+  function confirmThen(text, action) {
+    if (tg && tg.showConfirm) {
+      tg.showConfirm(text, function (ok) { if (ok) action(); });
+    } else if (window.confirm(text)) {
+      action();
+    }
+  }
+
+  function extend(days) {
+    if (!current) return;
+    confirmThen('Продлить ' + current + ' на ' + days + ' дн.? Ему придёт сообщение.', function () {
+      api('POST', 'user/' + current + '/extend/' + days).then(function (r) {
+        toast('Продлено до ' + r.expiresAt);
+        return Promise.all([loadUser(current), loadSummary()]);
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  }
+
+  document.querySelectorAll('[data-days]').forEach(function (b) {
+    b.addEventListener('click', function () { extend(Number(b.getAttribute('data-days'))); });
+  });
+
+  /* Свой срок — полем, а не окном prompt(): внутри мини-приложения Telegram
+     системное окно ввода на части телефонов не показывается вовсе. */
+  document.getElementById('extend-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var days = Number(document.getElementById('extend-days').value.trim());
+    if (!Number.isInteger(days) || days < 1 || days > 3650) {
+      toast('Нужно целое число от 1 до 3650');
+      return;
+    }
+    extend(days);
+  });
+
+  document.getElementById('reissue').addEventListener('click', function () {
+    if (!current) return;
+    confirmThen('Выдать ' + current + ' новую ссылку? Старая перестанет работать сразу.', function () {
+      api('POST', 'user/' + current + '/reissue').then(function () {
+        toast('Ссылка перевыпущена');
+        return loadUser(current);
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
+  document.getElementById('find').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var id = document.getElementById('find-id').value.trim();
+    if (!/^[0-9]+$/.test(id)) {
+      toast('Номер — одни цифры');
+      return;
+    }
+    loadUser(id).catch(function (e) {
+      document.getElementById('user').hidden = true;
+      toast(e.status === 404 ? 'Такой в бота не заходил' : 'Не вышло: ' + e.message);
+    });
+  });
+
+  function start() {
+    loadSummary().then(function () {
+      document.getElementById('gate').hidden = true;
+      document.getElementById('app').hidden = false;
+    }).catch(function (e) {
+      /* Отказ сервера одинаков для всех, кто не владелец: страница не
+         рассказывает, что здесь админка. */
+      document.getElementById('gate').textContent =
+        e.status === 401 || e.status === 404
+          ? 'Открывайте эту страницу из бота: команда /admin.'
+          : 'Сервер не ответил. Попробуйте ещё раз.';
+    });
+  }
+
+  if (connectTelegram()) {
+    start();
+  } else {
+    var sdk = document.getElementById('tg-sdk');
+    var started = false;
+    if (sdk) {
+      sdk.addEventListener('load', function () {
+        if (!started && connectTelegram()) { started = true; start(); }
+      });
+    }
+    /* Telegram не приехал за пару секунд — запрос без подписи, и страница
+       скажет, откуда её открывать. */
+    setTimeout(function () { if (!started) { started = true; start(); } }, 2500);
+  }
+}());
+</script>
+</body>
+</html>

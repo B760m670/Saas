@@ -14,7 +14,7 @@
 //! проект, базы под рукой может не быть.
 
 use atlas_billing::money::{Currency, Money};
-use atlas_store::{Settled, Store, Trial};
+use atlas_store::{Extended, Settled, Store, Trial, MAX_MANUAL_DAYS};
 
 const DAY: i64 = 86_400;
 const NOW: i64 = 1_760_000_000;
@@ -82,6 +82,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0009_bonuses.sql"),
         "\n",
         include_str!("../../../db/migrations/0010_free_plan.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0011_admin_log.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -1620,4 +1622,149 @@ fn a_transfer_notice_is_only_for_the_owner_of_an_open_order() {
         None,
         "закрытый счёт всё ещё шлёт уведомление"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Админка
+// ---------------------------------------------------------------------------
+
+/// Сводка считает людей по состояниям и деньги — только оплаченные.
+#[test]
+fn the_summary_counts_people_and_money() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    // Платящий, на пробе, с истёкшей пробой и зашедший без пробы.
+    for id in [1, 2, 3, 4] {
+        subscriber(&mut store, id);
+    }
+    let _ = store.grant_trial(1, 3, NOW);
+    let _ = store.open_order("ord-1", 1, "d30", 30, rub(19_900), 0, NOW);
+    let _ = store.settle("ord-1", "freekassa", "fk-1", rub(19_900), "{}", NOW);
+    let _ = store.grant_trial(2, 3, NOW);
+    let _ = store.grant_trial(3, 3, NOW - 10 * DAY);
+
+    let summary = store.admin_summary(NOW);
+    assert!(summary.is_ok(), "{summary:?}");
+    let Ok(summary) = summary else { return };
+
+    assert_eq!(summary.users, 4);
+    assert_eq!(summary.active_paid, 1);
+    assert_eq!(summary.active_trial, 1);
+    assert_eq!(summary.expired, 1);
+    assert_eq!(summary.never, 1);
+    assert_eq!(summary.revenue_month, 19_900);
+    assert_eq!(summary.payments_month, 1);
+    assert_eq!(summary.recent.len(), 1);
+    assert_eq!(summary.recent.first().map(|p| p.telegram_id), Some(Some(1)));
+}
+
+/// Карточку незнакомца админка не заводит: она смотрит, а не создаёт.
+#[test]
+fn a_card_of_a_stranger_is_absent_and_not_created() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    assert!(matches!(store.admin_card(77), Ok(None)));
+    assert_eq!(
+        store.admin_summary(NOW).map(|summary| summary.users).ok(),
+        Some(0),
+        "просмотр завёл человека"
+    );
+}
+
+/// Ручное продление — по тому же правилу, что оплата, и с записью в журнале.
+#[test]
+fn a_manual_extension_follows_the_payment_rule_and_is_logged() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
+    let _ = store.grant_trial(42, 3, NOW);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, true);
+
+    // Действующая подписка продлевается от своего конца.
+    let extended = store.admin_extend(1001, 42, 30, NOW);
+    assert_eq!(extended.ok(), Some(Extended::Until(NOW + 33 * DAY)));
+
+    // Продление встаёт в ту же очередь, что и оплата, — панель узнает.
+    assert_eq!(
+        store.panel_work(10, NOW, true).map(|work| work.len()).ok(),
+        Some(1),
+        "продление не встало в очередь панели"
+    );
+
+    let card = store.admin_card(42);
+    assert!(card.is_ok(), "{card:?}");
+    let Ok(Some(card)) = card else { return };
+    assert_eq!(card.subscriber.expires_at, Some(NOW + 33 * DAY));
+    assert_eq!(card.log.len(), 1);
+    let Some(entry) = card.log.first() else {
+        return;
+    };
+    assert_eq!(entry.admin_id, 1001);
+    assert_eq!(entry.action, "extend");
+    assert_eq!(entry.detail, "30");
+}
+
+/// Кончившаяся подписка продлевается от сейчас, а не от прошлого.
+#[test]
+fn a_lapsed_subscription_is_extended_from_now() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.grant_trial(42, 3, NOW - 10 * DAY);
+
+    assert_eq!(
+        store.admin_extend(1001, 42, 7, NOW).ok(),
+        Some(Extended::Until(NOW + 7 * DAY))
+    );
+}
+
+/// Лишний ноль в поле «дней» не должен подарить подписку на век.
+#[test]
+fn an_absurd_number_of_days_is_refused() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    assert!(store.admin_extend(1001, 42, 0, NOW).is_err());
+    assert!(store
+        .admin_extend(1001, 42, MAX_MANUAL_DAYS + 1, NOW)
+        .is_err());
+
+    let Ok(Some(card)) = store.admin_card(42) else {
+        return;
+    };
+    assert!(card.log.is_empty(), "отказ оставил след в журнале");
+}
+
+#[test]
+fn extending_a_stranger_changes_nothing() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    assert_eq!(
+        store.admin_extend(1001, 77, 7, NOW).ok(),
+        Some(Extended::NoSuchUser)
+    );
+}
+
+/// Перевыпуск оставляет след. Запрет удалять журнал проверяют сторожа
+/// схемы (`db/tests/invariants.sql`): удаления в хранилище нет вовсе.
+#[test]
+fn a_reissue_is_logged() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let _ = store.admin_note_reissue(1001, 42);
+
+    let Ok(Some(card)) = store.admin_card(42) else {
+        return;
+    };
+    assert_eq!(card.log.len(), 1);
+    assert_eq!(card.log.first().map(|e| e.action.as_str()), Some("reissue"));
 }
