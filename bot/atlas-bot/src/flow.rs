@@ -452,14 +452,15 @@ fn connect_screen(view: &View<'_>) -> Reply {
 }
 
 fn device_screen(device: Device, view: &View<'_>) -> Reply {
-    // Приложение одно и то же на всех устройствах — Happ; различается только
-    // место, откуда его берут. INCY назван вторым и без объяснений: это
-    // запасной вариант на случай, если первый не встал, а не второй пункт
-    // выбора. Выбор в этом месте люди делают неправильно и пишут в поддержку.
+    // Приложение одно и то же на всех устройствах — INCY, рекомендуемое;
+    // различается только место, откуда его берут. Happ назван вторым и без
+    // объяснений: это запасной вариант на случай, если первый не встал, а не
+    // второй пункт выбора. Выбор в этом месте люди делают неправильно и
+    // пишут в поддержку.
     let store = match device {
         Device::Iphone => "App Store",
         Device::Android => "Google Play",
-        Device::Desktop => "happ.su",
+        Device::Desktop => "версиях для Windows, macOS и Linux",
     };
 
     let link = match view.subscription_url {
@@ -469,10 +470,10 @@ fn device_screen(device: Device, view: &View<'_>) -> Reply {
 
     Reply {
         text: format!(
-            "1. Установите Happ — он есть в {store}.\n\n\
+            "1. Установите INCY (рекомендуем) — он есть в {store}.\n\n\
              2. Откройте приложение и выберите добавление подписки по ссылке.{link}\n\n\
              Дальше приложение само заберёт ключи и будет обновлять их при смене сервера.\n\n\
-             Если Happ не подошёл, то же самое умеет INCY.",
+             Если INCY не подошёл, то же самое умеет Happ (happ.su).",
         ),
         keyboard: Some(connect_menu()),
     }
@@ -971,10 +972,14 @@ mod tests {
         for (device, store) in [
             (Device::Iphone, "App Store"),
             (Device::Android, "Google Play"),
-            (Device::Desktop, "happ.su"),
+            (Device::Desktop, "Windows, macOS и Linux"),
         ] {
             let (reply, _) = on_action(&Action::ConnectTo(device), &active());
-            assert!(reply.text.contains("Happ"), "{device:?}: {}", reply.text);
+            assert!(
+                reply.text.contains("Установите INCY"),
+                "{device:?}: {}",
+                reply.text
+            );
             assert!(reply.text.contains(store), "{device:?}: {}", reply.text);
             assert!(reply.text.contains(LINK), "{device:?}: нет ссылки");
         }

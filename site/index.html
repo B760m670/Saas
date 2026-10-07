@@ -632,24 +632,24 @@ a.btn.off { opacity: 0.45; }
 
   <div class="step" data-step="app">
     <h1>Какое приложение?</h1>
-    <p class="sub">Достаточно одного — ставить оба не нужно</p>
-
-    <div class="card">
-      <div class="row" style="background:transparent;padding:0;border:0">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
-        <span class="body"><span class="title">Happ</span><span class="hint">Проще, если ставите впервые</span></span>
-      </div>
-      <button class="btn" data-act="install-app" data-app="happ" style="margin-top:12px">Установить приложение</button>
-      <button class="btn ghost" data-act="step" data-to="add" data-app="happ">У меня уже есть приложение</button>
-    </div>
+    <p class="sub">Достаточно одного — ставить оба не нужно. Рекомендуем INCY</p>
 
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
-        <span class="body"><span class="title">INCY</span><span class="hint">Больше настроек, если они нужны</span></span>
+        <span class="body"><span class="title">INCY <span class="badge ok" style="margin-left:6px;vertical-align:2px">Рекомендуем</span></span><span class="hint">Есть для iPhone, Android, Windows, macOS и Linux</span></span>
       </div>
-      <button class="btn" data-act="install-app" data-app="incy" style="margin-top:12px">Установить приложение</button>
+      <button class="btn primary" data-act="install-app" data-app="incy" style="margin-top:12px">Установить приложение</button>
       <button class="btn ghost" data-act="step" data-to="add" data-app="incy">У меня уже есть приложение</button>
+    </div>
+
+    <div class="card">
+      <div class="row" style="background:transparent;padding:0;border:0">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
+        <span class="body"><span class="title">Happ</span><span class="hint">Запасной вариант, если INCY не подошёл</span></span>
+      </div>
+      <button class="btn" data-act="install-app" data-app="happ" style="margin-top:12px">Установить приложение</button>
+      <button class="btn ghost" data-act="step" data-to="add" data-app="happ">У меня уже есть приложение</button>
     </div>
   </div>
 
@@ -676,8 +676,8 @@ a.btn.off { opacity: 0.45; }
     </div>
 
     <h2>Где взять приложение</h2>
+    <button class="btn primary" data-act="install-app" data-app="incy">INCY — рекомендуем</button>
     <button class="btn" data-act="install-app" data-app="happ">Happ</button>
-    <button class="btn" data-act="install-app" data-app="incy">INCY</button>
   </div>
 </section>
 
@@ -1230,9 +1230,15 @@ a.btn.off { opacity: 0.45; }
     step(previous);
   }
 
+  /* Откуда ставить. У INCY своя страница в каждом магазине: на Android
+     ведём в поиск Google Play, а не в App Store, где его не поставить. */
+  var ANDROID = /android/i.test(navigator.userAgent) ||
+    !!(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.platform === 'android');
   var APPS = {
     happ: { site: 'https://happ.su' },
-    incy: { site: 'https://apps.apple.com/app/id6756943388' }
+    incy: { site: ANDROID
+      ? 'https://play.google.com/store/search?q=INCY&c=apps'
+      : 'https://apps.apple.com/app/id6756943388' }
   };
 
   /* Проставить настоящие href кнопкам «Добавить ссылку».
