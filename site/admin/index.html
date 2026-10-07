@@ -252,8 +252,9 @@ button:disabled { opacity: 0.45; }
       row('В боте с', u.since),
       row('Проба', u.trialGranted || 'не брал'),
       row('Отряды в панели', u.panelPlan === 'free' ? 'только бесплатный'
-                            : u.panelPlan === 'paid' ? 'платные + бесплатный'
+                            : u.panelPlan ? 'платные + бесплатный'
                             : (u.inPanel ? 'ещё не отвезены' : 'не заведён в панели')),
+      row('Тариф', u.ownerId ? 'гость ' + u.ownerId : (u.tier === 'family' ? 'Семья' : (u.tier === 'personal' ? 'Личный' : '—'))),
       row('Пригласил', u.invitedBy ? String(u.invitedBy) : '—')
     ];
     fill('user-rows', rows, '');

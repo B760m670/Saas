@@ -521,6 +521,32 @@ a.btn.off { opacity: 0.45; }
   box-shadow: var(--rim-top), var(--rim-bottom);
 }
 .plan + .plan { margin-top: 8px; }
+.plans { margin-top: 14px; }
+
+/* Переключатель тарифа. */
+.seg {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--card);
+}
+.seg button {
+  padding: 10px 8px; border: 0; border-radius: 10px; background: transparent;
+  color: var(--muted); font: inherit; font-size: 14.5px; font-weight: 600; cursor: pointer;
+}
+.seg button.on { background: rgba(238, 152, 46, 0.16); color: inherit; }
+.tier-note { margin-top: 10px; }
+
+/* Близкие в разделе «Семья». */
+.guest {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--card);
+}
+.guest + .guest { margin-top: 8px; }
+.guest .who { font-weight: 600; font-size: 14.5px; }
+.guest .meta { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.guest button {
+  padding: 8px 12px; border: 1px solid var(--line-2); border-radius: 10px;
+  background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer;
+}
 .plan.best { border-color: rgba(238, 152, 46, 0.4); background: rgba(238, 152, 46, 0.08); }
 /* `display: block` обязателен: без него оба остаются инлайновыми и
    слипаются в одну строку — «1 месяц199 ₽ в месяц». Заодно `margin-top`
@@ -657,7 +683,18 @@ a.btn.off { opacity: 0.45; }
 
 <!-- =========================== РЕФЕРАЛЫ ============================== -->
 <section class="screen" id="s-ref">
-  <h1>Приглашайте</h1>
+  <!-- Семья: близкие на подписке владельца. Выше рефералов: это то, за что
+       человек заплатил, а бонусы — приятное дополнение. -->
+  <div id="fam">
+    <h1>Семья</h1>
+    <p class="sub" id="fam-sub">Подключите близких к своей подписке</p>
+    <div id="fam-list"></div>
+    <button class="btn primary" id="fam-invite" data-act="fam-invite" style="margin-top:12px" hidden>Пригласить близкого</button>
+    <p class="note" id="fam-note"></p>
+    <button class="btn" id="fam-buy" data-act="plans-family" style="margin-top:12px" hidden>Выбрать тариф</button>
+  </div>
+
+  <h1 style="margin-top:34px">Приглашайте</h1>
   <p class="sub">Десятая часть каждой оплаты друга возвращается вам бонусами</p>
 
   <div class="stats">
@@ -761,22 +798,53 @@ a.btn.off { opacity: 0.45; }
 <div class="sheet" id="sheet">
   <div class="grab"></div>
   <h1 style="font-size:20px;margin-bottom:14px">Продлить подписку</h1>
-  <button class="plan" data-buy="d30">
-    <span><span class="term">1 месяц</span><span class="per">199 ₽ в месяц</span></span>
-    <span style="text-align:right"><span class="price">199 ₽</span></span>
-  </button>
-  <button class="plan" data-buy="d90">
-    <span><span class="term">3 месяца</span><span class="per">183 ₽ в месяц</span></span>
-    <span style="text-align:right"><span class="price">549 ₽</span><br><span class="off">−8 %</span></span>
-  </button>
-  <button class="plan" data-buy="d180">
-    <span><span class="term">6 месяцев</span><span class="per">167 ₽ в месяц</span></span>
-    <span style="text-align:right"><span class="price">999 ₽</span><br><span class="off">−16 %</span></span>
-  </button>
-  <button class="plan best" data-buy="d365">
-    <span><span class="term">12 месяцев</span><span class="per">147 ₽ в месяц</span></span>
-    <span style="text-align:right"><span class="price">1790 ₽</span><br><span class="off">−26 %</span></span>
-  </button>
+  <!-- Два тарифа одним переключателем, а не восемь кнопок подряд: сначала
+       «для кого», потом «на сколько». Цены — те же, что в боте
+       (`atlas_bot::catalog::SHOWCASE`); правка цены — в обоих местах. -->
+  <div class="seg" role="tablist">
+    <button class="on" data-act="tier" data-tier="personal" role="tab">Личный</button>
+    <button data-act="tier" data-tier="family" role="tab">Семья</button>
+  </div>
+  <p class="note tier-note" data-for="personal">2 устройства и 1 близкий со своей ссылкой — у него 30 ГБ в месяц.</p>
+  <p class="note tier-note" data-for="family" hidden>3 устройства и до 4 близких, у каждого своя ссылка и 30 ГБ в месяц.</p>
+  <div class="plans" data-for="personal">
+    <button class="plan" data-buy="d30">
+      <span><span class="term">1 месяц</span><span class="per">199 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">199 ₽</span></span>
+    </button>
+    <button class="plan" data-buy="d90">
+      <span><span class="term">3 месяца</span><span class="per">183 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">549 ₽</span><br><span class="off">−8 %</span></span>
+    </button>
+    <button class="plan" data-buy="d180">
+      <span><span class="term">6 месяцев</span><span class="per">167 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">999 ₽</span><br><span class="off">−16 %</span></span>
+    </button>
+    <button class="plan best" data-buy="d365">
+      <span><span class="term">12 месяцев</span><span class="per">147 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">1790 ₽</span><br><span class="off">−26 %</span></span>
+    </button>
+  </div>
+  <div class="plans" data-for="family" hidden>
+    <button class="plan" data-buy="f30">
+      <span><span class="term">1 месяц</span><span class="per">299 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">299 ₽</span></span>
+    </button>
+    <button class="plan" data-buy="f90">
+      <span><span class="term">3 месяца</span><span class="per">276 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">829 ₽</span><br><span class="off">−7 %</span></span>
+    </button>
+    <button class="plan" data-buy="f180">
+      <span><span class="term">6 месяцев</span><span class="per">249 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">1499 ₽</span><br><span class="off">−16 %</span></span>
+    </button>
+    <button class="plan best" data-buy="f365">
+      <span><span class="term">12 месяцев</span><span class="per">221 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">2690 ₽</span><br><span class="off">−26 %</span></span>
+    </button>
+  </div>
+  <p class="note" id="tier-switch" hidden>Смена тарифа: оплаченные дни сохраняются и складываются,
+    а устройства и места для близких — как у последней покупки.</p>
   <button class="btn ghost" data-act="close-sheet">Закрыть</button>
 </div>
 
@@ -954,6 +1022,7 @@ a.btn.off { opacity: 0.45; }
        Поэтому пока идёт проба, крупно стоит остаток трафика, а дни не
        называются вовсе. Число присылает сервер, считает его панель. */
     var onTrial = s.status === 'trial' && s.trialLeft != null;
+    var guest = s.status === 'guest';
 
     document.getElementById('st-days').textContent =
       !known ? '—' : (s.status === 'expired' ? 'Истекла'
@@ -969,16 +1038,20 @@ a.btn.off { opacity: 0.45; }
     badge.hidden = !known;
     badge.className = 'badge ' + (s.status === 'expired' ? 'bad' : (s.status === 'trial' ? 'warn' : 'ok'));
     badge.textContent = s.status === 'trial' ? 'Пробный период'
-      : (s.status === 'expired' ? 'Не активна' : 'Активна');
+      : (s.status === 'expired' ? 'Не активна'
+        : (guest ? 'Семейная подписка' : (s.tierTitle ? 'Активна · ' + s.tierTitle : 'Активна')));
 
     /* Сколько устройств занято, знает панель, а не бот. Пока он этого не
        спрашивает, честнее сказать «до трёх», чем «0 из 3» тому, у кого их
        два. Запасное число обязано совпадать с `catalog::DEVICES`: оно
        показывается, когда сервер не ответил, и разойдясь — соврёт. */
+    var fam = s.family || {};
     document.getElementById('st-traffic').textContent =
-      onTrial ? (s.trialTotal || '5 ГБ') + ' на пробу' : 'Безлимитный трафик';
+      onTrial ? (s.trialTotal || '5 ГБ') + ' на пробу'
+        : (guest ? (s.guestLeft ? 'осталось ' + s.guestLeft + ' из ' : '') + (fam.guestTotal || '30 ГБ') + ' в месяц'
+                 : 'Безлимитный трафик');
 
-    var limit = s.deviceLimit || 3;
+    var limit = s.deviceLimit || 2;
     var word = plural(limit, 'устройства', 'устройств', 'устройств');
     document.getElementById('st-devices').textContent =
       s.devices == null ? 'до ' + limit + ' ' + word
@@ -988,6 +1061,8 @@ a.btn.off { opacity: 0.45; }
       el.textContent = s.subscriptionUrl || '—';
     });
     fillAppLink();
+
+    renderFamily(s, fam, guest);
 
     var r = s.referral || {};
     document.getElementById('rf-invited').textContent = r.invited || 0;
@@ -1017,6 +1092,93 @@ a.btn.off { opacity: 0.45; }
     document.getElementById('renew').classList.toggle('primary', expired);
     document.getElementById('setup-btn').classList.toggle('primary', !expired);
 
+  }
+
+  /* Раздел «Семья». Три положения: гость (подписка чужая — только объяснить),
+     владелец с местами (список и «Пригласить») и все остальные (рассказать,
+     какой тариф даёт места). */
+  function renderFamily(s, fam, guest) {
+    var slots = fam.slots || 0;
+    var guests = fam.guests || [];
+    var total = fam.guestTotal || '30 ГБ';
+    var list = document.getElementById('fam-list');
+    list.textContent = '';
+
+    guests.forEach(function (g) {
+      var row = document.createElement('div');
+      row.className = 'guest';
+      var info = document.createElement('div');
+      var who = document.createElement('div');
+      who.className = 'who';
+      who.textContent = 'ID ' + g.id;
+      var meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = 'с ' + g.since + (g.left ? ' · осталось ' + g.left + ' из ' + total : '');
+      info.appendChild(who);
+      info.appendChild(meta);
+      var off = document.createElement('button');
+      off.textContent = 'Отключить';
+      off.dataset.act = 'fam-remove';
+      off.dataset.id = g.id;
+      row.appendChild(info);
+      row.appendChild(off);
+      list.appendChild(row);
+    });
+
+    var sub = document.getElementById('fam-sub');
+    var note = document.getElementById('fam-note');
+    document.getElementById('fam-invite').hidden = !fam.canInvite;
+    document.getElementById('fam-buy').hidden = guest || slots > 0 || !s.status;
+
+    if (guest) {
+      sub.textContent = 'Вы подключены к чужой подписке';
+      note.textContent = 'У вас своя ссылка: 1 устройство и ' + total + ' в месяц, срок — как у владельца. '
+        + 'Безлимит и свои устройства — со своей подпиской: оплаченные дни начнутся сразу.';
+    } else if (slots > 0) {
+      sub.textContent = 'Занято ' + guests.length + ' из ' + slots + ' '
+        + plural(slots, 'места', 'мест', 'мест');
+      note.textContent = 'У каждого близкого своя ссылка: 1 устройство и ' + total + ' в месяц. '
+        + 'Приглашение одноразовое и действует неделю.';
+    } else {
+      sub.textContent = 'Подключите близких к своей подписке';
+      note.textContent = 'На тарифе «Личный» — 1 близкий, на «Семье» — до 4. '
+        + 'У каждого своя ссылка: 1 устройство и ' + total + ' в месяц.';
+    }
+  }
+
+  /* Какой тариф показан в листе оплаты. */
+  function showTier(tier) {
+    document.querySelectorAll('.seg button').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.tier === tier);
+    });
+    document.querySelectorAll('.plans, .tier-note').forEach(function (el) {
+      el.hidden = el.dataset.for !== tier;
+    });
+    /* Предупреждение о смене — только тому, у кого другой тариф действует. */
+    var current = state && state.tier;
+    document.getElementById('tier-switch').hidden = !current || current === tier;
+  }
+
+  /* Запрос кабинета от имени человека: подпись Telegram в заголовке. */
+  function post(path) {
+    return fetch(path, {
+      method: 'POST',
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (body) {
+        if (!r.ok) throw new Error(body.error || 'отказ');
+        return body;
+      });
+    });
+  }
+
+  function refresh() {
+    return fetch('/api/me', {
+      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+    }).then(function (r) {
+      if (!r.ok) throw new Error('нет ответа');
+      return r.json();
+    }).then(function (data) { state = data; render(); }, function () {});
   }
 
   function copy(text, what) {
@@ -1160,7 +1322,34 @@ a.btn.off { opacity: 0.45; }
 
     var act = el.dataset.act;
 
-    if (act === 'plans')       { haptic(); return sheet(true); }
+    if (act === 'plans')       { haptic(); showTier((state && state.tier) || 'personal'); return sheet(true); }
+    if (act === 'plans-family') { haptic(); showTier('family'); return sheet(true); }
+    if (act === 'tier')        { haptic('select'); return showTier(el.dataset.tier); }
+
+    if (act === 'fam-invite') {
+      haptic();
+      return post('/api/family/invite').then(function (body) {
+        var url = 'https://t.me/share/url?url=' + encodeURIComponent(body.link) +
+                  '&text=' + encodeURIComponent('Подключаю тебя к своему VPN — открой ссылку, бот всё настроит');
+        if (tg && tg.openTelegramLink) tg.openTelegramLink(url);
+        else window.open(url, '_blank');
+      }, function (error) {
+        toast(error.message === 'отказ' ? 'Не вышло — попробуйте позже' : error.message);
+      });
+    }
+
+    if (act === 'fam-remove') {
+      /* Спрашиваем: отключённый теряет VPN сразу, и вернуть его можно только
+         новым приглашением. */
+      if (!confirm('Отключить ID ' + el.dataset.id + '? VPN у него перестанет работать сразу.')) return;
+      haptic();
+      return post('/api/family/remove/' + encodeURIComponent(el.dataset.id)).then(function () {
+        toast('Отключён');
+        return refresh();
+      }, function (error) {
+        toast(error.message === 'отказ' ? 'Не вышло — попробуйте позже' : error.message);
+      });
+    }
     if (act === 'close-sheet') return sheet(false);
     if (act === 'close-bill')  { bill(false); return go('home', 0); }
     if (act === 'copy-sub')    return copy(state && state.subscriptionUrl, 'Ссылка на подписку');
@@ -1505,7 +1694,7 @@ a.btn.off { opacity: 0.45; }
     if (!name) name = (location.hash || '').replace(/^#/, '');
     if (!name) return;
 
-    if (name === 'plans')  return sheet(true);
+    if (name === 'plans')  { showTier((state && state.tier) || 'personal'); return sheet(true); }
     if (name === 'setup')  return setup('where');
     if (name === 'help')   return go('help');
     if (name === 'ref')    return go('ref');

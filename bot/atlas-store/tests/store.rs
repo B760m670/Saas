@@ -14,7 +14,7 @@
 //! проект, базы под рукой может не быть.
 
 use atlas_billing::money::{Currency, Money};
-use atlas_store::{Extended, Settled, Store, Trial, MAX_MANUAL_DAYS};
+use atlas_store::{Accepted, Extended, Invited, Settled, Store, Trial, MAX_MANUAL_DAYS};
 
 const DAY: i64 = 86_400;
 const NOW: i64 = 1_760_000_000;
@@ -84,6 +84,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0010_free_plan.sql"),
         "\n",
         include_str!("../../../db/migrations/0011_admin_log.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0012_family.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -661,7 +663,7 @@ fn a_confirmed_date_leaves_the_queue() {
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
 
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
 
     let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
@@ -681,7 +683,7 @@ fn a_payment_puts_the_person_back_in_the_queue() {
     subscriber(&mut store, 42);
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
 
     let _ = store.open_order("ord-9", 42, "d30", 30, rub(19_899), 0, NOW);
     let _ = store.settle("ord-9", "manual", "19899-ord-9", rub(19_899), "{}", NOW);
@@ -716,7 +718,7 @@ fn a_late_confirmation_does_not_swallow_a_newer_payment() {
     let _ = store.settle("ord-8", "manual", "19899-ord-8", rub(19_899), "{}", NOW);
 
     // Ответ панели пришёл — но он про старую дату.
-    let _ = store.mark_panel_synced(42, carried, false);
+    let _ = store.mark_panel_synced(42, carried, "paid");
 
     let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
@@ -852,6 +854,18 @@ fn an_adopted_date_leaves_the_queue_empty() {
     let Ok(()) = store.adopt_from_panel(42, NOW + 22 * DAY) else {
         return;
     };
+    // Дата принята — и обратно в панель поедет именно она, а не прежняя.
+    // Сама строка в очереди остаётся, пока панель не подтвердит отряды и
+    // устройства (`panel_plan`); дату это не качает: везут ту же.
+    let work = store.panel_work(10, NOW, false);
+    assert!(work.is_ok(), "{work:?}");
+    let Ok(work) = work else { return };
+    assert!(
+        work.iter().all(|item| item.expires_at == NOW + 22 * DAY),
+        "очередь везёт не принятую дату: {work:?}"
+    );
+
+    let _ = store.mark_panel_synced(42, NOW + 22 * DAY, "paid");
     assert_eq!(
         store.panel_work(10, NOW, false).map(|work| work.len()).ok(),
         Some(0)
@@ -907,7 +921,7 @@ fn a_lapsed_person_is_queued_for_the_free_plan() {
     subscriber(&mut store, 42);
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, true);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
 
     let later = NOW + 7 * DAY;
     let Ok(work) = store.panel_work(10, later, true) else {
@@ -931,7 +945,7 @@ fn without_the_free_plan_a_lapsed_person_is_left_to_the_panel() {
     subscriber(&mut store, 42);
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
 
     assert_eq!(
         store
@@ -1030,28 +1044,28 @@ fn a_late_free_mark_does_not_swallow_a_payment() {
     assert!(!item.lapsed, "оплатившего везут на бесплатное");
 }
 
-/// Включили бесплатный доступ — заведённым раньше надо отвезти отряды, хотя
-/// даты у них давно согласованы. Отдельного переноса данных нет: это делает
-/// очередь.
+/// Отряды, которых панель ещё не подтверждала (`panel_plan` пуст), — работа,
+/// даже если даты давно совпали. Так при выкладке тарифов очередь сама
+/// отвозит устройства и отряды всем, кто заведён раньше.
 #[test]
-fn turning_the_free_plan_on_queues_everyone_once() {
+fn a_person_whose_panel_plan_is_unknown_is_queued_once() {
     let Some((mut store, _lock)) = store() else {
         return;
     };
     subscriber(&mut store, 42);
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, false);
+    let _ = store.adopt_from_panel(42, NOW + 3 * DAY);
 
-    assert_eq!(
-        store.panel_work(10, NOW, true).map(|work| work.len()).ok(),
-        Some(1),
-        "отряды заведённым раньше не отвезутся"
-    );
+    let Ok(work) = store.panel_work(10, NOW, false) else {
+        return;
+    };
+    assert_eq!(work.len(), 1, "неподтверждённые отряды не встали в очередь");
+    assert_eq!(work.first().map(|w| w.kind.as_str()), Some("paid"));
 
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, true);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
     assert_eq!(
-        store.panel_work(10, NOW, true).map(|work| work.len()).ok(),
+        store.panel_work(10, NOW, false).map(|work| work.len()).ok(),
         Some(0)
     );
 }
@@ -1682,7 +1696,7 @@ fn a_manual_extension_follows_the_payment_rule_and_is_logged() {
     subscriber(&mut store, 42);
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, true);
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
 
     // Действующая подписка продлевается от своего конца.
     let extended = store.admin_extend(1001, 42, 30, NOW);
@@ -1749,5 +1763,257 @@ fn extending_a_stranger_changes_nothing() {
     assert_eq!(
         store.admin_extend(1001, 77, 7, NOW).ok(),
         Some(Extended::NoSuchUser)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Тарифы и гости
+// ---------------------------------------------------------------------------
+
+/// Владелец на тарифе: оплатил заказ `plan` на 30 дней.
+fn owner_on(store: &mut Store, id: i64, plan: &str, rubles: u64) {
+    subscriber(store, id);
+    let order = format!("ord-{id}-{plan}");
+    let _ = store.open_order(&order, id, plan, 30, rub(rubles * 100), 0, NOW);
+    let settled = store.settle(
+        &order,
+        "freekassa",
+        &format!("fk-{order}"),
+        rub(rubles * 100),
+        "{}",
+        NOW,
+    );
+    assert!(
+        matches!(settled, Ok(Settled::Extended { .. })),
+        "{settled:?}"
+    );
+}
+
+fn tier_of(store: &mut Store, id: i64) -> Option<String> {
+    store.ensure_subscriber(id).ok().and_then(|s| s.tier)
+}
+
+#[test]
+fn a_purchase_sets_the_tier_by_its_plan() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    owner_on(&mut store, 1, "d30", 199);
+    owner_on(&mut store, 2, "f30", 299);
+    assert_eq!(tier_of(&mut store, 1).as_deref(), Some("personal"));
+    assert_eq!(tier_of(&mut store, 2).as_deref(), Some("family"));
+}
+
+/// Приглашение принято — гость получает срок владельца, и дальше этот срок
+/// следует за владельцем сам: продление владельца продлевает и гостя.
+#[test]
+fn a_guest_gets_the_owners_term_and_follows_it() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    owner_on(&mut store, 1, "f30", 299);
+    subscriber(&mut store, 2);
+
+    assert_eq!(
+        store.create_invite(1, "abcdefghijklmnop", NOW).ok(),
+        Some(Invited::Created)
+    );
+    let accepted = store.accept_invite(2, "abcdefghijklmnop", NOW);
+    assert_eq!(
+        accepted.ok(),
+        Some(Accepted::Joined {
+            owner_id: 1,
+            expires_at: NOW + 30 * DAY
+        })
+    );
+
+    // Владелец продлил — гость тоже.
+    let _ = store.admin_extend(9, 1, 10, NOW);
+    let guest = store.ensure_subscriber(2);
+    assert_eq!(
+        guest.as_ref().ok().and_then(|g| g.expires_at),
+        Some(NOW + 40 * DAY)
+    );
+    assert_eq!(guest.ok().and_then(|g| g.owner_id), Some(1));
+
+    // Приглашение одноразовое.
+    subscriber(&mut store, 3);
+    assert_eq!(
+        store.accept_invite(3, "abcdefghijklmnop", NOW).ok(),
+        Some(Accepted::Invalid)
+    );
+
+    // Гость в очереди — с видом `guest`: у него свои устройства и трафик.
+    let _ = store.link_to_panel(2, 20, "https://panel.example.org/api/sub/g");
+    let work = store.panel_work(10, NOW, true).unwrap_or_default();
+    assert_eq!(
+        work.iter()
+            .find(|w| w.telegram_id == 2)
+            .map(|w| w.kind.as_str()),
+        Some("guest")
+    );
+}
+
+/// Мест не больше, чем даёт тариф: «Личный» — один гость.
+#[test]
+fn a_tier_limits_the_guests() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    owner_on(&mut store, 1, "d30", 199);
+    subscriber(&mut store, 2);
+    let _ = store.create_invite(1, "aaaaaaaaaaaaaaaa", NOW);
+    let _ = store.create_invite(1, "bbbbbbbbbbbbbbbb", NOW);
+    assert!(matches!(
+        store.accept_invite(2, "aaaaaaaaaaaaaaaa", NOW),
+        Ok(Accepted::Joined { .. })
+    ));
+
+    assert_eq!(
+        store.create_invite(1, "cccccccccccccccc", NOW).ok(),
+        Some(Invited::NoSlots)
+    );
+    // Второе приглашение, выданное до заполнения, место не получает.
+    subscriber(&mut store, 3);
+    assert_eq!(
+        store.accept_invite(3, "bbbbbbbbbbbbbbbb", NOW).ok(),
+        Some(Accepted::NoSlots)
+    );
+}
+
+/// Без тарифа (проба, прежняя оплата) гостей нет.
+#[test]
+fn without_a_tier_there_are_no_guests() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    let _ = store.grant_trial(1, 3, NOW);
+    assert_eq!(
+        store.create_invite(1, "aaaaaaaaaaaaaaaa", NOW).ok(),
+        Some(Invited::NotEligible)
+    );
+}
+
+/// Своя оплаченная подписка молча не меняется на гостевую, своё приглашение
+/// не принимается, просроченное — тоже.
+#[test]
+fn an_invite_is_refused_when_it_makes_no_sense() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    owner_on(&mut store, 1, "f30", 299);
+    owner_on(&mut store, 2, "d30", 199);
+    let _ = store.create_invite(1, "aaaaaaaaaaaaaaaa", NOW);
+
+    assert_eq!(
+        store.accept_invite(1, "aaaaaaaaaaaaaaaa", NOW).ok(),
+        Some(Accepted::OwnInvite)
+    );
+    assert_eq!(
+        store.accept_invite(2, "aaaaaaaaaaaaaaaa", NOW).ok(),
+        Some(Accepted::HasOwnSubscription)
+    );
+
+    subscriber(&mut store, 3);
+    assert_eq!(
+        store
+            .accept_invite(3, "aaaaaaaaaaaaaaaa", NOW + 8 * DAY)
+            .ok(),
+        Some(Accepted::Invalid),
+        "недельное приглашение живёт дольше недели"
+    );
+}
+
+/// Отключённый гость теряет срок сейчас, и очередь переводит его на
+/// бесплатный доступ — тем же путём, что кончившуюся подписку.
+#[test]
+fn a_removed_guest_lapses_now() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    owner_on(&mut store, 1, "f30", 299);
+    subscriber(&mut store, 2);
+    let _ = store.create_invite(1, "aaaaaaaaaaaaaaaa", NOW);
+    let _ = store.accept_invite(2, "aaaaaaaaaaaaaaaa", NOW);
+
+    assert_eq!(
+        store.remove_guest(9, 2, NOW).ok(),
+        Some(false),
+        "чужой гость отключён"
+    );
+    assert_eq!(store.remove_guest(1, 2, NOW).ok(), Some(true));
+
+    let guest = store.ensure_subscriber(2);
+    assert_eq!(guest.as_ref().ok().and_then(|g| g.owner_id), None);
+    assert_eq!(guest.ok().and_then(|g| g.expires_at), Some(NOW));
+    assert_eq!(store.guests_of(1).map(|g| g.len()).ok(), Some(0));
+}
+
+/// «Семья» сменилась «Личным»: остаётся пришедший первым, остальные
+/// отключаются.
+#[test]
+fn a_smaller_tier_keeps_the_earliest_guests() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    owner_on(&mut store, 1, "f30", 299);
+    for (guest, code, at) in [
+        (2, "aaaaaaaaaaaaaaaa", NOW),
+        (3, "bbbbbbbbbbbbbbbb", NOW + 60),
+    ] {
+        subscriber(&mut store, guest);
+        let _ = store.create_invite(1, code, at);
+        let _ = store.accept_invite(guest, code, at);
+    }
+    assert_eq!(store.guests_of(1).map(|g| g.len()).ok(), Some(2));
+
+    let _ = store.open_order("ord-down", 1, "d30", 30, rub(19_900), 0, NOW + 120);
+    let _ = store.settle(
+        "ord-down",
+        "freekassa",
+        "fk-down",
+        rub(19_900),
+        "{}",
+        NOW + 120,
+    );
+
+    let guests: Vec<i64> = store
+        .guests_of(1)
+        .unwrap_or_default()
+        .iter()
+        .map(|g| g.telegram_id)
+        .collect();
+    assert_eq!(guests, vec![2], "остался не тот гость");
+    assert_eq!(tier_of(&mut store, 1).as_deref(), Some("personal"));
+}
+
+/// Гость купил сам — он больше не гость, и дни ему считаются от его срока.
+#[test]
+fn a_guest_who_pays_becomes_an_owner() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    owner_on(&mut store, 1, "f30", 299);
+    subscriber(&mut store, 2);
+    let _ = store.create_invite(1, "aaaaaaaaaaaaaaaa", NOW);
+    let _ = store.accept_invite(2, "aaaaaaaaaaaaaaaa", NOW);
+
+    let _ = store.open_order("ord-g", 2, "d30", 30, rub(19_900), 0, NOW);
+    let _ = store.settle("ord-g", "freekassa", "fk-g", rub(19_900), "{}", NOW);
+
+    let person = store.ensure_subscriber(2);
+    assert_eq!(person.as_ref().ok().and_then(|p| p.owner_id), None);
+    assert_eq!(
+        person.as_ref().ok().and_then(|p| p.tier.clone()).as_deref(),
+        Some("personal")
+    );
+    assert_eq!(person.ok().and_then(|p| p.expires_at), Some(NOW + 60 * DAY));
+
+    // Продление бывшего владельца его больше не трогает.
+    let _ = store.admin_extend(9, 1, 10, NOW);
+    assert_eq!(
+        store.ensure_subscriber(2).ok().and_then(|p| p.expires_at),
+        Some(NOW + 60 * DAY)
     );
 }

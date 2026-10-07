@@ -13,7 +13,7 @@ use atlas_billing::{subscription, Currency, Money};
 
 use crate::catalog;
 use crate::menu::{
-    connect_menu, main_menu, plans_menu, price_label, Action, Button, Device, Keyboard,
+    connect_menu, main_menu, price_label, tier_menu, Action, Button, Device, Keyboard,
 };
 
 /// Что бот собирается сделать помимо ответа.
@@ -121,6 +121,22 @@ pub fn parse_invite(text: &str) -> Option<i64> {
     (id > 0).then_some(id)
 }
 
+/// Код семейного приглашения из `/start fam_<код>`.
+///
+/// Код — из нашей же базы, но пришёл он снаружи, поэтому набор символов
+/// проверяется здесь: в запрос к базе уходит только то, что могло быть
+/// выдано нами.
+#[must_use]
+pub fn parse_family_invite(text: &str) -> Option<String> {
+    let mut parts = text.split_whitespace();
+    if parts.next()?.split('@').next()? != "/start" {
+        return None;
+    }
+    let code = parts.next()?.strip_prefix("fam_")?;
+    ((16..=32).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then(|| code.to_owned())
+}
+
 /// Ответ на текстовое сообщение.
 #[must_use]
 pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
@@ -183,7 +199,8 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
 pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
     match action {
         Action::Subscription | Action::Home => (subscription_screen(view), Effect::None),
-        Action::Plans => (plans_screen(), Effect::None),
+        Action::Plans => (plans_screen(catalog::Tier::Personal), Effect::None),
+        Action::FamilyPlans => (plans_screen(catalog::Tier::Family), Effect::None),
         Action::Connect => (connect_screen(view), Effect::None),
         Action::ConnectTo(device) => (device_screen(*device, view), Effect::None),
         Action::Help => (help_screen(view), Effect::None),
@@ -376,12 +393,29 @@ fn subscription_screen(view: &View<'_>) -> Reply {
     }
 }
 
-fn plans_screen() -> Reply {
+fn plans_screen(tier: catalog::Tier) -> Reply {
+    let about = match tier {
+        catalog::Tier::Personal => format!(
+            "<b>Личный</b>: {} устройства и безлимит. Можно поделиться с {} близким — \
+             у него будет своя подписка на {} в месяц.",
+            tier.devices(),
+            tier.guests(),
+            gigabytes(catalog::GUEST_BYTES)
+        ),
+        catalog::Tier::Family => format!(
+            "<b>Семья</b>: {} устройства и безлимит у вас, плюс до {} близких — \
+             у каждого своя подписка на {} в месяц.",
+            tier.devices(),
+            tier.guests(),
+            gigabytes(catalog::GUEST_BYTES)
+        ),
+    };
     Reply {
-        text: "Срок складывается с текущим: если подписка ещё действует, \
-               оплаченные дни добавятся к оставшимся."
-            .to_owned(),
-        keyboard: catalog::monthly_base().map(|base| plans_menu(&catalog::plans(), base)),
+        text: format!(
+            "{about}\n\nСрок складывается с текущим: если подписка ещё действует, \
+             оплаченные дни добавятся к оставшимся."
+        ),
+        keyboard: Some(tier_menu(tier)),
     }
 }
 
@@ -455,7 +489,7 @@ fn buy(plan_id: &str) -> (Reply, Effect) {
         return (
             Reply {
                 text: "Этого тарифа больше нет. Вот те, что есть:".to_owned(),
-                keyboard: catalog::monthly_base().map(|base| plans_menu(&catalog::plans(), base)),
+                keyboard: Some(tier_menu(catalog::Tier::Personal)),
             },
             Effect::None,
         );
@@ -470,6 +504,37 @@ fn buy(plan_id: &str) -> (Reply, Effect) {
             plan: plan.id.clone(),
         },
     )
+}
+
+#[cfg(test)]
+mod family_invite_tests {
+    use super::parse_family_invite;
+
+    #[test]
+    fn a_family_invite_is_read_from_start() {
+        assert_eq!(
+            parse_family_invite("/start fam_AbCdEfGh12345678"),
+            Some("AbCdEfGh12345678".to_owned())
+        );
+        assert_eq!(
+            parse_family_invite("/start@gloria_bot fam_AbCdEfGh12345678"),
+            Some("AbCdEfGh12345678".to_owned())
+        );
+    }
+
+    #[test]
+    fn anything_else_is_not_a_family_invite() {
+        for text in [
+            "/start",
+            "/start ref_42",
+            "/start fam_short",
+            "/start fam_AbCdEfGh1234567'--",
+            "/help fam_AbCdEfGh12345678",
+            "fam_AbCdEfGh12345678",
+        ] {
+            assert_eq!(parse_family_invite(text), None, "{text}");
+        }
+    }
 }
 
 #[cfg(test)]

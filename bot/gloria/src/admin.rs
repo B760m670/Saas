@@ -177,6 +177,8 @@ fn card_json(card: &Card, now: i64) -> serde_json::Value {
         "expiresAt": subscriber.expires_at.map(day_month_year),
         "daysLeft": atlas_billing::subscription::days_left(subscriber.expires_at, now),
         "hasPaid": subscriber.has_paid,
+        "tier": subscriber.tier,
+        "ownerId": subscriber.owner_id,
         "trialGranted": subscriber.trial_granted_at.map(day_month_year),
         "since": day_month_year(card.created_at),
         "invitedBy": card.invited_by,

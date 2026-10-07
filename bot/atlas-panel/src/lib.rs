@@ -16,5 +16,5 @@
 mod client;
 mod time;
 
-pub use client::{Error, NewUser, Panel, User};
+pub use client::{Error, NewUser, Panel, PlanSpec, TrafficReset, User};
 pub use time::{from_iso8601, to_iso8601};

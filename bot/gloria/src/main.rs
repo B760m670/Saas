@@ -13,6 +13,7 @@
 mod admin;
 mod api;
 mod config;
+mod family;
 mod http;
 mod support;
 
@@ -23,7 +24,7 @@ use atlas_billing::{
 };
 use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
-use atlas_store::{Reminder, Settled, Store, Subscriber, Trial};
+use atlas_store::{Accepted, Reminder, Settled, Store, Subscriber, Trial};
 use atlas_tg::{next_offset, Command, Incoming, Scope, Telegram};
 
 use config::Config;
@@ -379,18 +380,14 @@ fn sync_panel(config: &Config, panel: &Panel, store: &mut Store) {
 
     for item in work {
         let plan = panel_plan(config, &item);
-        let request = match &plan {
-            Plan::Expiry {
-                expires_at,
-                traffic,
-            } => Ok(panel.set_expiry(item.panel_id, *expires_at, *traffic)),
-            Plan::Squads {
-                expires_at,
-                traffic,
-                squads,
-            } => panel.set_plan(item.panel_id, *expires_at, *traffic, squads),
+        let spec = atlas_panel::PlanSpec {
+            expires_at: plan.expires_at,
+            traffic_limit: plan.traffic,
+            traffic_reset: plan.reset,
+            devices: plan.devices,
+            squads: &plan.squads,
         };
-        let request = match request {
+        let request = match panel.set_plan(item.panel_id, &spec) {
             Ok(request) => request,
             Err(error) => {
                 eprintln!("Панель для {}: {error}", item.telegram_id);
@@ -440,7 +437,7 @@ fn sync_panel(config: &Config, panel: &Panel, store: &mut Store) {
             );
             store.mark_panel_free(item.telegram_id, item.expires_at, FREE_UNTIL)
         } else {
-            store.mark_panel_synced(item.telegram_id, item.expires_at, with_free)
+            store.mark_panel_synced(item.telegram_id, item.expires_at, &item.kind)
         };
         if let Err(error) = marked {
             eprintln!("Отметка о панели для {}: {error}", item.telegram_id);
@@ -467,45 +464,65 @@ const FREE_MARK: i64 = 4_070_908_800;
 
 /// Что везти в панель об одном человеке.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Plan {
-    /// Одну дату с потолком трафика — как было до бесплатного доступа.
-    Expiry { expires_at: i64, traffic: u64 },
-    /// Дату, потолок и отряды одним запросом.
-    Squads {
-        expires_at: i64,
-        traffic: u64,
-        squads: Vec<String>,
-    },
+struct Plan {
+    expires_at: i64,
+    traffic: u64,
+    reset: atlas_panel::TrafficReset,
+    devices: u8,
+    squads: Vec<String>,
 }
 
 /// Решить, что везти. Чистая функция: здесь всё, что стоит проверять тестом.
 ///
-/// - Бесплатный доступ выключен — одна дата, как раньше.
-/// - Подписка идёт — дата, потолок пробы и **платные вместе с бесплатными**
-///   отряды ([`Config::paid_squads`]).
-/// - Подписка кончилась — далёкая дата, потолка нет, **одни бесплатные**
-///   отряды. Потолка нет намеренно: проба на пять гигабайт, израсходованная
-///   до дна, иначе отрезала бы человека и от бесплатного сервера, а он
-///   открывает только Telegram и кабинет.
+/// Вид человека (`PanelWork::kind`) считает база, по нашей дате и тарифу:
+///
+/// | Вид | Срок | Трафик | Устройства | Отряды |
+/// |---|---|---|---|---|
+/// | `personal`, `family` | наш | безлимит | по тарифу | платные + бесплатные |
+/// | `guest` | владельца | 30 ГБ, каждый месяц заново | 1 | платные + бесплатные |
+/// | `paid` | наш | безлимит, у пробы — её 5 ГБ | 3 у платившего до тарифов, 2 у пробы | платные + бесплатные |
+/// | `free` | 2099 | без потолка | 2 | только бесплатные |
+///
+/// У `free` потолка нет намеренно: проба, израсходованная до дна, иначе
+/// отрезала бы человека и от бесплатного сервера, а он открывает только
+/// Telegram и кабинет.
 fn panel_plan(config: &Config, item: &atlas_store::PanelWork) -> Plan {
-    if !config.free_enabled() {
-        return Plan::Expiry {
-            expires_at: item.expires_at,
-            traffic: traffic_limit(item.has_paid),
-        };
-    }
+    use atlas_panel::TrafficReset;
 
     if item.lapsed {
-        return Plan::Squads {
+        return Plan {
             expires_at: FREE_UNTIL,
             traffic: 0,
+            reset: TrafficReset::Never,
+            devices: catalog::TRIAL_DEVICES,
             squads: config.free_squads.clone(),
         };
     }
 
-    Plan::Squads {
+    let (traffic, reset, devices) = match item.kind.as_str() {
+        "guest" => (
+            catalog::GUEST_BYTES,
+            TrafficReset::Monthly,
+            catalog::GUEST_DEVICES,
+        ),
+        kind => match catalog::Tier::parse(kind) {
+            Some(tier) => (0, TrafficReset::Never, tier.devices()),
+            // Платил до тарифов — прежние три устройства до конца срока;
+            // проба — как «Личный».
+            None if item.has_paid => (0, TrafficReset::Never, catalog::DEVICES),
+            None => (
+                traffic_limit(false),
+                TrafficReset::Never,
+                catalog::TRIAL_DEVICES,
+            ),
+        },
+    };
+
+    Plan {
         expires_at: item.expires_at,
-        traffic: traffic_limit(item.has_paid),
+        traffic,
+        reset,
+        devices,
         squads: config.paid_squads(),
     }
 }
@@ -800,6 +817,15 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         }
     }
 
+    // Пришёл по семейному приглашению. Принимаем до сверки: сверка смотрит
+    // на срок в памяти, и новый срок гостя должна видеть уже она, иначе
+    // приняла бы прежнюю дату панели за ручную правку.
+    let family = match incoming {
+        Incoming::Message { text, .. } => atlas_bot::parse_family_invite(text)
+            .map(|code| join_family(deps, store, &mut subscriber, &code, now)),
+        Incoming::Button { .. } => None,
+    };
+
     // Сначала сверка, потом всё остальное: срок могли поправить в панели
     // руками, и без этого человек увидел бы «истекла» при работающем VPN.
     reconcile(panel, store, &mut subscriber, now);
@@ -824,6 +850,17 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
                 Err(error) => eprintln!("Панель для {telegram_id}: {error}"),
             }
         }
+    }
+
+    // Ответ на приглашение — вместо обычного приветствия: человек пришёл
+    // именно за этим, и «добро пожаловать» с кнопкой пробы его бы запутало.
+    if let Some(text) = family {
+        let menu = atlas_bot::main_menu(config.miniapp_url.as_deref());
+        let request = telegram
+            .send_message(incoming.chat(), &text, Some(&menu))
+            .map_err(|error| format!("сообщение: {error}"))?;
+        http::send(&request).map_err(|error| format!("отправка: {error}"))?;
+        return Ok(());
     }
 
     let view = flow::View {
@@ -870,6 +907,80 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         ));
     }
     Ok(())
+}
+
+/// Принять семейное приглашение и сказать, чем кончилось.
+///
+/// Ошибка базы не прерывает разговор: человек получит понятный отказ, а мы —
+/// строку в журнале.
+fn join_family(
+    deps: &Deps<'_>,
+    store: &mut Store,
+    subscriber: &mut Subscriber,
+    code: &str,
+    now: i64,
+) -> String {
+    let guest_id = subscriber.telegram_id;
+    let accepted = match store.accept_invite(guest_id, code, now) {
+        Ok(accepted) => accepted,
+        Err(error) => {
+            eprintln!("Семейное приглашение для {guest_id}: {error}");
+            return "Не получилось принять приглашение. Попробуйте ещё раз чуть позже.".to_owned();
+        }
+    };
+
+    match accepted {
+        Accepted::Joined {
+            owner_id,
+            expires_at,
+        } => {
+            println!("Семья: {guest_id} стал гостем {owner_id}");
+            subscriber.expires_at = Some(expires_at);
+            subscriber.owner_id = Some(owner_id);
+
+            // Владельцу — весточка: место занято, и он должен знать кем.
+            let text = format!(
+                "👋 Ваше приглашение принято: к подписке подключился {guest_id}. \
+                 Отключить гостя можно в кабинете, во вкладке «Друзья»."
+            );
+            if let Ok(request) = deps.telegram.send_message(owner_id, &text, None) {
+                let _ = http::send(&request);
+            }
+
+            format!(
+                "🎉 Готово: вам открыт VPN по семейной подписке до {}.\n\n\
+                 У вас своя ссылка: 1 устройство и {} ГБ в месяц. \
+                 Подключиться — кнопкой ниже.",
+                day_month_year(expires_at),
+                catalog::GUEST_BYTES / (1024 * 1024 * 1024)
+            )
+        }
+        Accepted::Invalid => {
+            "Приглашение не найдено, уже использовано или устарело — попросите новое.".to_owned()
+        }
+        Accepted::OwnInvite => {
+            "Это ваше собственное приглашение — перешлите его тому, кого хотите подключить."
+                .to_owned()
+        }
+        Accepted::OwnerInactive => {
+            "Подписка того, кто вас пригласил, сейчас не даёт гостей. Попросите его продлить её."
+                .to_owned()
+        }
+        Accepted::NoSlots => "Все места в этой подписке уже заняты.".to_owned(),
+        Accepted::HasOwnSubscription => {
+            "У вас уже есть своя оплаченная подписка, без ограничения трафика, — \
+             приглашение вам не нужно."
+                .to_owned()
+        }
+        Accepted::AlreadyGuest => {
+            "Вы уже подключены к чьей-то подписке. Чтобы перейти к другой, попросите \
+             нынешнего владельца отключить вас."
+                .to_owned()
+        }
+        Accepted::HasGuests => {
+            "К вашей подписке подключены гости, поэтому стать гостем самому нельзя.".to_owned()
+        }
+    }
 }
 
 /// Открыть страницу оплаты и вернуть её адрес.
@@ -2040,7 +2151,9 @@ pub fn reissue_for(
 /// точного числа и гораздо лучше молчания: разговор не прерывается из-за
 /// того, что не удалось узнать остаток.
 fn trial_left(panel: &Panel, subscriber: &Subscriber) -> Option<u64> {
-    if subscriber.has_paid || subscriber.expires_at.is_none() {
+    // У гостя потолок свой, месячный, — пробным он не назван и в боте не
+    // показывается как проба.
+    if subscriber.has_paid || subscriber.owner_id.is_some() || subscriber.expires_at.is_none() {
         return None;
     }
 
@@ -2083,7 +2196,9 @@ fn ensure_panel_user(
             telegram_id,
             expires_at,
             squads: config.paid_squads(),
-            device_limit: catalog::DEVICES,
+            // Проба — как «Личный»; тариф, если он есть, очередь отвезёт
+            // следом вместе с отрядами.
+            device_limit: catalog::TRIAL_DEVICES,
             traffic_limit: traffic_limit(has_paid),
         })
         .map_err(|error| format!("панель: {error}"))?;
@@ -2284,6 +2399,8 @@ mod reconcile_tests {
             panel_id: Some(7),
             subscription_url: Some("https://panel.example.org/api/sub/AbCdE".to_owned()),
             has_paid: false,
+            tier: None,
+            owner_id: None,
         }
     }
 
@@ -2538,6 +2655,8 @@ mod fee_tests {
 mod plan_tests {
     use super::{panel_plan, traffic_limit, Plan, FREE_MARK, FREE_UNTIL};
     use crate::config::{Config, FREE_SQUADS};
+    use atlas_bot::catalog;
+    use atlas_panel::TrafficReset;
     use atlas_store::PanelWork;
     use std::collections::HashMap;
 
@@ -2545,33 +2664,36 @@ mod plan_tests {
     const PAID: &str = "b6f5d810-8ef3-4be9-9012-3456789abcde";
     const FREE: &str = "0a0b0c0d-0000-4000-8000-000000000001";
 
-    fn config(free: bool) -> Option<Config> {
-        let mut vars: HashMap<String, String> = [
+    fn config() -> Option<Config> {
+        let vars: HashMap<String, String> = [
             ("GLORIA_BOT_TOKEN", "123456:AAHkTestToken"),
             ("GLORIA_PANEL_URL", "https://panel.example.org"),
             ("GLORIA_PANEL_TOKEN", "panel-token"),
             ("GLORIA_DATABASE_URL", "postgres://gloria@localhost/gloria"),
             ("GLORIA_SQUADS", PAID),
+            (FREE_SQUADS, FREE),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
-        if free {
-            vars.insert(FREE_SQUADS.to_owned(), FREE.to_owned());
-        }
         let config = Config::from_map(&vars);
         assert!(config.is_ok(), "настройки не собрались");
         config.ok()
     }
 
-    fn work(lapsed: bool, has_paid: bool) -> PanelWork {
+    fn work(kind: &str, has_paid: bool) -> PanelWork {
         PanelWork {
             telegram_id: 42,
             panel_id: 7,
             expires_at: NOW,
             has_paid,
-            lapsed,
+            lapsed: kind == "free",
+            kind: kind.to_owned(),
         }
+    }
+
+    fn both() -> Vec<String> {
+        vec![PAID.to_owned(), FREE.to_owned()]
     }
 
     #[test]
@@ -2579,50 +2701,78 @@ mod plan_tests {
         const { assert!(FREE_UNTIL > FREE_MARK) };
     }
 
-    /// Бесплатный доступ выключен — в панель едет одна дата, как раньше.
     #[test]
-    fn without_the_free_plan_only_the_date_travels() {
-        let Some(config) = config(false) else { return };
+    fn a_tier_gets_its_devices_and_no_traffic_cap() {
+        let Some(config) = config() else { return };
+        for (kind, devices) in [("personal", 2), ("family", 3)] {
+            assert_eq!(
+                panel_plan(&config, &work(kind, true)),
+                Plan {
+                    expires_at: NOW,
+                    traffic: 0,
+                    reset: TrafficReset::Never,
+                    devices,
+                    squads: both(),
+                },
+                "{kind}"
+            );
+        }
+    }
+
+    /// Гость — 30 ГБ, каждый месяц заново, одно устройство. Безлимит
+    /// остаётся у владельца, который платит.
+    #[test]
+    fn a_guest_gets_thirty_gigabytes_a_month_on_one_device() {
+        let Some(config) = config() else { return };
         assert_eq!(
-            panel_plan(&config, &work(false, true)),
-            Plan::Expiry {
+            panel_plan(&config, &work("guest", false)),
+            Plan {
                 expires_at: NOW,
-                traffic: 0
+                traffic: 30 * 1024 * 1024 * 1024,
+                reset: TrafficReset::Monthly,
+                devices: 1,
+                squads: both(),
             }
         );
     }
 
-    /// Подписка идёт — платные и бесплатные отряды вместе, и потолок пробы,
-    /// если это проба.
+    /// Платил до тарифов — прежние три устройства; проба — два и её потолок.
     #[test]
-    fn a_running_subscription_gets_paid_and_free_squads() {
-        let Some(config) = config(true) else { return };
-        let plan = panel_plan(&config, &work(false, false));
+    fn the_old_payers_keep_three_devices_and_the_trial_gets_two() {
+        let Some(config) = config() else { return };
+        let old = panel_plan(&config, &work("paid", true));
+        assert_eq!((old.devices, old.traffic), (catalog::DEVICES, 0));
+        let trial = panel_plan(&config, &work("paid", false));
         assert_eq!(
-            plan,
-            Plan::Squads {
-                expires_at: NOW,
-                traffic: traffic_limit(false),
-                squads: vec![PAID.to_owned(), FREE.to_owned()],
-            }
+            (trial.devices, trial.traffic),
+            (catalog::TRIAL_DEVICES, traffic_limit(false))
         );
     }
 
-    /// Кончилась — одни бесплатные отряды, далёкая дата и никакого потолка:
-    /// израсходованная проба не должна отрезать человека от бесплатного
-    /// сервера, по которому он придёт продлевать.
+    /// Кончилась — одни бесплатные отряды, далёкая дата и никакого потолка.
     #[test]
     fn a_lapsed_subscription_keeps_only_the_free_squads() {
-        let Some(config) = config(true) else { return };
-        let plan = panel_plan(&config, &work(true, false));
-        assert_eq!(
-            plan,
-            Plan::Squads {
-                expires_at: FREE_UNTIL,
-                traffic: 0,
-                squads: vec![FREE.to_owned()],
-            }
-        );
+        let Some(config) = config() else { return };
+        let plan = panel_plan(&config, &work("free", false));
+        assert_eq!(plan.expires_at, FREE_UNTIL);
+        assert_eq!(plan.traffic, 0);
+        assert_eq!(plan.squads, vec![FREE.to_owned()]);
+    }
+
+    /// Места для гостей записаны дважды: витрине — в `catalog`, базе — в
+    /// `atlas_store`. Разойдись они, кабинет обещал бы одно, а база
+    /// пускала бы другое.
+    #[test]
+    fn the_shop_and_the_database_agree_on_guest_slots() {
+        for tier in catalog::Tier::ALL {
+            assert_eq!(
+                i64::from(tier.guests()),
+                atlas_store::guest_slots(Some(tier.as_str())),
+                "{}",
+                tier.as_str()
+            );
+        }
+        assert_eq!(atlas_store::guest_slots(None), 0);
     }
 }
 

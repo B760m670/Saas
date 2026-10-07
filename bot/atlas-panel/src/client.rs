@@ -54,6 +54,41 @@ pub struct NewUser {
     pub traffic_limit: u64,
 }
 
+/// Когда панель обнуляет счётчик трафика.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrafficReset {
+    /// Никогда: потолок на весь срок. Так у пробы — пять гигабайт один раз.
+    Never,
+    /// Каждый месяц. Так у гостя — 30 ГБ в месяц.
+    Monthly,
+}
+
+impl TrafficReset {
+    /// Имя стратегии в API панели.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Never => "NO_RESET",
+            Self::Monthly => "MONTH",
+        }
+    }
+}
+
+/// Что поставить пользователю в панели ([`Panel::set_plan`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanSpec<'a> {
+    /// До какого момента действует.
+    pub expires_at: i64,
+    /// Потолок трафика в байтах. `0` — без ограничения.
+    pub traffic_limit: u64,
+    /// Когда потолок обнуляется.
+    pub traffic_reset: TrafficReset,
+    /// Сколько устройств.
+    pub devices: u8,
+    /// Отряды.
+    pub squads: &'a [String],
+}
+
 /// Пользователь, каким его вернула панель.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct User {
@@ -282,33 +317,28 @@ impl Panel {
         }
     }
 
-    /// Поставить срок вместе с отрядами.
+    /// Поставить всё, что панель должна знать о человеке, одним запросом:
+    /// срок, трафик, устройства и отряды.
     ///
-    /// То же, что [`Self::set_expiry`], плюс список отрядов, через которые
-    /// пользователю разрешено ходить. Нужно бесплатному доступу: по
-    /// окончании подписки бот не даёт панели погасить человека, а оставляет
-    /// ему одни бесплатные отряды — и сам же возвращает платные после оплаты.
-    ///
-    /// Отряды уезжают **вместе** с датой, одним запросом. Два запроса
-    /// разошлись бы при обрыве связи между ними: человек с продлённой датой и
-    /// бесплатными отрядами заплатил бы и не получил ничего.
-    pub fn set_plan(
-        &self,
-        panel_id: i64,
-        expires_at: i64,
-        traffic_limit: u64,
-        squads: &[String],
-    ) -> Result<Request, Error> {
-        let squads = squads_json(squads)?;
+    /// Нужно тарифам и гостям: у «Личного» и «Семьи» разное число устройств,
+    /// у гостя — 30 ГБ в месяц с обнулением, у кончившейся подписки — одни
+    /// бесплатные отряды. Всё это уезжает **вместе**: два запроса разошлись
+    /// бы при обрыве связи между ними, и человек заплатил бы и не получил
+    /// ничего.
+    pub fn set_plan(&self, panel_id: i64, spec: &PlanSpec<'_>) -> Result<Request, Error> {
+        let squads = squads_json(spec.squads)?;
         let body = format!(
             concat!(
                 r#"{{"id":{panel_id},"expireAt":"{expires}","#,
-                r#""trafficLimitBytes":{traffic},"status":"ACTIVE","#,
+                r#""trafficLimitBytes":{traffic},"trafficLimitStrategy":"{strategy}","#,
+                r#""hwidDeviceLimit":{devices},"status":"ACTIVE","#,
                 r#""activeInternalSquads":[{squads}]}}"#
             ),
             panel_id = panel_id,
-            expires = to_iso8601(expires_at),
-            traffic = traffic_limit,
+            expires = to_iso8601(spec.expires_at),
+            traffic = spec.traffic_limit,
+            strategy = spec.traffic_reset.as_str(),
+            devices = spec.devices,
             squads = squads,
         );
         Ok(Request {
@@ -460,7 +490,7 @@ fn squads_json(squads: &[String]) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, NewUser, Panel};
+    use super::{Error, NewUser, Panel, PlanSpec, TrafficReset};
     use atlas_billing::http::Method;
 
     const TOKEN: &str = "test-token-value";
@@ -603,16 +633,23 @@ mod tests {
         assert!(body.contains(r#""trafficLimitBytes":5368709120"#), "{body}");
     }
 
-    /// Дата, потолок и отряды уходят одним запросом: два запроса разошлись
-    /// бы при обрыве связи, и заплативший остался бы на бесплатных отрядах.
+    /// Дата, трафик, устройства и отряды уходят одним запросом: два запроса
+    /// разошлись бы при обрыве связи, и заплативший остался бы ни с чем.
     #[test]
-    fn a_plan_carries_the_date_and_the_squads_together() {
+    fn a_plan_carries_everything_together() {
         let Some(panel) = panel() else { return };
         let squads = vec![
             "b6f5d810-8ef3-4be9-9012-3456789abcde".to_owned(),
             "0a0b0c0d-0000-4000-8000-000000000001".to_owned(),
         ];
-        let request = panel.set_plan(7, 1_788_000_000, 0, &squads);
+        let spec = PlanSpec {
+            expires_at: 1_788_000_000,
+            traffic_limit: 32_212_254_720,
+            traffic_reset: TrafficReset::Monthly,
+            devices: 1,
+            squads: &squads,
+        };
+        let request = panel.set_plan(7, &spec);
         assert!(request.is_ok(), "план не собрался: {request:?}");
         let Ok(request) = request else { return };
         assert_eq!(request.method, Method::Patch);
@@ -624,7 +661,12 @@ mod tests {
             body.contains(r#""expireAt":"2026-08-29T10:40:00.000Z""#),
             "{body}"
         );
-        assert!(body.contains(r#""trafficLimitBytes":0"#), "{body}");
+        assert!(
+            body.contains(r#""trafficLimitBytes":32212254720"#),
+            "{body}"
+        );
+        assert!(body.contains(r#""trafficLimitStrategy":"MONTH""#), "{body}");
+        assert!(body.contains(r#""hwidDeviceLimit":1"#), "{body}");
         assert!(body.contains(r#""status":"ACTIVE""#), "{body}");
         assert!(
             body.contains(
@@ -641,7 +683,14 @@ mod tests {
     fn a_bad_squad_identifier_does_not_reach_the_plan() {
         let Some(panel) = panel() else { return };
         let squads = vec![r#"x","status":"ADMIN"#.to_owned()];
-        assert!(panel.set_plan(7, 1_788_000_000, 0, &squads).is_err());
+        let spec = PlanSpec {
+            expires_at: 1_788_000_000,
+            traffic_limit: 0,
+            traffic_reset: TrafficReset::Never,
+            devices: 2,
+            squads: &squads,
+        };
+        assert!(panel.set_plan(7, &spec).is_err());
     }
 
     #[test]

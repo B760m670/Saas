@@ -133,7 +133,7 @@ pub(crate) struct Shared {
     pub(crate) freekassa: Option<atlas_billing::Freekassa>,
     pub(crate) telegram: Option<Telegram>,
     bot_token: String,
-    bot_username: Option<String>,
+    pub(crate) bot_username: Option<String>,
     /// Куда отправлять за переводом. Нет — счёт всё равно выставляется, но
     /// платить человеку негде, и он это увидит.
     pub(crate) pay_link: Option<String>,
@@ -210,6 +210,14 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         .map(str::to_owned)
         .filter(|id| !id.is_empty());
 
+    // Семья: пригласить близкого, отключить гостя.
+    let family = crate::family::route(&request.path);
+    let family = match family {
+        Some(Ok(route)) => Some(route),
+        Some(Err((status, body))) => return send(&mut stream, status, body),
+        None => None,
+    };
+
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
     if request.path != "/api/me"
@@ -217,6 +225,7 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         && claimed.is_none()
         && order_plan.is_none()
         && transfer_order.is_none()
+        && family.is_none()
     {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
@@ -248,6 +257,11 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         // «строка просрочена» полезна только тому, кто подбирает.
         return send(&mut stream, 401, r#"{"error":"подпись не принята"}"#);
     };
+
+    if let Some(route) = family {
+        let (status, body) = crate::family::answer(shared, verified.user_id(), route, now);
+        return send(&mut stream, status, &body);
+    }
 
     if let Some(plan) = order_plan {
         return match crate::open_order_for(shared, verified.user_id(), &plan, now) {
@@ -728,6 +742,10 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
     // удивить его окончанием, которого он не ждал.
     let status = if !active {
         "expired"
+    } else if subscriber.owner_id.is_some() {
+        // Гость: подписка чужая, и говорить ему «активна» без оговорки —
+        // значит не объяснить, откуда 30 ГБ и почему нельзя пригласить своих.
+        "guest"
     } else if subscriber.trial_granted_at.is_some() && !subscriber.has_paid {
         "trial"
     } else {
@@ -745,6 +763,19 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
     // врать: трафик кончится раньше срока, VPN отключится, а кабинет будет
     // обещать ещё неделю.
     let trial_left = crate::trial_left(&shared.panel, &subscriber);
+
+    // У гостя потолок тоже в гигабайтах, но месячный.
+    let guest_left = if active && subscriber.owner_id.is_some() {
+        crate::family::traffic_left(shared, telegram_id)
+    } else {
+        None
+    };
+    let tier = subscriber
+        .tier
+        .as_deref()
+        .and_then(catalog::Tier::parse)
+        .filter(|_| active && subscriber.owner_id.is_none());
+    let family = crate::family::section(shared, &subscriber, active);
 
     // Бонусы. Сначала возвращаем зависшие на истёкших счетах: кабинет — то
     // место, куда человек идёт посмотреть баланс, и показать там число
@@ -777,7 +808,11 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         // Сколько устройств занято, знает панель, а не мы. Присылать ноль
         // значило бы показать «0 из 4» тому, у кого их два.
         "devices": serde_json::Value::Null,
-        "deviceLimit": catalog::DEVICES,
+        "deviceLimit": crate::family::device_limit(&subscriber, active),
+        "tier": tier.map(catalog::Tier::as_str),
+        "tierTitle": tier.map(catalog::Tier::title),
+        "guestLeft": guest_left.map(atlas_bot::gigabytes),
+        "family": family,
         "userId": telegram_id,
         "subscriptionUrl": subscriber.subscription_url,
         // Из него страница строит ссылку «оплатить» в переписку с ботом.

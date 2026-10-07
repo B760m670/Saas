@@ -31,8 +31,10 @@ use atlas_billing::subscription;
 use postgres::{Client, NoTls, Row, Transaction};
 
 mod admin;
+mod family;
 
 pub use admin::{Card, Extended, LogEntry, Payment, Summary, MAX_MANUAL_DAYS};
+pub use family::{guest_slots, Accepted, Guest, Invited, INVITE_LIFETIME};
 
 /// Отказ при работе с хранилищем.
 #[derive(Debug)]
@@ -87,10 +89,15 @@ pub struct Subscriber {
     /// неразличимы, а называть пробу «активной подпиской» значит однажды
     /// удивить человека окончанием, которого он не ждал.
     pub has_paid: bool,
+    /// Тариф последней покупки: `personal` или `family`. `None` — платил до
+    /// появления тарифов или не платил.
+    pub tier: Option<String>,
+    /// Чей это гость. `None` — сам себе хозяин.
+    pub owner_id: Option<i64>,
 }
 
 /// Один человек, до которого панель ещё не доехала.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PanelWork {
     /// Кому.
     pub telegram_id: i64,
@@ -113,6 +120,11 @@ pub struct PanelWork {
     /// отметке [`Store::mark_panel_free`], чтобы не съесть оплату, случившуюся
     /// между чтением очереди и ответом панели.
     pub lapsed: bool,
+    /// Что должно стоять в панели: `free`, `guest`, `personal`, `family`
+    /// или `paid` — прежний платный без тарифа либо проба. От этого зависят
+    /// устройства, трафик и отряды; [`Store::mark_panel_synced`] запоминает
+    /// то же слово.
+    pub kind: String,
 }
 
 /// Кому и о чём пора напомнить.
@@ -261,7 +273,8 @@ impl Store {
                        panel_id, subscription_url,
                        EXISTS (SELECT 1 FROM orders
                                 WHERE orders.telegram_id = users.telegram_id
-                                  AND orders.status = 'paid')",
+                                  AND orders.status = 'paid'),
+                       tier, owner_id",
             &[&telegram_id],
         )?;
 
@@ -273,6 +286,8 @@ impl Store {
             panel_id: row.try_get(4)?,
             subscription_url: row.try_get(5)?,
             has_paid: row.try_get(6)?,
+            tier: row.try_get(7)?,
+            owner_id: row.try_get(8)?,
         })
     }
 
@@ -353,19 +368,28 @@ impl Store {
         now: i64,
         with_free: bool,
     ) -> Result<Vec<PanelWork>, Error> {
+        // Что должно стоять в панели у человека с идущим сроком. Смена
+        // тарифа или превращение в гостя при той же дате — тоже работа:
+        // меняются устройства и трафик.
         let rows = self.client.query(
             "SELECT telegram_id, panel_id, FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
                     EXISTS (SELECT 1 FROM orders
                              WHERE orders.telegram_id = users.telegram_id
                                AND orders.status = 'paid'),
-                    expires_at <= to_timestamp($2::bigint)
-               FROM users
+                    expires_at <= to_timestamp($2::bigint),
+                    kind
+               FROM (SELECT users.*,
+                            CASE WHEN expires_at <= to_timestamp($2::bigint) THEN 'free'
+                                 WHEN owner_id IS NOT NULL THEN 'guest'
+                                 WHEN tier IS NOT NULL THEN tier
+                                 ELSE 'paid' END AS kind
+                       FROM users) AS users
               WHERE panel_id IS NOT NULL
                 AND expires_at IS NOT NULL
                 AND (
                       (expires_at > to_timestamp($2::bigint)
                        AND (expires_at IS DISTINCT FROM panel_expires_at
-                            OR ($3 AND panel_plan IS DISTINCT FROM 'paid')))
+                            OR panel_plan IS DISTINCT FROM kind))
                    OR ($3 AND expires_at <= to_timestamp($2::bigint)
                           AND panel_plan IS DISTINCT FROM 'free')
                 )
@@ -382,6 +406,7 @@ impl Store {
                     expires_at: row.try_get(2)?,
                     has_paid: row.try_get(3)?,
                     lapsed: row.try_get(4)?,
+                    kind: row.try_get(5)?,
                 })
             })
             .collect()
@@ -419,22 +444,20 @@ impl Store {
     /// согласованной дату, которой панель не видела, и продление потерялось
     /// бы молча. При таком же условии строка просто останется в очереди.
     ///
-    /// `with_free` — отвозили ли вместе с датой платные отряды. Тогда они и
-    /// отмечаются. Без бесплатного доступа отряды не отвозятся, и отметка о
-    /// них остаётся пустой: включи его потом — очередь отвезёт отряды заново,
-    /// а не сочтёт их уже стоящими.
+    /// `kind` — что отвозили ([`PanelWork::kind`]): то же слово ложится в
+    /// `panel_plan`, и очередь перестаёт считать человека работой.
     pub fn mark_panel_synced(
         &mut self,
         telegram_id: i64,
         sent: i64,
-        with_free: bool,
+        kind: &str,
     ) -> Result<(), Error> {
         self.client.execute(
             "UPDATE users
                 SET panel_expires_at = to_timestamp($2::bigint),
-                    panel_plan = CASE WHEN $3 THEN 'paid' ELSE panel_plan END
+                    panel_plan = $3
               WHERE telegram_id = $1 AND expires_at = to_timestamp($2::bigint)",
-            &[&telegram_id, &sent, &with_free],
+            &[&telegram_id, &sent, &kind],
         )?;
         Ok(())
     }
@@ -1286,7 +1309,7 @@ fn settle_in(
     // 1. Заказ под замком. Второй платёж по тому же заказу подождёт здесь, а
     //    не станет считать срок одновременно с первым.
     let order = tx.query_opt(
-        "SELECT status, days, amount_minor, currency, telegram_id
+        "SELECT status, days, amount_minor, currency, telegram_id, plan
            FROM orders WHERE id = $1 FOR UPDATE",
         &[&order_id],
     )?;
@@ -1325,6 +1348,7 @@ fn settle_in(
     let expected_minor: i64 = order.try_get(2)?;
     let currency: String = order.try_get(3)?;
     let telegram_id: i64 = order.try_get(4)?;
+    let plan: String = order.try_get(5)?;
 
     let Some(currency) = Currency::parse(&currency) else {
         return Err(Error::Inconsistent("валюта заказа неизвестна"));
@@ -1343,7 +1367,16 @@ fn settle_in(
         &[&order_id, &now],
     )?;
 
-    // 3. Срок считаем мы, а не база и не панель: то же правило, что везде.
+    // 3. Купивший сам — уже не гость. Связь с владельцем снимается до
+    //    продления: иначе срок продлился бы и тут же был бы перезаписан
+    //    сроком владельца (триггер `guests_follow_owner`).
+    tx.execute(
+        "UPDATE users SET owner_id = NULL, guest_since = NULL
+          WHERE telegram_id = $1 AND owner_id IS NOT NULL",
+        &[&telegram_id],
+    )?;
+
+    // Срок считаем мы, а не база и не панель: то же правило, что везде.
     let user = tx.query_one(
         "SELECT FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint FROM users
           WHERE telegram_id = $1 FOR UPDATE",
@@ -1359,6 +1392,33 @@ fn settle_in(
     tx.execute(
         "UPDATE users SET expires_at = to_timestamp($2::bigint) WHERE telegram_id = $1",
         &[&telegram_id, &expires_at],
+    )?;
+
+    // Тариф — по первой букве имени тарифа: `d…` — «Личный», `f…` —
+    // «Семья» (atlas_bot::catalog). Действует с этой покупки.
+    let tier = if plan.starts_with('f') {
+        "family"
+    } else {
+        "personal"
+    };
+    tx.execute(
+        "UPDATE users SET tier = $2 WHERE telegram_id = $1",
+        &[&telegram_id, &tier],
+    )?;
+
+    // Мест у нового тарифа может оказаться меньше, чем гостей: «Семья» на
+    // четверых сменилась «Личным» на одного. Остаются пришедшие раньше,
+    // последние отключаются — их срок кончается сейчас, и очередь переведёт
+    // их на бесплатный доступ.
+    tx.execute(
+        "UPDATE users
+            SET owner_id = NULL, guest_since = NULL,
+                expires_at = LEAST(expires_at, to_timestamp($3::bigint))
+          WHERE telegram_id IN (SELECT telegram_id FROM users
+                                 WHERE owner_id = $1
+                                 ORDER BY guest_since, telegram_id
+                                OFFSET $2)",
+        &[&telegram_id, &family::guest_slots(Some(tier)), &now],
     )?;
 
     // 4. Бонусы пригласившему — в той же транзакции, что и продление.
