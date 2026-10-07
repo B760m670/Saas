@@ -1706,17 +1706,45 @@ a.btn.off { opacity: 0.45; }
      и ещё раз, если Telegram доехал позже. Первый запрос в этом случае
      уходит без подписи и получает отказ — без повтора кабинет так и остался
      бы с прочерками при исправном сервере. */
+  /* Номер последнего запроса. Запросов бывает два подряд (без подписи и с
+     ней), и ответы приходят в любом порядке: на мобильной сети отказ на
+     первый легко приезжает позже настоящего ответа на второй. Без номера
+     он затирал настоящие данные прочерками. */
+  var loadSeq = 0;
+  var retried = false;
+
   function load() {
+    var mine = ++loadSeq;
+    var failure = null;
     return fetch('/api/me', {
       headers: { 'X-Init-Data': (tg && tg.initData) || '' }
     }).then(function (r) {
-      if (!r.ok) throw new Error('нет ответа');
+      if (!r.ok) { failure = r.status; throw new Error('код ' + r.status); }
       return r.json();
     }).catch(function () {
+      if (failure == null) failure = 'нет связи';
       /* Сервер не ответил. Выдуманные числа на их месте выглядели бы как
          настоящие, поэтому здесь пусто: прочерки и погашенные кнопки. */
-      return { status: null, subscriptionUrl: null, referral: {} };
+      return null;
     }).then(function (data) {
+      // Устаревший ответ: следом ушёл новый запрос, решает он.
+      if (mine !== loadSeq) return;
+
+      if (!data) {
+        /* Однажды повторяем сами: подпись Telegram могла доехать чуть позже
+           запроса. Уже полученные данные неудачей не затираются. */
+        if (!retried && tg && tg.initData) {
+          retried = true;
+          setTimeout(load, 1200);
+          return;
+        }
+        if (state && state.status) return;
+        toast(failure === 401
+          ? 'Сессия устарела — закройте кабинет и откройте заново'
+          : 'Сервер не ответил (' + failure + '). Попробуйте позже');
+        data = { status: null, subscriptionUrl: null, referral: {} };
+      }
+
       state = data;
       render();
       route();
