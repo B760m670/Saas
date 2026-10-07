@@ -137,6 +137,8 @@ pub struct Reminder {
     /// К какому сроку относится. Входит в отметку об отправке: продливший
     /// человек получает новый набор напоминаний, а не молчание.
     pub expires_at: i64,
+    /// Кончается проба, а не оплаченная подписка: текст другой.
+    pub trial: bool,
 }
 
 /// Чем кончилась попытка выдать пробу.
@@ -519,7 +521,7 @@ impl Store {
     /// | Вид | Когда | Слово в сообщении |
     /// |---|---|---|
     /// | `day_before` | за 23–25 часов до окончания | «завтра» |
-    /// | `same_day`   | в последние 3 часа | «сегодня» |
+    /// | `same_day`   | за 3 часа, ночью — накануне в 22:00 по Москве | дата и время |
     /// | `after_3d`   | через 3–4 суток после | — |
     ///
     /// **Окна узкие, и это не придирка.** «Завтра» верно ровно тогда, когда
@@ -530,8 +532,13 @@ impl Store {
     /// промах у тех, чья подписка кончается в первом часу ночи; в обмен
     /// круг может пропустить пару минут и ничего не потерять.
     ///
+    /// **Ночью не будим.** Если «за три часа» приходится на время с 23:00 до
+    /// 9:00 по Москве, сообщение уходит раньше — в 22:00 накануне. Поэтому
+    /// в тексте `same_day` не «сегодня», а дата и время окончания.
+    ///
     /// Окна не пересекаются: иначе человек с остатком в пару часов получил
-    /// бы два сообщения подряд.
+    /// бы два сообщения подряд. Самое раннее `same_day` — около 14 часов до
+    /// окончания, а `day_before` — не позже 23.
     ///
     /// **Окна ограничены с обеих сторон** намеренно. Без нижней границы
     /// первый же круг после выкладки разослал бы «ваша подписка истекла»
@@ -548,7 +555,12 @@ impl Store {
         let rows = self.client.query(
             "SELECT u.telegram_id,
                     k.kind,
-                    FLOOR(EXTRACT(EPOCH FROM u.expires_at))::bigint
+                    FLOOR(EXTRACT(EPOCH FROM u.expires_at))::bigint,
+                    u.trial_granted_at IS NOT NULL
+                      AND u.owner_id IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM orders o
+                                       WHERE o.telegram_id = u.telegram_id
+                                         AND o.status = 'paid')
                FROM users u
                CROSS JOIN (VALUES ('day_before'), ('same_day'), ('after_3d')) AS k(kind)
               WHERE u.expires_at IS NOT NULL
@@ -557,8 +569,20 @@ impl Store {
                            u.expires_at >  to_timestamp($1::bigint) + interval '23 hours'
                        AND u.expires_at <= to_timestamp($1::bigint) + interval '25 hours'
                       WHEN 'same_day' THEN
-                           u.expires_at >  to_timestamp($1::bigint)
-                       AND u.expires_at <= to_timestamp($1::bigint) + interval '3 hours'
+                           u.expires_at > to_timestamp($1::bigint)
+                       AND to_timestamp($1::bigint) >= (
+                             WITH t(at) AS (
+                               SELECT (u.expires_at - interval '3 hours')
+                                        AT TIME ZONE 'Europe/Moscow')
+                             SELECT CASE
+                                      WHEN EXTRACT(HOUR FROM at) >= 23
+                                        OR EXTRACT(HOUR FROM at) < 9
+                                      -- 22:00 того же вечера или накануне
+                                      THEN date_trunc('day', at + interval '1 hour')
+                                             - interval '2 hours'
+                                      ELSE at
+                                    END AT TIME ZONE 'Europe/Moscow'
+                               FROM t)
                       ELSE
                            u.expires_at <= to_timestamp($1::bigint) - interval '3 days'
                        AND u.expires_at >  to_timestamp($1::bigint) - interval '4 days'
@@ -579,6 +603,7 @@ impl Store {
                     telegram_id: row.try_get(0)?,
                     kind: row.try_get(1)?,
                     expires_at: row.try_get(2)?,
+                    trial: row.try_get(3)?,
                 })
             })
             .collect()

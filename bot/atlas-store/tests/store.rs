@@ -1197,6 +1197,75 @@ fn the_last_reminder_arrives_before_the_subscription_ends() {
     );
 }
 
+/// Последнее напоминание — за три часа; если это приходится на ночь по
+/// Москве (23:00–9:00), оно уходит накануне в 22:00.
+#[test]
+fn the_last_reminder_does_not_wake_anyone_at_night() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    // 2 ноября 2026 года, 00:00 UTC (03:00 по Москве).
+    const DAY: i64 = 1_793_577_600;
+    const HOUR: i64 = 3600;
+
+    // Окончание в 14:00 МСК (11:00 UTC): напоминание в 11:00 МСК, днём.
+    subscriber(&mut store, 51);
+    let granted = DAY + 11 * HOUR - 2 * 86_400;
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(51, 2, granted) else {
+        return;
+    };
+    let due = |store: &mut Store, at: i64| {
+        store
+            .due_reminders(at, 10)
+            .map(|due| {
+                due.iter()
+                    .any(|r| r.telegram_id == 51 && r.kind == "same_day")
+            })
+            .unwrap_or(false)
+    };
+    assert!(!due(&mut store, expires_at - 3 * HOUR - 60));
+    assert!(due(&mut store, expires_at - 3 * HOUR));
+
+    // Окончание в 10:00 МСК (07:00 UTC): «за три часа» — это 07:00 МСК,
+    // ночь. Уходит в 22:00 МСК накануне, за двенадцать часов.
+    subscriber(&mut store, 52);
+    let granted = DAY + 7 * HOUR - 2 * 86_400;
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(52, 2, granted) else {
+        return;
+    };
+    let due = |store: &mut Store, at: i64| {
+        store
+            .due_reminders(at, 10)
+            .map(|due| {
+                due.iter()
+                    .any(|r| r.telegram_id == 52 && r.kind == "same_day")
+            })
+            .unwrap_or(false)
+    };
+    assert!(!due(&mut store, expires_at - 12 * HOUR - 60));
+    assert!(due(&mut store, expires_at - 12 * HOUR));
+}
+
+/// Напоминание знает, что кончается проба, — у неё свой текст. Заплатил —
+/// уже не проба.
+#[test]
+fn a_trial_reminder_is_marked_as_a_trial() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 2, NOW) else {
+        return;
+    };
+    let Ok(due) = store.due_reminders(expires_at - 24 * 3600, 10) else {
+        return;
+    };
+    assert!(
+        due.iter().any(|r| r.kind == "day_before" && r.trial),
+        "{due:?}"
+    );
+}
+
 /// Окна не пересекаются: у человека, которому осталось несколько часов, не
 /// должно прийти два сообщения подряд — «через три дня» и «меньше суток».
 #[test]

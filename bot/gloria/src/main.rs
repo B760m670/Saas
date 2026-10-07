@@ -328,22 +328,50 @@ fn remind(deps: &Deps<'_>, store: &mut Store) {
 /// кабинет не открыть: ссылка из сообщения уводит в браузер, а кабинету
 /// нужен запуск внутри Telegram — иначе не будет подписи, по которой мы
 /// узнаём, кто пришёл.
+///
+/// У `same_day` вместо «сегодня» — дата и время: ночью напоминание уходит
+/// накануне вечером, и «сегодня» было бы неправдой. У пробы своя пара
+/// текстов: «подписка» человеку, который ещё не платил, звучит как счёт.
 fn reminder_text(item: &Reminder) -> Option<String> {
-    Some(match item.kind.as_str() {
-        "day_before" => "⚠️ Подписка истекает завтра.\n\n\
-                         Продлите сейчас — и останетесь под защитой без перерыва."
+    let at = moscow_time(item.expires_at);
+    Some(match (item.kind.as_str(), item.trial) {
+        ("day_before", true) => format!(
+            "⏳ Пробный доступ закончится {at} (МСК).\n\n\
+             Продлите доступ, чтобы оставаться на связи."
+        ),
+        ("day_before", false) => "⚠️ Подписка истекает завтра.\n\n\
+                                  Продлите сейчас — и останетесь под защитой без перерыва."
             .to_owned(),
 
-        "same_day" => "🚨 Подписка истекает сегодня.\n\n\
-                       Продлите, и доступ не прервётся."
-            .to_owned(),
+        ("same_day", true) => format!(
+            "🚨 Пробный доступ заканчивается {at} (МСК).\n\n\
+             Продлите сейчас, и VPN не отключится."
+        ),
+        ("same_day", false) => format!(
+            "🚨 Подписка истекает {at} (МСК).\n\n\
+             Продлите, и доступ не прервётся."
+        ),
 
         // Здесь дата уместна: относительной оговорки рядом нет, и она
         // единственное, от чего человек может оттолкнуться.
-        "after_3d" => format!("Подписка закончилась {}.", day_month_year(item.expires_at)),
+        ("after_3d", _) => format!("Подписка закончилась {}.", day_month_year(item.expires_at)),
 
         _ => return None,
     })
+}
+
+/// Момент по Москве: `09.10.2026 в 14:05`. Москва — потому что часового
+/// пояса человека мы не знаем, а покупатели в основном живут по ней.
+fn moscow_time(seconds: i64) -> String {
+    const MSK: i64 = 3 * 60 * 60;
+    let local = seconds.saturating_add(MSK);
+    let of_day = local.rem_euclid(24 * 60 * 60);
+    format!(
+        "{} в {:02}:{:02}",
+        day_month_year(local),
+        of_day / 3600,
+        of_day % 3600 / 60
+    )
 }
 
 /// Сколько человек за один круг увозим в панель.
@@ -480,7 +508,7 @@ struct Plan {
 /// |---|---|---|---|---|
 /// | `personal`, `family` | наш | безлимит | по тарифу | платные + бесплатные |
 /// | `guest` | владельца | 30 ГБ, каждый месяц заново | 1 | платные + бесплатные |
-/// | `paid` | наш | безлимит, у пробы — её 5 ГБ | 3 у платившего до тарифов, 2 у пробы | платные + бесплатные |
+/// | `paid` | наш | безлимит | 3 у платившего до тарифов, 2 у пробы | платные + бесплатные |
 /// | `free` | 2099 | без потолка | 2 | только бесплатные |
 ///
 /// У `free` потолка нет намеренно: проба, израсходованная до дна, иначе
@@ -510,11 +538,8 @@ fn panel_plan(config: &Config, item: &atlas_store::PanelWork) -> Plan {
             // Платил до тарифов — прежние три устройства до конца срока;
             // проба — как «Личный».
             None if item.has_paid => (0, TrafficReset::Never, catalog::DEVICES),
-            None => (
-                traffic_limit(false),
-                TrafficReset::Never,
-                catalog::TRIAL_DEVICES,
-            ),
+            // Проба — как «Личный» и тоже без потолка трафика.
+            None => (0, TrafficReset::Never, catalog::TRIAL_DEVICES),
         },
     };
 
@@ -836,14 +861,7 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
     // следующем же обращении, иначе оплативший останется без ссылки навсегда.
     if subscriber.subscription_url.is_none() {
         if let Some(expires_at) = subscriber.expires_at {
-            match ensure_panel_user(
-                config,
-                panel,
-                store,
-                telegram_id,
-                expires_at,
-                subscriber.has_paid,
-            ) {
+            match ensure_panel_user(config, panel, store, telegram_id, expires_at) {
                 Ok(url) => subscriber.subscription_url = Some(url),
                 // Разговор не прерываем. Меню без ссылки — плохо, молчащий
                 // бот — хуже: человек не поймёт, сломалось у него или у нас.
@@ -865,6 +883,9 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
 
     let view = flow::View {
         expires_at: subscriber.expires_at,
+        on_trial: subscriber.trial_granted_at.is_some()
+            && !subscriber.has_paid
+            && subscriber.owner_id.is_none(),
         trial_used: subscriber.trial_granted_at.is_some(),
         subscription_url: subscriber.subscription_url.as_deref(),
         app_url: config.miniapp_url.as_deref(),
@@ -1235,9 +1256,7 @@ fn apply(
                 return Ok(None);
             };
 
-            // Проба выдаётся один раз и только тому, кто ещё не платил, —
-            // значит потолок трафика здесь всегда пробный.
-            let url = ensure_panel_user(config, deps.panel, store, telegram_id, expires_at, false)?;
+            let url = ensure_panel_user(config, deps.panel, store, telegram_id, expires_at)?;
             Ok(Some(
                 format!("Ваша ссылка — одна на все устройства:\n<code>{url}</code>").into(),
             ))
@@ -2193,22 +2212,6 @@ fn trial_left(panel: &Panel, subscriber: &Subscriber) -> Option<u64> {
     panel.parse_user(&response.body).ok()?.traffic_left()
 }
 
-/// Потолок трафика, который панель должна знать об этом человеке.
-///
-/// Ноль — без ограничения. Ограничена только проба: она мерится
-/// гигабайтами, и это её единственный настоящий предел.
-///
-/// Функция маленькая, но заведена отдельно намеренно: её вызывают в двух
-/// местах — при заведении и при каждом обновлении, — и разойтись им нельзя.
-/// Разойдись они, заплативший остался бы с потолком пробы.
-const fn traffic_limit(has_paid: bool) -> u64 {
-    if has_paid {
-        0
-    } else {
-        catalog::TRIAL_BYTES
-    }
-}
-
 /// Завести человека в панели, если его там ещё нет, и запомнить ссылку.
 fn ensure_panel_user(
     config: &Config,
@@ -2216,7 +2219,6 @@ fn ensure_panel_user(
     store: &mut Store,
     telegram_id: i64,
     expires_at: i64,
-    has_paid: bool,
 ) -> Result<String, String> {
     let request = panel
         .create(&NewUser {
@@ -2226,7 +2228,8 @@ fn ensure_panel_user(
             // Проба — как «Личный»; тариф, если он есть, очередь отвезёт
             // следом вместе с отрядами.
             device_limit: catalog::TRIAL_DEVICES,
-            traffic_limit: traffic_limit(has_paid),
+            // Без потолка: и у подписки, и у пробы (двое суток безлимита).
+            traffic_limit: 0,
         })
         .map_err(|error| format!("панель: {error}"))?;
 
@@ -2654,6 +2657,57 @@ mod excerpt_tests {
 }
 
 #[cfg(test)]
+mod reminder_tests {
+    use super::{moscow_time, reminder_text};
+    use atlas_store::Reminder;
+
+    /// 2 ноября 2026 года, 11:05 UTC — 14:05 по Москве.
+    const AT: i64 = 1_793_577_600 + 11 * 3600 + 5 * 60;
+
+    #[test]
+    fn time_is_shown_by_moscow() {
+        assert_eq!(moscow_time(AT), "02.11.2026 в 14:05");
+        // 22:30 UTC — уже следующий день по Москве.
+        assert_eq!(
+            moscow_time(1_793_577_600 + 22 * 3600 + 1800),
+            "03.11.2026 в 01:30"
+        );
+    }
+
+    /// Проба называет дату и время окончания и просит продлить.
+    #[test]
+    fn a_trial_reminder_names_the_moment() {
+        for kind in ["day_before", "same_day"] {
+            let item = Reminder {
+                telegram_id: 1,
+                kind: kind.to_owned(),
+                expires_at: AT,
+                trial: true,
+            };
+            let Some(text) = reminder_text(&item) else {
+                return;
+            };
+            assert!(text.contains("Пробный доступ"), "{text}");
+            assert!(text.contains("02.11.2026 в 14:05"), "{text}");
+        }
+    }
+
+    /// «Сегодня» в последнем напоминании нет: ночью оно уходит накануне.
+    #[test]
+    fn the_last_reminder_does_not_say_today() {
+        let item = Reminder {
+            telegram_id: 1,
+            kind: "same_day".to_owned(),
+            expires_at: AT,
+            trial: false,
+        };
+        let text = reminder_text(&item).unwrap_or_default();
+        assert!(!text.contains("сегодня"), "{text}");
+        assert!(text.contains("14:05"), "{text}");
+    }
+}
+
+#[cfg(test)]
 mod fee_tests {
     use super::{freekassa_charge, freekassa_gross, with_fee};
     use atlas_billing::{Currency, Money};
@@ -2723,7 +2777,7 @@ mod fee_tests {
 
 #[cfg(test)]
 mod plan_tests {
-    use super::{panel_plan, traffic_limit, Plan, FREE_MARK, FREE_UNTIL};
+    use super::{panel_plan, Plan, FREE_MARK, FREE_UNTIL};
     use crate::config::{Config, FREE_SQUADS};
     use atlas_bot::catalog;
     use atlas_panel::TrafficReset;
@@ -2806,17 +2860,14 @@ mod plan_tests {
         );
     }
 
-    /// Платил до тарифов — прежние три устройства; проба — два и её потолок.
+    /// Платил до тарифов — прежние три устройства; проба — два, без потолка.
     #[test]
     fn the_old_payers_keep_three_devices_and_the_trial_gets_two() {
         let Some(config) = config() else { return };
         let old = panel_plan(&config, &work("paid", true));
         assert_eq!((old.devices, old.traffic), (catalog::DEVICES, 0));
         let trial = panel_plan(&config, &work("paid", false));
-        assert_eq!(
-            (trial.devices, trial.traffic),
-            (catalog::TRIAL_DEVICES, traffic_limit(false))
-        );
+        assert_eq!((trial.devices, trial.traffic), (catalog::TRIAL_DEVICES, 0));
     }
 
     /// Кончилась — одни бесплатные отряды, далёкая дата и никакого потолка.

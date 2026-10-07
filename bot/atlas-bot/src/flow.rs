@@ -47,6 +47,8 @@ pub struct Reply {
 pub struct View<'a> {
     /// До какого момента действует подписка.
     pub expires_at: Option<i64>,
+    /// Идёт ли сейчас проба: выдана, а платить человек ещё не платил.
+    pub on_trial: bool,
     /// Выдавалась ли проба.
     pub trial_used: bool,
     /// Ссылка на подписку, если она уже выдана.
@@ -168,9 +170,9 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
         "/start" if !view.trial_used => (
             Reply {
                 text: format!(
-                    "{} на пробу уже включены — платить пока не нужно.\n\n\
+                    "{} дня безлимитного доступа уже включены — платить пока не нужно.\n\n\
                      Нажмите «Подключить», и я покажу, что делать дальше.",
-                    gigabytes(catalog::TRIAL_BYTES)
+                    catalog::TRIAL_DAYS
                 ),
                 keyboard: Some(main_menu(view.app_url)),
             },
@@ -349,9 +351,9 @@ fn other_amount_screen(view: &View<'_>) -> Reply {
 }
 
 fn subscription_screen(view: &View<'_>) -> Reply {
-    // У пробы своя мера. Пока она идёт, дни не называются вовсе: человек
-    // упрётся в гигабайты гораздо раньше, чем в дату, и число дней ввело бы
-    // его в заблуждение ровно в тот момент, когда VPN перестал работать.
+    // У прежней пробы (5 ГБ) своя мера: пока она идёт, дни не называются —
+    // человек упрётся в гигабайты раньше, чем в дату. Новая проба — двое
+    // суток без потолка, у неё панель гигабайт не сообщает.
     let head = if let Some(left) = view.trial_left.filter(|_| view.is_active()) {
         if left == 0 {
             "Пробные гигабайты закончились.\n\n\
@@ -364,6 +366,12 @@ fn subscription_screen(view: &View<'_>) -> Reply {
                 gigabytes(catalog::TRIAL_BYTES)
             )
         }
+    } else if view.is_active() && view.on_trial {
+        let days = view.days_left();
+        format!(
+            "Пробный доступ без ограничений: осталось {days} {}.",
+            plural(days, "день", "дня", "дней")
+        )
     } else if view.is_active() {
         let days = view.days_left();
         format!(
@@ -552,6 +560,7 @@ mod tests {
     fn newcomer() -> View<'static> {
         View {
             expires_at: None,
+            on_trial: false,
             trial_used: false,
             subscription_url: None,
             app_url: None,
@@ -563,6 +572,7 @@ mod tests {
     fn active() -> View<'static> {
         View {
             expires_at: Some(NOW + 10 * DAY),
+            on_trial: false,
             trial_used: true,
             subscription_url: Some(LINK),
             app_url: None,
@@ -574,6 +584,7 @@ mod tests {
     fn expired() -> View<'static> {
         View {
             expires_at: Some(NOW - DAY),
+            on_trial: false,
             trial_used: true,
             subscription_url: Some(LINK),
             app_url: None,
@@ -589,8 +600,8 @@ mod tests {
     fn the_first_start_turns_the_trial_on_without_asking() {
         let (reply, effect) = on_message("/start", &newcomer());
         assert_eq!(effect, Effect::GrantTrial);
-        // Проба называется гигабайтами, а не днями: её предел — трафик.
-        assert!(reply.text.contains("5 ГБ"), "{}", reply.text);
+        // Проба называется днями и безлимитом: предела по трафику у неё нет.
+        assert!(reply.text.contains("2 дня безлимитного"), "{}", reply.text);
     }
 
     #[test]
@@ -841,7 +852,17 @@ mod tests {
         }
     }
 
-    /// У пробы предел в гигабайтах, и показывать ей дни — врать: трафик
+    /// Новая проба — двое суток без потолка: называется пробой и днями.
+    #[test]
+    fn a_trial_is_named_with_its_days() {
+        let mut view = active();
+        view.on_trial = true;
+        let text = on_action(&Action::Subscription, &view).0.text;
+        assert!(text.contains("Пробный доступ без ограничений"), "{text}");
+        assert!(text.contains("осталось"), "{text}");
+    }
+
+    /// У прежней пробы предел в гигабайтах, и показывать ей дни — врать: трафик
     /// кончится раньше срока, VPN отключится, а экран будет обещать неделю.
     #[test]
     fn a_trial_is_measured_in_gigabytes_not_days() {
@@ -1014,6 +1035,7 @@ mod tests {
     fn the_days_left_are_rounded_up() {
         let view = View {
             expires_at: Some(NOW + DAY + DAY / 2),
+            on_trial: false,
             trial_used: true,
             subscription_url: None,
             app_url: None,
@@ -1032,6 +1054,7 @@ mod tests {
         let granted_at = NOW;
         let view = View {
             expires_at: Some(granted_at + 3 * DAY),
+            on_trial: false,
             trial_used: true,
             subscription_url: None,
             app_url: None,
@@ -1049,6 +1072,7 @@ mod tests {
     fn the_last_half_hour_is_still_a_day() {
         let view = View {
             expires_at: Some(NOW + 1800),
+            on_trial: false,
             trial_used: true,
             subscription_url: None,
             app_url: None,
