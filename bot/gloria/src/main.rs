@@ -1080,8 +1080,17 @@ fn checkout_freekassa(
     telegram_id: i64,
     plan: &atlas_billing::Plan,
     amount: Money,
+    fee_bp: u32,
 ) -> Result<String, String> {
-    let order = order_for(order_id, telegram_id, plan, amount)?;
+    // В Freekassa уходит цена без комиссии: Freekassa прибавит её сама, и
+    // покупатель заплатит ровно цену из меню. Обратный пересчёт — в
+    // уведомлении (`freekassa_gross`).
+    let order = order_for(
+        order_id,
+        telegram_id,
+        plan,
+        freekassa_charge(amount, fee_bp),
+    )?;
 
     if service.uses_api() {
         let Some(ip) = server_ip else {
@@ -1122,28 +1131,44 @@ fn with_fee(amount: Money, fee_bp: u32) -> Money {
     Money::from_minor(u64::try_from(total).unwrap_or(u64::MAX), amount.currency())
 }
 
-/// Строка о комиссии, которую покупатель видит до оплаты.
+/// Сколько отправить в Freekassa, чтобы с её комиссией вышла ровно цена.
 ///
-/// Называется ставка СБП и итог по ней: СБП выбрана на странице оплаты
-/// заранее. У карты ставка другая и выше, и обещать по ней точную сумму
-/// мы не можем — поэтому о ней сказано словами, а итог покажет сама
-/// страница оплаты, ещё до подтверждения.
-fn fee_note(amount: Money, fee_bp: u32) -> String {
-    if fee_bp == 0 {
-        return "Комиссии сверх цены нет.".to_owned();
+/// Freekassa прибавляет свою ставку к сумме заказа, и покупатель платил
+/// больше, чем видел в меню. Теперь комиссию несёт сервис: в заказ уходит
+/// наименьшая сумма, которая с наценкой даёт не меньше цены. Для всех цен
+/// витрины наценка даёт цену ровно (199 ₽ → 187,74 ₽ → 199,00 ₽). У редких
+/// сумм (после бонусов) копейка «перепрыгивается» — тогда выходит на
+/// копейку больше: меньше нельзя, оплата не покрыла бы счёт.
+///
+/// Способ оплаты в заказе — СБП (`METHOD_SBP`), поэтому ставка одна:
+/// `GLORIA_FREEKASSA_FEE`.
+fn freekassa_charge(amount: Money, fee_bp: u32) -> Money {
+    let price = amount.minor();
+    let rate = u128::from(10_000 + fee_bp);
+    let mut net = u64::try_from(u128::from(price) * 10_000 / rate).unwrap_or(price);
+    let at = |minor: u64| with_fee(Money::from_minor(minor, amount.currency()), fee_bp).minor();
+    while net > 0 && at(net - 1) >= price {
+        net -= 1;
     }
-    let percent = match (fee_bp / 100, fee_bp % 100) {
-        (whole, 0) => format!("{whole}"),
-        (whole, part) if part % 10 == 0 => format!("{whole},{}", part / 10),
-        (whole, part) => format!("{whole},{part:02}"),
-    };
-    format!(
-        "Комиссию платёжной системы оплачивает покупатель: по СБП {percent}% — \
-         итого {}. Картой комиссия выше, точную сумму покажет страница оплаты \
-         до подтверждения.",
-        atlas_bot::menu::price_label(with_fee(amount, fee_bp)),
-    )
+    while net < price && at(net) < price {
+        net += 1;
+    }
+    Money::from_minor(net, amount.currency())
 }
+
+/// Сумма в уведомлении Freekassa — обратно в то, что заплатил покупатель.
+///
+/// Freekassa сообщает сумму заказа, то есть цену без комиссии, а оплата
+/// сверяется с ценой (`settle`). По построению `freekassa_charge` наценка
+/// возвращает не меньше цены. Заказ, открытый до перехода на эту схему (в
+/// Freekassa ушла полная цена), зачтётся тоже — покупатель тогда и правда
+/// заплатил больше.
+fn freekassa_gross(paid: Money, fee_bp: u32) -> Money {
+    with_fee(paid, fee_bp)
+}
+
+/// Строка о комиссии, которую покупатель видит до оплаты.
+const FEE_NOTE: &str = "Комиссия платёжной системы уже включена — к оплате ровно эта сумма.";
 
 /// Номер запроса к API Freekassa.
 ///
@@ -1317,6 +1342,7 @@ fn apply(
                     telegram_id,
                     &plan,
                     amount,
+                    config.freekassa_fee_bp,
                 ))
             } else if let Some(service) = deps.wata {
                 Some(checkout_wata(
@@ -1343,7 +1369,7 @@ fn apply(
                                 // обязан увидеть её до оплаты, а не на
                                 // странице банка.
                                 if deps.freekassa.is_some() {
-                                    format!("\n\n{}", fee_note(amount, config.freekassa_fee_bp))
+                                    format!("\n\n{FEE_NOTE}")
                                 } else {
                                     String::new()
                                 },
@@ -2016,6 +2042,7 @@ pub(crate) fn open_order_for(
                 telegram_id,
                 &plan,
                 amount,
+                shared.freekassa_fee_bp,
             )
             .map_err(|error| eprintln!("Freekassa для счёта {order_id}: {error}"))
             .ok()
@@ -2024,7 +2051,7 @@ pub(crate) fn open_order_for(
             format!(
                 r#""freekassaUrl":"{}","feeNote":"{}","#,
                 atlas_tg::escape_json(&url),
-                atlas_tg::escape_json(&fee_note(amount, shared.freekassa_fee_bp)),
+                atlas_tg::escape_json(FEE_NOTE),
             )
         })
         .unwrap_or_default();
@@ -2628,8 +2655,61 @@ mod excerpt_tests {
 
 #[cfg(test)]
 mod fee_tests {
-    use super::{fee_note, with_fee};
+    use super::{freekassa_charge, freekassa_gross, with_fee};
     use atlas_billing::{Currency, Money};
+
+    fn rub(minor: u64) -> Money {
+        Money::from_minor(minor, Currency::Rub)
+    }
+
+    /// Все цены витрины: в Freekassa уходит цена без комиссии, а покупатель
+    /// с её наценкой платит ровно цену из меню.
+    #[test]
+    fn the_buyer_pays_exactly_the_menu_price() {
+        for (price, sent) in [
+            (19_900, 18_774),
+            (54_900, 51_792),
+            (99_900, 94_245),
+            (179_000, 168_868),
+            (29_900, 28_208),
+            (82_900, 78_208),
+            (149_900, 141_415),
+            (269_000, 253_774),
+        ] {
+            let charge = freekassa_charge(rub(price), 600);
+            assert_eq!(charge.minor(), sent, "{price}");
+            assert_eq!(with_fee(charge, 600).minor(), price, "{price}");
+            assert_eq!(freekassa_gross(charge, 600).minor(), price, "{price}");
+        }
+    }
+
+    /// Любая сумма (после бонусов, с хвостом счёта): уведомление всегда
+    /// покрывает счёт, а переплата — не больше копейки.
+    #[test]
+    fn no_amount_is_overcharged_or_underpaid() {
+        for price in (100..400_000).step_by(37) {
+            for fee in [0, 350, 600, 650] {
+                let charge = freekassa_charge(rub(price), fee);
+                let total = with_fee(charge, fee).minor();
+                assert!(
+                    total >= price && total - price <= 1,
+                    "{price} при {fee}: {total}"
+                );
+                assert_eq!(
+                    freekassa_gross(charge, fee).minor(),
+                    total,
+                    "{price} при {fee}"
+                );
+            }
+        }
+    }
+
+    /// Счёт, открытый до перехода: в Freekassa ушла полная цена — он тоже
+    /// зачитывается.
+    #[test]
+    fn an_order_opened_before_the_switch_still_settles() {
+        assert!(freekassa_gross(rub(19_900), 600).minor() >= 19_900);
+    }
 
     /// Итог с комиссией сверен с настоящим заказом Freekassa: 199 ₽ при 6%
     /// у покупателя стали 210,94 ₽.
@@ -2638,16 +2718,6 @@ mod fee_tests {
         let price = Money::from_minor(19_900, Currency::Rub);
         assert_eq!(with_fee(price, 600).minor(), 21_094);
         assert_eq!(with_fee(price, 0).minor(), 19_900);
-    }
-
-    /// Покупатель видит и процент, и итог.
-    #[test]
-    fn the_fee_note_names_the_percent_and_the_total() {
-        let price = Money::from_minor(19_900, Currency::Rub);
-        let note = fee_note(price, 600);
-        assert!(note.contains("6%"), "{note}");
-        assert!(note.contains("210,94"), "{note}");
-        assert!(fee_note(price, 650).contains("6,5%"));
     }
 }
 

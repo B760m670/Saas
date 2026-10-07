@@ -1526,8 +1526,7 @@ a.btn.off { opacity: 0.45; }
 
       /* Два способа — показываем выбор. Один — сразу его, без лишнего шага. */
       if (o.freekassaUrl && o.payUrl) {
-        /* Комиссию Freekassa платит покупатель — показываем её до оплаты.
-           Строку собирает сервер: там ставка и там же итог. */
+        /* Комиссия уже включена в цену — строку об этом присылает сервер. */
         var fee = o.feeNote ? ' ' + o.feeNote : '';
         document.getElementById('bill-note').textContent = bonus + 'Выберите способ оплаты.' + fee;
         document.getElementById('m-card').hidden = false;

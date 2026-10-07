@@ -538,7 +538,14 @@ fn freekassa_notice(
     };
 
     let event = match service.callback(&Callback::new(Vec::new(), params)) {
-        Ok(event) => event,
+        // В уведомлении — сумма заказа, то есть цена без комиссии
+        // (`freekassa_charge`). Сверяется оплата с ценой, поэтому обратно.
+        Ok(mut event) => {
+            event.paid = event
+                .paid
+                .map(|paid| crate::freekassa_gross(paid, shared.freekassa_fee_bp));
+            event
+        }
         Err(atlas_billing::provider::Error::BadSignature) => {
             // Подпись не сошлась — либо подделка, либо разъехавшийся секрет.
             // Ни зачислять, ни отвечать «YES»: пусть это будет видно.
