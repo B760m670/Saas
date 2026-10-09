@@ -62,10 +62,8 @@ impl Device {
 pub enum Action {
     /// Экран «Моя подписка».
     Subscription,
-    /// Сроки «Личного».
+    /// Сроки подписки.
     Plans,
-    /// Сроки «Семьи».
-    FamilyPlans,
     /// Выбран тариф с таким именем.
     Buy(String),
     /// Выбор устройства.
@@ -128,7 +126,6 @@ impl Action {
         match self {
             Self::Subscription => "sub".to_owned(),
             Self::Plans => "plans".to_owned(),
-            Self::FamilyPlans => "fplans".to_owned(),
             Self::Buy(plan) => format!("buy:{plan}"),
             Self::Connect => "conn".to_owned(),
             Self::ConnectTo(device) => format!("dev:{}", device.code()),
@@ -169,7 +166,6 @@ impl Action {
         match data {
             "sub" => Ok(Self::Subscription),
             "plans" => Ok(Self::Plans),
-            "fplans" => Ok(Self::FamilyPlans),
             "conn" => Ok(Self::Connect),
             "other" => Ok(Self::SentOther),
             "help" => Ok(Self::Help),
@@ -448,43 +444,6 @@ pub fn plans_menu(plans: &[Plan], monthly_base: Money) -> Keyboard {
     Keyboard { rows }
 }
 
-/// Сроки одного тарифа и переход к другому.
-///
-/// Тарифы показываются по одному, а не восемь кнопок разом: в переписке
-/// длинный столбец читается хуже, чем два коротких экрана.
-#[must_use]
-pub fn tier_menu(tier: crate::catalog::Tier) -> Keyboard {
-    use crate::catalog::{plans_of, Tier};
-
-    let Some(base) = tier.monthly_base() else {
-        return Keyboard {
-            rows: vec![vec![Button::new("Назад", Action::Home)]],
-        };
-    };
-    let mut keyboard = plans_menu(&plans_of(tier), base);
-    let switch = match tier {
-        Tier::Personal => Button::new(
-            format!(
-                "👨‍👩‍👧 Семья: {} устройства и {} близких",
-                Tier::Family.devices(),
-                Tier::Family.guests()
-            ),
-            Action::FamilyPlans,
-        ),
-        Tier::Family => Button::new(
-            format!(
-                "👤 Личный: {} устройства и {} близкий",
-                Tier::Personal.devices(),
-                Tier::Personal.guests()
-            ),
-            Action::Plans,
-        ),
-    };
-    let home = keyboard.rows.len().saturating_sub(1);
-    keyboard.rows.insert(home, vec![switch]);
-    keyboard
-}
-
 /// Надпись на кнопке тарифа: `12 месяцев — 1790 ₽ (−26 %)`.
 #[must_use]
 pub fn plan_label(plan: &Plan, monthly_base: Money) -> String {
@@ -521,8 +480,8 @@ fn symbol(amount: Money) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_menu, main_menu, plan_label, plans_menu, price_label, tier_menu, Action, Button,
-        Device, Keyboard, Press, Unknown, CALLBACK_LIMIT,
+        connect_menu, main_menu, plan_label, plans_menu, price_label, Action, Button, Device,
+        Keyboard, Press, Unknown, CALLBACK_LIMIT,
     };
     use atlas_billing::{Currency, Money, Plan};
 
@@ -556,8 +515,7 @@ mod tests {
             main_menu(Some(APP)),
             connect_menu(),
             plans_menu(&showcase(), base),
-            tier_menu(crate::catalog::Tier::Personal),
-            tier_menu(crate::catalog::Tier::Family),
+            plans_menu(&crate::catalog::plans(), base),
         ]
     }
 
@@ -741,38 +699,17 @@ mod tests {
     /// совпадать с тем, что записано в docs/14-bot.md §2.
     #[test]
     fn the_buttons_say_what_the_tariffs_say() {
-        use crate::catalog::{plans_of, Tier};
-
         let expected = [
-            (
-                Tier::Personal,
-                [
-                    "1 месяц — 199 ₽",
-                    "3 месяца — 549 ₽ (−8 %)",
-                    "6 месяцев — 999 ₽ (−16 %)",
-                    "12 месяцев — 1790 ₽ (−26 %)",
-                ],
-            ),
-            (
-                Tier::Family,
-                [
-                    "1 месяц — 299 ₽",
-                    "3 месяца — 829 ₽ (−7 %)",
-                    "6 месяцев — 1499 ₽ (−16 %)",
-                    "12 месяцев — 2690 ₽ (−26 %)",
-                ],
-            ),
+            "1 месяц — 199 ₽",
+            "3 месяца — 549 ₽ (−8 %)",
+            "6 месяцев — 999 ₽ (−16 %)",
+            "12 месяцев — 1790 ₽ (−26 %)",
         ];
-
-        for (tier, labels) in expected {
-            let Some(base) = tier.monthly_base() else {
-                return;
-            };
-            let plans = plans_of(tier);
-            assert_eq!(plans.len(), labels.len(), "витрина собралась не целиком");
-            for (plan, want) in plans.iter().zip(labels) {
-                assert_eq!(plan_label(plan, base), want);
-            }
+        let Some(base) = base() else { return };
+        let plans = crate::catalog::plans();
+        assert_eq!(plans.len(), expected.len(), "витрина собралась не целиком");
+        for (plan, want) in plans.iter().zip(expected) {
+            assert_eq!(plan_label(plan, base), want);
         }
     }
 
@@ -808,12 +745,7 @@ mod tests {
     #[test]
     fn every_submenu_leads_home() {
         let Some(base) = base() else { return };
-        let _ = base;
-        for keyboard in [
-            connect_menu(),
-            tier_menu(crate::catalog::Tier::Personal),
-            tier_menu(crate::catalog::Tier::Family),
-        ] {
+        for keyboard in [connect_menu(), plans_menu(&crate::catalog::plans(), base)] {
             assert!(
                 keyboard
                     .buttons()

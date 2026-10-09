@@ -24,17 +24,14 @@
 
 #![forbid(unsafe_code)]
 
-use atlas_billing::bonus;
 use atlas_billing::invoice::TakenAmounts;
 use atlas_billing::money::{Currency, Money};
 use atlas_billing::subscription;
 use postgres::{Client, NoTls, Row, Transaction};
 
 mod admin;
-mod family;
 
 pub use admin::{Card, Extended, LogEntry, Payment, Summary, MAX_MANUAL_DAYS};
-pub use family::{guest_slots, Accepted, Guest, Invited, INVITE_LIFETIME};
 
 /// Отказ при работе с хранилищем.
 #[derive(Debug)]
@@ -89,11 +86,9 @@ pub struct Subscriber {
     /// неразличимы, а называть пробу «активной подпиской» значит однажды
     /// удивить человека окончанием, которого он не ждал.
     pub has_paid: bool,
-    /// Тариф последней покупки: `personal` или `family`. `None` — платил до
-    /// появления тарифов или не платил.
+    /// Тариф последней покупки: `personal`. `None` — платил до появления
+    /// тарифов (у таких прежние 3 устройства до конца срока) или не платил.
     pub tier: Option<String>,
-    /// Чей это гость. `None` — сам себе хозяин.
-    pub owner_id: Option<i64>,
 }
 
 /// Один человек, до которого панель ещё не доехала.
@@ -120,8 +115,8 @@ pub struct PanelWork {
     /// отметке [`Store::mark_panel_free`], чтобы не съесть оплату, случившуюся
     /// между чтением очереди и ответом панели.
     pub lapsed: bool,
-    /// Что должно стоять в панели: `free`, `guest`, `personal`, `family`
-    /// или `paid` — прежний платный без тарифа либо проба. От этого зависят
+    /// Что должно стоять в панели: `free`, `personal` или `paid` — прежний
+    /// платный без тарифа либо проба. От этого зависят
     /// устройства, трафик и отряды; [`Store::mark_panel_synced`] запоминает
     /// то же слово.
     pub kind: String,
@@ -194,16 +189,7 @@ pub struct Referrals {
     /// Сколько человек пришло по ссылке.
     pub invited: i64,
     /// Сколько из них хоть раз заплатило.
-    ///
-    /// Отдельно от общего числа намеренно: бонусы приносят только эти, и
-    /// показывать одно число значило бы обещать за всех пришедших.
     pub paying: i64,
-    /// Сколько бонусов начислено за всё время.
-    ///
-    /// Не баланс: потраченное отсюда не вычитается. Это ответ на вопрос
-    /// «сколько мне дала рекомендация», а баланс — на вопрос «сколько у меня
-    /// сейчас».
-    pub earned: i64,
 }
 
 /// Разобрать строку вида «номер, сумма, валюта» в номер и сумму.
@@ -276,7 +262,7 @@ impl Store {
                        EXISTS (SELECT 1 FROM orders
                                 WHERE orders.telegram_id = users.telegram_id
                                   AND orders.status = 'paid'),
-                       tier, owner_id",
+                       tier",
             &[&telegram_id],
         )?;
 
@@ -289,7 +275,6 @@ impl Store {
             subscription_url: row.try_get(5)?,
             has_paid: row.try_get(6)?,
             tier: row.try_get(7)?,
-            owner_id: row.try_get(8)?,
         })
     }
 
@@ -371,8 +356,7 @@ impl Store {
         with_free: bool,
     ) -> Result<Vec<PanelWork>, Error> {
         // Что должно стоять в панели у человека с идущим сроком. Смена
-        // тарифа или превращение в гостя при той же дате — тоже работа:
-        // меняются устройства и трафик.
+        // тарифа при той же дате — тоже работа: меняются устройства.
         let rows = self.client.query(
             "SELECT telegram_id, panel_id, FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
                     EXISTS (SELECT 1 FROM orders
@@ -382,7 +366,6 @@ impl Store {
                     kind
                FROM (SELECT users.*,
                             CASE WHEN expires_at <= to_timestamp($2::bigint) THEN 'free'
-                                 WHEN owner_id IS NOT NULL THEN 'guest'
                                  WHEN tier IS NOT NULL THEN tier
                                  ELSE 'paid' END AS kind
                        FROM users) AS users
@@ -557,7 +540,6 @@ impl Store {
                     k.kind,
                     FLOOR(EXTRACT(EPOCH FROM u.expires_at))::bigint,
                     u.trial_granted_at IS NOT NULL
-                      AND u.owner_id IS NULL
                       AND NOT EXISTS (SELECT 1 FROM orders o
                                        WHERE o.telegram_id = u.telegram_id
                                          AND o.status = 'paid')
@@ -728,20 +710,6 @@ impl Store {
     /// `created_at` ставила бы база, у заказа могло бы оказаться время оплаты
     /// раньше времени создания. Заодно это делает проверяемым всё, что
     /// зависит от срока жизни счёта.
-    /// `bonus` — сколько бонусов уходит в скидку. Списываются они здесь же,
-    /// **до** оплаты, и это не осторожность, а необходимость: иначе человек
-    /// с сорока бонусами открыл бы три счёта подряд и получил скидку трижды
-    /// на одни и те же сорок.
-    ///
-    /// Счёт и списание — одна транзакция под замком строки покупателя. Будь
-    /// они порознь, нашёлся бы порядок, при котором счёт со скидкой выставлен,
-    /// а бонусы за него не списаны.
-    ///
-    /// Отвечает `false`, если бонусов не хватило; счёт при этом не выставлен
-    /// вовсе — выставить его по полной цене решает тот, кто вызывал.
-    // Восемь доводов — это восемь полей заказа, и сворачивать их в структуру
-    // ради счётчика не стоит: она существовала бы ровно в одном вызове.
-    #[allow(clippy::too_many_arguments)]
     pub fn open_order(
         &mut self,
         id: &str,
@@ -749,38 +717,15 @@ impl Store {
         plan: &str,
         days: u32,
         amount: Money,
-        bonus: u64,
         now: i64,
-    ) -> Result<bool, Error> {
+    ) -> Result<(), Error> {
         let minor = i64::try_from(amount.minor())
             .map_err(|_| Error::Inconsistent("сумма не помещается в базу"))?;
-        let bonus = i64::try_from(bonus)
-            .map_err(|_| Error::Inconsistent("списание бонусов не помещается в базу"))?;
 
-        let mut tx = self.client.transaction()?;
-
-        if bonus > 0 {
-            // Замок на покупателе, а не на журнале: за его бонусы спорят
-            // только его собственные счета.
-            tx.execute(
-                "SELECT 1 FROM users WHERE telegram_id = $1 FOR UPDATE",
-                &[&telegram_id],
-            )?;
-
-            let row = tx.query_one(
-                "SELECT COALESCE(SUM(amount), 0)::bigint FROM bonus_ledger
-                  WHERE telegram_id = $1",
-                &[&telegram_id],
-            )?;
-            if row.try_get::<_, i64>(0)? < bonus {
-                return Ok(false);
-            }
-        }
-
-        tx.execute(
+        self.client.execute(
             "INSERT INTO orders
-                 (id, telegram_id, plan, days, amount_minor, currency, bonus_spent, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8::bigint))",
+                 (id, telegram_id, plan, days, amount_minor, currency, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::bigint))",
             &[
                 &id,
                 &telegram_id,
@@ -788,21 +733,10 @@ impl Store {
                 &i32::try_from(days).unwrap_or(i32::MAX),
                 &minor,
                 &amount.currency().code(),
-                &bonus,
                 &now,
             ],
         )?;
-
-        if bonus > 0 {
-            tx.execute(
-                "INSERT INTO bonus_ledger (telegram_id, amount, reason, order_id)
-                 VALUES ($1, $2, 'reserve', $3)",
-                &[&telegram_id, &(-bonus), &id],
-            )?;
-        }
-
-        tx.commit()?;
-        Ok(true)
+        Ok(())
     }
 
     /// Найти открытый счёт по пришедшей сумме.
@@ -934,7 +868,7 @@ impl Store {
 
     /// Детали открытого счёта для уведомления владельцу о переводе.
     ///
-    /// Возвращает сумму, тариф и списанные бонусы, только если счёт открыт и
+    /// Возвращает сумму и тариф, только если счёт открыт и
     /// принадлежит этому человеку. Чужой или закрытый — `None`: уведомление
     /// о переводе шлётся по выбору «Перевод» в кабинете, и подставить сюда
     /// чужой номер быть не должно.
@@ -942,9 +876,9 @@ impl Store {
         &mut self,
         order_id: &str,
         telegram_id: i64,
-    ) -> Result<Option<(Money, String, i64)>, Error> {
+    ) -> Result<Option<(Money, String)>, Error> {
         let row = self.client.query_opt(
-            "SELECT amount_minor, currency, plan, bonus_spent FROM orders
+            "SELECT amount_minor, currency, plan FROM orders
               WHERE id = $1 AND telegram_id = $2 AND status = 'pending'",
             &[&order_id, &telegram_id],
         )?;
@@ -961,9 +895,8 @@ impl Store {
         let minor =
             u64::try_from(minor).map_err(|_| Error::Inconsistent("сумма заказа отрицательна"))?;
         let plan: String = row.try_get(2)?;
-        let bonus: i64 = row.try_get(3)?;
 
-        Ok(Some((Money::from_minor(minor, currency), plan, bonus)))
+        Ok(Some((Money::from_minor(minor, currency), plan)))
     }
 
     /// Отметить, что покупатель сказал «я оплатил», и сколько отправил.
@@ -1143,7 +1076,7 @@ impl Store {
         Ok(())
     }
 
-    // --- бонусы -----------------------------------------------------------
+    // --- приглашения ------------------------------------------------------
 
     /// Запомнить, кто кого привёл.
     ///
@@ -1173,58 +1106,6 @@ impl Store {
         Ok(changed > 0)
     }
 
-    /// Сколько у человека бонусов.
-    ///
-    /// Сумма журнала, а не отдельное поле: второе место, где живёт баланс,
-    /// однажды разойдётся с первым, и какое из них правда — решить будет
-    /// нечем.
-    pub fn bonus_balance(&mut self, telegram_id: i64) -> Result<u64, Error> {
-        let row = self.client.query_one(
-            "SELECT COALESCE(SUM(amount), 0)::bigint FROM bonus_ledger
-              WHERE telegram_id = $1",
-            &[&telegram_id],
-        )?;
-        let total: i64 = row.try_get(0)?;
-        u64::try_from(total).map_err(|_| Error::Inconsistent("баланс бонусов ушёл в минус"))
-    }
-
-    /// Вернуть бонусы, зарезервированные под счета, которые никто не оплатил.
-    ///
-    /// Возвращает, сколько вернулось.
-    ///
-    /// Вызывается перед всякой работой с балансом — «подметает» перед тем,
-    /// как показать или потратить. Отдельной службы по расписанию для этого
-    /// нет намеренно: она была бы третьим местом, где живёт та же логика, и
-    /// её падение никто бы не заметил, пока человек не пожаловался бы на
-    /// пропавшие бонусы.
-    pub fn reclaim_expired_bonuses(
-        &mut self,
-        telegram_id: i64,
-        now: i64,
-        lifetime: i64,
-    ) -> Result<u64, Error> {
-        let row = self.client.query_one(
-            "WITH stale AS (
-                 SELECT id, bonus_spent FROM orders
-                  WHERE telegram_id = $1
-                    AND status = 'pending'
-                    AND bonus_spent > 0
-                    AND created_at <= to_timestamp($2::bigint)
-                    AND NOT EXISTS (SELECT 1 FROM bonus_ledger
-                                     WHERE bonus_ledger.order_id = orders.id
-                                       AND bonus_ledger.reason = 'refund')
-             ), returned AS (
-                 INSERT INTO bonus_ledger (telegram_id, amount, reason, order_id)
-                 SELECT $1, bonus_spent, 'refund', id FROM stale
-                 RETURNING amount
-             )
-             SELECT COALESCE(SUM(amount), 0)::bigint FROM returned",
-            &[&telegram_id, &(now - lifetime)],
-        )?;
-        let total: i64 = row.try_get(0)?;
-        u64::try_from(total).map_err(|_| Error::Inconsistent("возврат бонусов отрицателен"))
-    }
-
     /// Кто привёл этого человека.
     pub fn inviter_of(&mut self, telegram_id: i64) -> Result<Option<i64>, Error> {
         let row = self.client.query_opt(
@@ -1237,7 +1118,7 @@ impl Store {
         })
     }
 
-    /// Кто привёл человека и сколько у него бонусов — для экрана «Друзья».
+    /// Сколько человек пришло по ссылке и сколько из них заплатило.
     pub fn referral_stats(&mut self, telegram_id: i64) -> Result<Referrals, Error> {
         let row = self.client.query_one(
             "SELECT
@@ -1247,16 +1128,13 @@ impl Store {
                    WHERE friend.invited_by = $1
                      AND EXISTS (SELECT 1 FROM orders
                                   WHERE orders.telegram_id = friend.telegram_id
-                                    AND orders.status = 'paid'))::bigint,
-                 (SELECT COALESCE(SUM(amount), 0) FROM bonus_ledger
-                   WHERE telegram_id = $1 AND reason = 'referral')::bigint",
+                                    AND orders.status = 'paid'))::bigint",
             &[&telegram_id],
         )?;
 
         Ok(Referrals {
             invited: row.try_get::<_, i64>(0)?.max(0),
             paying: row.try_get::<_, i64>(1)?.max(0),
-            earned: row.try_get::<_, i64>(2)?.max(0),
         })
     }
 
@@ -1373,7 +1251,6 @@ fn settle_in(
     let expected_minor: i64 = order.try_get(2)?;
     let currency: String = order.try_get(3)?;
     let telegram_id: i64 = order.try_get(4)?;
-    let plan: String = order.try_get(5)?;
 
     let Some(currency) = Currency::parse(&currency) else {
         return Err(Error::Inconsistent("валюта заказа неизвестна"));
@@ -1390,15 +1267,6 @@ fn settle_in(
     tx.execute(
         "UPDATE orders SET status = 'paid', paid_at = to_timestamp($2::bigint) WHERE id = $1",
         &[&order_id, &now],
-    )?;
-
-    // 3. Купивший сам — уже не гость. Связь с владельцем снимается до
-    //    продления: иначе срок продлился бы и тут же был бы перезаписан
-    //    сроком владельца (триггер `guests_follow_owner`).
-    tx.execute(
-        "UPDATE users SET owner_id = NULL, guest_since = NULL
-          WHERE telegram_id = $1 AND owner_id IS NOT NULL",
-        &[&telegram_id],
     )?;
 
     // Срок считаем мы, а не база и не панель: то же правило, что везде.
@@ -1419,57 +1287,12 @@ fn settle_in(
         &[&telegram_id, &expires_at],
     )?;
 
-    // Тариф — по первой букве имени тарифа: `d…` — «Личный», `f…` —
-    // «Семья» (atlas_bot::catalog). Действует с этой покупки.
-    let tier = if plan.starts_with('f') {
-        "family"
-    } else {
-        "personal"
-    };
+    // Тариф один — «Личный». С этой покупки у человека его устройства, даже
+    // если раньше он платил до появления тарифов.
     tx.execute(
-        "UPDATE users SET tier = $2 WHERE telegram_id = $1",
-        &[&telegram_id, &tier],
+        "UPDATE users SET tier = 'personal' WHERE telegram_id = $1",
+        &[&telegram_id],
     )?;
-
-    // Мест у нового тарифа может оказаться меньше, чем гостей: «Семья» на
-    // четверых сменилась «Личным» на одного. Остаются пришедшие раньше,
-    // последние отключаются — их срок кончается сейчас, и очередь переведёт
-    // их на бесплатный доступ.
-    tx.execute(
-        "UPDATE users
-            SET owner_id = NULL, guest_since = NULL,
-                expires_at = LEAST(expires_at, to_timestamp($3::bigint))
-          WHERE telegram_id IN (SELECT telegram_id FROM users
-                                 WHERE owner_id = $1
-                                 ORDER BY guest_since, telegram_id
-                                OFFSET $2)",
-        &[&telegram_id, &family::guest_slots(Some(tier)), &now],
-    )?;
-
-    // 4. Бонусы пригласившему — в той же транзакции, что и продление.
-    //
-    //    Начисление висит именно здесь, а не на нажатии «Я оплатил»: слова
-    //    покупателя бонусов не приносят. Пока владелец не подтвердил, что
-    //    деньги пришли, приглашение ничего не стоит — и накрутка ссылками
-    //    теряет смысл сама, без единой дополнительной проверки.
-    //
-    //    Повтор невозможен: `bonus_referral_once` не даёт записать второе
-    //    начисление по тому же заказу. Стережёт схема, а не внимательность.
-    let earned = bonus::earned(Money::from_minor(
-        u64::try_from(paid_minor).unwrap_or(0),
-        currency,
-    ));
-
-    if let Some(earned) = earned.filter(|earned| *earned > 0) {
-        let earned =
-            i64::try_from(earned).map_err(|_| Error::Inconsistent("бонус не помещается в базу"))?;
-        tx.execute(
-            "INSERT INTO bonus_ledger (telegram_id, amount, reason, order_id)
-             SELECT invited_by, $2, 'referral', $3 FROM users
-              WHERE telegram_id = $1 AND invited_by IS NOT NULL",
-            &[&telegram_id, &earned, &order_id],
-        )?;
-    }
 
     Ok(Settled::Extended { expires_at })
 }

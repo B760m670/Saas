@@ -16,9 +16,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use atlas_billing::{
-    bonus, subscription, Callback, Money, PaymentStatus, Provider, Wata, YooKassa,
-};
+use atlas_billing::{subscription, Callback, Money, PaymentStatus, Provider, Wata, YooKassa};
 use atlas_bot::catalog;
 use atlas_panel::Panel;
 use atlas_store::{Settled, Store};
@@ -210,14 +208,6 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         .map(str::to_owned)
         .filter(|id| !id.is_empty());
 
-    // Семья: пригласить близкого, отключить гостя.
-    let family = crate::family::route(&request.path);
-    let family = match family {
-        Some(Ok(route)) => Some(route),
-        Some(Err((status, body))) => return send(&mut stream, status, body),
-        None => None,
-    };
-
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
     if request.path != "/api/me"
@@ -225,7 +215,6 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         && claimed.is_none()
         && order_plan.is_none()
         && transfer_order.is_none()
-        && family.is_none()
     {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
@@ -257,11 +246,6 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         // «строка просрочена» полезна только тому, кто подбирает.
         return send(&mut stream, 401, r#"{"error":"подпись не принята"}"#);
     };
-
-    if let Some(route) = family {
-        let (status, body) = crate::family::answer(shared, verified.user_id(), route, now);
-        return send(&mut stream, status, &body);
-    }
 
     if let Some(plan) = order_plan {
         return match crate::open_order_for(shared, verified.user_id(), &plan, now) {
@@ -749,10 +733,6 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
     // удивить его окончанием, которого он не ждал.
     let status = if !active {
         "expired"
-    } else if subscriber.owner_id.is_some() {
-        // Гость: подписка чужая, и говорить ему «активна» без оговорки —
-        // значит не объяснить, откуда 30 ГБ и почему нельзя пригласить своих.
-        "guest"
     } else if subscriber.trial_granted_at.is_some() && !subscriber.has_paid {
         "trial"
     } else {
@@ -771,40 +751,20 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
     // обещать ещё неделю.
     let trial_left = crate::trial_left(&shared.panel, &subscriber);
 
-    // У гостя потолок тоже в гигабайтах, но месячный.
-    let guest_left = if active && subscriber.owner_id.is_some() {
-        crate::family::traffic_left(shared, telegram_id)
+    // Сколько устройств: тариф один (2), у платившего до октября 2026 —
+    // прежние 3 до конца срока. То же правило, что у очереди (`panel_plan`).
+    let device_limit = if subscriber.tier.is_none() && subscriber.has_paid && active {
+        catalog::DEVICES
     } else {
-        None
+        catalog::PLAN_DEVICES
     };
-    let tier = subscriber
-        .tier
-        .as_deref()
-        .and_then(catalog::Tier::parse)
-        .filter(|_| active && subscriber.owner_id.is_none());
-    let family = crate::family::section(shared, &subscriber, active);
 
-    // Бонусы. Сначала возвращаем зависшие на истёкших счетах: кабинет — то
-    // место, куда человек идёт посмотреть баланс, и показать там число
-    // меньшее, чем есть на самом деле, — это спор на ровном месте.
-    let (referrals, balance) = {
-        let mut store = shared
-            .store
-            .lock()
-            .map_err(|_| "замок базы испорчен".to_owned())?;
-
-        store
-            .reclaim_expired_bonuses(telegram_id, now, catalog::INVOICE_LIFETIME)
-            .map_err(|error| format!("возврат бонусов: {error}"))?;
-
-        let referrals = store
-            .referral_stats(telegram_id)
-            .map_err(|error| format!("рефералы: {error}"))?;
-        let balance = store
-            .bonus_balance(telegram_id)
-            .map_err(|error| format!("бонусы: {error}"))?;
-        (referrals, balance)
-    };
+    let referrals = shared
+        .store
+        .lock()
+        .map_err(|_| "замок базы испорчен".to_owned())?
+        .referral_stats(telegram_id)
+        .map_err(|error| format!("рефералы: {error}"))?;
 
     Ok(serde_json::json!({
         "status": status,
@@ -815,11 +775,7 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         // Сколько устройств занято, знает панель, а не мы. Присылать ноль
         // значило бы показать «0 из 4» тому, у кого их два.
         "devices": serde_json::Value::Null,
-        "deviceLimit": crate::family::device_limit(&subscriber, active),
-        "tier": tier.map(catalog::Tier::as_str),
-        "tierTitle": tier.map(catalog::Tier::title),
-        "guestLeft": guest_left.map(atlas_bot::gigabytes),
-        "family": family,
+        "deviceLimit": device_limit,
         "userId": telegram_id,
         "subscriptionUrl": subscriber.subscription_url,
         // Из него страница строит ссылку «оплатить» в переписку с ботом.
@@ -830,12 +786,6 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
             "link": referral_link,
             "invited": referrals.invited,
             "paying": referrals.paying,
-            "earned": referrals.earned,
-            "balance": balance,
-            // Потолок скидки показывается числом, а не правилом: «до
-            // половины суммы» человек пересчитывает в уме и ошибается,
-            // а «до 99 ₽ с месяца» — уже ответ.
-            "spendCap": catalog::monthly_base().map_or(0, bonus::cap),
         },
     })
     .to_string())

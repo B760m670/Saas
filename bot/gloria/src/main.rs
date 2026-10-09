@@ -13,18 +13,15 @@
 mod admin;
 mod api;
 mod config;
-mod family;
 mod http;
 mod support;
 
 use std::process::ExitCode;
 
-use atlas_billing::{
-    bonus, invoice, Checkout, Money, Order, OrderId, Provider, UserId, Wata, YooKassa,
-};
+use atlas_billing::{invoice, Checkout, Money, Order, OrderId, Provider, UserId, Wata, YooKassa};
 use atlas_bot::{catalog, flow, Action, Button, Keyboard, Unknown};
 use atlas_panel::{NewUser, Panel};
-use atlas_store::{Accepted, Reminder, Settled, Store, Subscriber, Trial};
+use atlas_store::{Reminder, Settled, Store, Subscriber, Trial};
 use atlas_tg::{next_offset, Command, Incoming, Scope, Telegram};
 
 use config::Config;
@@ -506,9 +503,8 @@ struct Plan {
 ///
 /// | Вид | Срок | Трафик | Устройства | Отряды |
 /// |---|---|---|---|---|
-/// | `personal`, `family` | наш | безлимит | по тарифу | платные + бесплатные |
-/// | `guest` | владельца | 30 ГБ, каждый месяц заново | 1 | платные + бесплатные |
-/// | `paid` | наш | безлимит | 3 у платившего до тарифов, 2 у пробы | платные + бесплатные |
+/// | `personal` | наш | безлимит | 2 | платные + бесплатные |
+/// | `paid` | наш | безлимит | 3 у платившего до октября 2026, 2 у пробы | платные + бесплатные |
 /// | `free` | 2099 | без потолка | 2 | только бесплатные |
 ///
 /// У `free` потолка нет намеренно: проба, израсходованная до дна, иначе
@@ -527,21 +523,14 @@ fn panel_plan(config: &Config, item: &atlas_store::PanelWork) -> Plan {
         };
     }
 
-    let (traffic, reset, devices) = match item.kind.as_str() {
-        "guest" => (
-            catalog::GUEST_BYTES,
-            TrafficReset::Monthly,
-            catalog::GUEST_DEVICES,
-        ),
-        kind => match catalog::Tier::parse(kind) {
-            Some(tier) => (0, TrafficReset::Never, tier.devices()),
-            // Платил до тарифов — прежние три устройства до конца срока;
-            // проба — как «Личный».
-            None if item.has_paid => (0, TrafficReset::Never, catalog::DEVICES),
-            // Проба — как «Личный» и тоже без потолка трафика.
-            None => (0, TrafficReset::Never, catalog::TRIAL_DEVICES),
-        },
+    let devices = match item.kind.as_str() {
+        "personal" => catalog::PLAN_DEVICES,
+        // Платил до октября 2026 — прежние три устройства до конца срока.
+        _ if item.has_paid => catalog::DEVICES,
+        // Проба — как подписка.
+        _ => catalog::TRIAL_DEVICES,
     };
+    let (traffic, reset) = (0, TrafficReset::Never);
 
     Plan {
         expires_at: item.expires_at,
@@ -842,15 +831,6 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         }
     }
 
-    // Пришёл по семейному приглашению. Принимаем до сверки: сверка смотрит
-    // на срок в памяти, и новый срок гостя должна видеть уже она, иначе
-    // приняла бы прежнюю дату панели за ручную правку.
-    let family = match incoming {
-        Incoming::Message { text, .. } => atlas_bot::parse_family_invite(text)
-            .map(|code| join_family(deps, store, &mut subscriber, &code, now)),
-        Incoming::Button { .. } => None,
-    };
-
     // Сначала сверка, потом всё остальное: срок могли поправить в панели
     // руками, и без этого человек увидел бы «истекла» при работающем VPN.
     reconcile(panel, store, &mut subscriber, now);
@@ -870,22 +850,9 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         }
     }
 
-    // Ответ на приглашение — вместо обычного приветствия: человек пришёл
-    // именно за этим, и «добро пожаловать» с кнопкой пробы его бы запутало.
-    if let Some(text) = family {
-        let menu = atlas_bot::main_menu(config.miniapp_url.as_deref());
-        let request = telegram
-            .send_message(incoming.chat(), &text, Some(&menu))
-            .map_err(|error| format!("сообщение: {error}"))?;
-        http::send(&request).map_err(|error| format!("отправка: {error}"))?;
-        return Ok(());
-    }
-
     let view = flow::View {
         expires_at: subscriber.expires_at,
-        on_trial: subscriber.trial_granted_at.is_some()
-            && !subscriber.has_paid
-            && subscriber.owner_id.is_none(),
+        on_trial: subscriber.trial_granted_at.is_some() && !subscriber.has_paid,
         trial_used: subscriber.trial_granted_at.is_some(),
         subscription_url: subscriber.subscription_url.as_deref(),
         app_url: config.miniapp_url.as_deref(),
@@ -928,80 +895,6 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         ));
     }
     Ok(())
-}
-
-/// Принять семейное приглашение и сказать, чем кончилось.
-///
-/// Ошибка базы не прерывает разговор: человек получит понятный отказ, а мы —
-/// строку в журнале.
-fn join_family(
-    deps: &Deps<'_>,
-    store: &mut Store,
-    subscriber: &mut Subscriber,
-    code: &str,
-    now: i64,
-) -> String {
-    let guest_id = subscriber.telegram_id;
-    let accepted = match store.accept_invite(guest_id, code, now) {
-        Ok(accepted) => accepted,
-        Err(error) => {
-            eprintln!("Семейное приглашение для {guest_id}: {error}");
-            return "Не получилось принять приглашение. Попробуйте ещё раз чуть позже.".to_owned();
-        }
-    };
-
-    match accepted {
-        Accepted::Joined {
-            owner_id,
-            expires_at,
-        } => {
-            println!("Семья: {guest_id} стал гостем {owner_id}");
-            subscriber.expires_at = Some(expires_at);
-            subscriber.owner_id = Some(owner_id);
-
-            // Владельцу — весточка: место занято, и он должен знать кем.
-            let text = format!(
-                "👋 Ваше приглашение принято: к подписке подключился {guest_id}. \
-                 Отключить гостя можно в кабинете, во вкладке «Друзья»."
-            );
-            if let Ok(request) = deps.telegram.send_message(owner_id, &text, None) {
-                let _ = http::send(&request);
-            }
-
-            format!(
-                "🎉 Готово: вам открыт VPN по семейной подписке до {}.\n\n\
-                 У вас своя ссылка: 1 устройство и {} ГБ в месяц. \
-                 Подключиться — кнопкой ниже.",
-                day_month_year(expires_at),
-                catalog::GUEST_BYTES / (1024 * 1024 * 1024)
-            )
-        }
-        Accepted::Invalid => {
-            "Приглашение не найдено, уже использовано или устарело — попросите новое.".to_owned()
-        }
-        Accepted::OwnInvite => {
-            "Это ваше собственное приглашение — перешлите его тому, кого хотите подключить."
-                .to_owned()
-        }
-        Accepted::OwnerInactive => {
-            "Подписка того, кто вас пригласил, сейчас не даёт гостей. Попросите его продлить её."
-                .to_owned()
-        }
-        Accepted::NoSlots => "Все места в этой подписке уже заняты.".to_owned(),
-        Accepted::HasOwnSubscription => {
-            "У вас уже есть своя оплаченная подписка, без ограничения трафика, — \
-             приглашение вам не нужно."
-                .to_owned()
-        }
-        Accepted::AlreadyGuest => {
-            "Вы уже подключены к чьей-то подписке. Чтобы перейти к другой, попросите \
-             нынешнего владельца отключить вас."
-                .to_owned()
-        }
-        Accepted::HasGuests => {
-            "К вашей подписке подключены гости, поэтому стать гостем самому нельзя.".to_owned()
-        }
-    }
 }
 
 /// Открыть страницу оплаты и вернуть её адрес.
@@ -1158,7 +1051,7 @@ fn with_fee(amount: Money, fee_bp: u32) -> Money {
 /// больше, чем видел в меню. Теперь комиссию несёт сервис: в заказ уходит
 /// наименьшая сумма, которая с наценкой даёт не меньше цены. Для всех цен
 /// витрины наценка даёт цену ровно (199 ₽ → 187,74 ₽ → 199,00 ₽). У редких
-/// сумм (после бонусов) копейка «перепрыгивается» — тогда выходит на
+/// сумм копейка «перепрыгивается» — тогда выходит на
 /// копейку больше: меньше нельзя, оплата не покрыла бы счёт.
 ///
 /// Способ оплаты в заказе — СБП (`METHOD_SBP`), поэтому ставка одна:
@@ -1267,21 +1160,6 @@ fn apply(
                 return Ok(None);
             };
 
-            // Сначала возвращаем бонусы с истёкших счетов: человек мог
-            // передумать вчера, и его же бонусы должны быть при нём сегодня.
-            store
-                .reclaim_expired_bonuses(telegram_id, now, catalog::INVOICE_LIFETIME)
-                .map_err(|error| format!("возврат бонусов: {error}"))?;
-
-            let balance = store
-                .bonus_balance(telegram_id)
-                .map_err(|error| format!("бонусы: {error}"))?;
-
-            // Скидка считается до подбора суммы, а не после: подбирается
-            // уникальный хвост уже к той сумме, которую человек переведёт.
-            // Наоборот — и опознавать пришлось бы не то, что пришло.
-            let discounted = bonus::apply(plan.price, balance);
-
             let taken = store
                 .taken_amounts(now, catalog::INVOICE_LIFETIME)
                 .map_err(|error| format!("занятые суммы: {error}"))?;
@@ -1290,38 +1168,18 @@ fn apply(
             // опознаётся по сумме. Перевод выключен — платёжный сервис
             // опознаёт заказ по номеру, и счёт выставляется ровной ценой.
             let amount = if config.accepts_transfers() {
-                invoice::allocate(discounted.to_pay, &taken)
+                invoice::allocate(plan.price, &taken)
                     .map_err(|_| "сейчас слишком много открытых счетов, попробуйте через минуту")?
             } else {
-                discounted.to_pay
+                plan.price
             };
 
             // Номер заказа: кто, что и когда. Набор символов проверяется
             // и здесь, и в базе — он уходит в подпись платёжного сервиса.
             let order_id = format!("u{telegram_id}-{}-{now}", plan.id);
-            let opened = store
-                .open_order(
-                    &order_id,
-                    telegram_id,
-                    &plan.id,
-                    plan.days,
-                    amount,
-                    discounted.spent,
-                    now,
-                )
+            store
+                .open_order(&order_id, telegram_id, &plan.id, plan.days, amount, now)
                 .map_err(|error| format!("счёт: {error}"))?;
-
-            // Бонусов не хватило — значит их потратил счёт, открытый секунду
-            // назад с другого устройства. Счёт не выставлен вовсе; говорим
-            // об этом и не выставляем втихую по полной цене: человек ждёт
-            // скидку и заплатит, не глядя на сумму.
-            if !opened {
-                return Err(
-                    "бонусы уже заняты другим счётом — откройте его или подождите, \
-                     пока он истечёт"
-                        .to_owned(),
-                );
-            }
 
             // Владелец узнаёт о счёте сразу, а не когда вспомнит про
             // /pending. Счёт живёт двадцать минут: человек, заплативший и
@@ -1330,17 +1188,10 @@ fn apply(
                 config,
                 telegram,
                 &format!(
-                    "Счёт <b>{}</b> · {} · от {telegram_id}{}\n  \
+                    "Счёт <b>{}</b> · {} · от {telegram_id}\n  \
                      подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
                     plan.title,
-                    // Скидка называется владельцу: иначе сумма, не похожая ни
-                    // на один тариф, выглядит как ошибка, а не как бонусы.
-                    if discounted.spent > 0 {
-                        format!("\n  со скидкой {} за приглашённых", discounted.spent)
-                    } else {
-                        String::new()
-                    },
                     amount.to_decimal(),
                 ),
             );
@@ -1382,7 +1233,7 @@ fn apply(
                     Ok(page) => {
                         return Ok(Some(Extra {
                             text: format!(
-                                "К оплате: <b>{}</b>{}{}\n\nСчёт действует 20 минут.",
+                                "К оплате: <b>{}</b>{}\n\nСчёт действует 20 минут.",
                                 atlas_bot::menu::price_label(amount),
                                 // Комиссию Freekassa платит покупатель — он
                                 // обязан увидеть её до оплаты, а не на
@@ -1392,14 +1243,6 @@ fn apply(
                                 } else {
                                     String::new()
                                 },
-                                // Та же оговорка, что и на ручном пути: счёт
-                                // меньше витринной цены без объяснения
-                                // выглядит ошибкой, а не подарком.
-                                if discounted.spent > 0 {
-                                    format!("\nСписано бонусов: {}", discounted.spent)
-                                } else {
-                                    String::new()
-                                }
                             ),
                             keyboard: Some(Keyboard {
                                 rows: vec![vec![Button::link("Оплатить", page)]],
@@ -1422,7 +1265,7 @@ fn apply(
             // путь к человеку: иначе выключенный способ всё равно показался бы,
             // когда карта недоступна.
             if config.accepts_transfers() {
-                Ok(Some(transfer_invoice(config, amount, discounted.spent)))
+                Ok(Some(transfer_invoice(config, amount)))
             } else {
                 Ok(Some(Extra {
                     text: "Оплата сейчас недоступна — напишите в поддержку, \
@@ -1824,15 +1667,6 @@ fn settle_order(
             day_month_year(expires_at)
         );
         tell(telegram, buyer, &text);
-
-        // Пригласившему — сообщение о начислении. Молча пополнять счёт
-        // нельзя: человек узнал бы о бонусах, только заглянув в кабинет, а
-        // заглядывать туда без повода незачем. Сообщение и есть повод
-        // рассказать про ссылку ещё кому-то.
-        if let Err(error) = thank_the_inviter(telegram, store, buyer, paid) {
-            // Зачисление уже состоялось и от этого не зависит.
-            eprintln!("Бонусы пригласившему {buyer}: {error}");
-        }
     }
 
     Ok(match settled {
@@ -1855,59 +1689,6 @@ fn settle_order(
         ),
         Settled::NoSuchOrder => "Такого заказа нет.".to_owned(),
     })
-}
-
-/// Сказать пригласившему, что ему начислены бонусы.
-///
-/// Начисляет их само зачисление, в одной транзакции с продлением подписки;
-/// здесь — только письмо. Поэтому неудача письма ничего не отменяет: бонусы
-/// уже на счету, и человек увидит их в кабинете.
-fn thank_the_inviter(
-    telegram: &Telegram,
-    store: &mut Store,
-    buyer: i64,
-    paid: Money,
-) -> Result<(), String> {
-    let Some(inviter) = store
-        .inviter_of(buyer)
-        .map_err(|error| format!("база: {error}"))?
-    else {
-        return Ok(());
-    };
-
-    let Some(earned) = bonus::earned(paid).filter(|earned| *earned > 0) else {
-        return Ok(());
-    };
-
-    let balance = store
-        .bonus_balance(inviter)
-        .map_err(|error| format!("база: {error}"))?;
-
-    // Номера покупателя в сообщении нет намеренно. Пригласивший знает, кого
-    // звал; называть, кто именно и сколько заплатил, значит рассказывать
-    // одному человеку о покупках другого.
-    tell(
-        telegram,
-        inviter,
-        &format!(
-            "Ваш друг оплатил подписку — начислено {earned} \
-             {}.\n\nВсего у вас {balance} {} — их можно списать при следующей \
-             оплате, до половины суммы.",
-            atlas_bot::flow::plural(
-                i64::try_from(earned).unwrap_or(i64::MAX),
-                "бонус",
-                "бонуса",
-                "бонусов"
-            ),
-            atlas_bot::flow::plural(
-                i64::try_from(balance).unwrap_or(i64::MAX),
-                "бонус",
-                "бонуса",
-                "бонусов"
-            ),
-        ),
-    );
-    Ok(())
 }
 
 /// Перевыпустить ссылку на подписку.
@@ -1985,21 +1766,11 @@ pub(crate) fn open_order_for(
         return Err(format!("тарифа {plan_id} нет в витрине"));
     };
 
-    let (order_id, amount, spent) = {
+    let (order_id, amount) = {
         let mut store = shared
             .store
             .lock()
             .map_err(|_| "замок базы испорчен".to_owned())?;
-
-        // Бонусы применяются и здесь — тем же порядком, что и в боте. Иначе
-        // одно и то же действие даёт разную цену, смотря откуда нажали.
-        store
-            .reclaim_expired_bonuses(telegram_id, now, catalog::INVOICE_LIFETIME)
-            .map_err(|error| format!("возврат бонусов: {error}"))?;
-        let balance = store
-            .bonus_balance(telegram_id)
-            .map_err(|error| format!("бонусы: {error}"))?;
-        let discounted = bonus::apply(plan.price, balance);
 
         let taken = store
             .taken_amounts(now, catalog::INVOICE_LIFETIME)
@@ -2007,30 +1778,18 @@ pub(crate) fn open_order_for(
 
         // Копеечный хвост — только ради перевода (см. путь из чата).
         let amount = if shared.pay_link.is_some() {
-            invoice::allocate(discounted.to_pay, &taken)
+            invoice::allocate(plan.price, &taken)
                 .map_err(|_| "сейчас слишком много открытых счетов".to_owned())?
         } else {
-            discounted.to_pay
+            plan.price
         };
 
         let order_id = format!("u{telegram_id}-{}-{now}", plan.id);
-        let opened = store
-            .open_order(
-                &order_id,
-                telegram_id,
-                &plan.id,
-                plan.days,
-                amount,
-                discounted.spent,
-                now,
-            )
+        store
+            .open_order(&order_id, telegram_id, &plan.id, plan.days, amount, now)
             .map_err(|error| format!("счёт: {error}"))?;
 
-        if !opened {
-            return Err("бонусы уже заняты другим счётом".to_owned());
-        }
-
-        (order_id, amount, discounted.spent)
+        (order_id, amount)
     };
 
     // Владельца о счёте здесь **не** уведомляем. Раньше уведомление уходило
@@ -2039,7 +1798,6 @@ pub(crate) fn open_order_for(
     // перевод», которого не будет. Теперь уведомление шлёт `announce_transfer`
     // по выбору «Перевод»: подтверждать вручную надо только перевод, у
     // Freekassa зачисление приходит само.
-    let _ = spent;
 
     let pay = match &shared.pay_link {
         Some(url) => format!(r#""payUrl":"{}","#, atlas_tg::escape_json(url)),
@@ -2080,7 +1838,7 @@ pub(crate) fn open_order_for(
     // сервере и везти списком значило бы завести второе место, где живёт
     // одно правило округления.
     Ok(format!(
-        r#"{{"amount":"{}","minor":{},"label":"{}","bonusSpent":{spent},{pay}{freekassa}"life":"{}","orderId":"{order_id}"}}"#,
+        r#"{{"amount":"{}","minor":{},"label":"{}",{pay}{freekassa}"life":"{}","orderId":"{order_id}"}}"#,
         amount.to_decimal(),
         amount.minor(),
         atlas_bot::menu::price_label(amount),
@@ -2114,7 +1872,7 @@ pub(crate) fn announce_transfer(
 
     // Нет счёта — молчим. Либо номер чужой, либо счёт уже закрыт: ни то ни
     // другое не повод беспокоить владельца.
-    let Some((amount, plan_id, spent)) = notice else {
+    let Some((amount, plan_id)) = notice else {
         return Ok(());
     };
 
@@ -2126,14 +1884,9 @@ pub(crate) fn announce_transfer(
                 telegram,
                 *admin,
                 &format!(
-                    "Счёт <b>{}</b> · {title} · от {telegram_id} (перевод){}\n  \
+                    "Счёт <b>{}</b> · {title} · от {telegram_id} (перевод)\n  \
                      подтвердить: <code>/ok {}</code>",
                     atlas_bot::menu::price_label(amount),
-                    if spent > 0 {
-                        format!("\n  со скидкой {spent} за приглашённых")
-                    } else {
-                        String::new()
-                    },
                     amount.to_decimal(),
                 ),
             );
@@ -2197,9 +1950,7 @@ pub fn reissue_for(
 /// точного числа и гораздо лучше молчания: разговор не прерывается из-за
 /// того, что не удалось узнать остаток.
 fn trial_left(panel: &Panel, subscriber: &Subscriber) -> Option<u64> {
-    // У гостя потолок свой, месячный, — пробным он не назван и в боте не
-    // показывается как проба.
-    if subscriber.has_paid || subscriber.owner_id.is_some() || subscriber.expires_at.is_none() {
+    if subscriber.has_paid || subscriber.expires_at.is_none() {
         return None;
     }
 
@@ -2284,29 +2035,12 @@ fn ensure_panel_user(
 /// Сумму человек вводит сам, и это не недоделка: по ней, скопеечной и
 /// уникальной среди открытых счетов, владелец находит платёж в выписке.
 /// Ссылка с зашитой суммой сломала бы поиск, а не упростила его.
-fn transfer_invoice(config: &Config, amount: atlas_billing::Money, bonus: u64) -> Extra {
+fn transfer_invoice(config: &Config, amount: atlas_billing::Money) -> Extra {
     let sum = atlas_bot::menu::price_label(amount);
-
-    // Скидку называем прямо. Счёт на 139 ₽ там, где на витрине 199 ₽, без
-    // объяснения выглядит не подарком, а ошибкой — и человек скорее
-    // переспросит, чем заплатит.
-    let discount = if bonus > 0 {
-        format!(
-            "\n\nСписано {bonus} {} за приглашённых — цена уменьшена на эту сумму.",
-            atlas_bot::flow::plural(
-                i64::try_from(bonus).unwrap_or(i64::MAX),
-                "бонус",
-                "бонуса",
-                "бонусов"
-            )
-        )
-    } else {
-        String::new()
-    };
 
     let Some(link) = &config.pay_link else {
         return format!(
-            "К оплате: <b>{sum}</b>{discount}\n\n\
+            "К оплате: <b>{sum}</b>\n\n\
              Приём оплаты ещё настраивается — напишите @GloriaVPNSupport_Bot, \
              и подписку выдадут вручную."
         )
@@ -2320,7 +2054,7 @@ fn transfer_invoice(config: &Config, amount: atlas_billing::Money, bonus: u64) -
     // неожиданностью это не станет.
     Extra {
         text: format!(
-            "К оплате: <b>{sum}</b>{discount}\n\n\
+            "К оплате: <b>{sum}</b>\n\n\
              Нажмите «Оплатить» — откроется ваше банковское приложение. \
              Введите сумму <b>{sum}</b>: она должна совпасть до копейки, по ней \
              я нахожу ваш платёж.\n\n\
@@ -2430,7 +2164,6 @@ mod reconcile_tests {
             subscription_url: Some("https://panel.example.org/api/sub/AbCdE".to_owned()),
             has_paid: false,
             tier: None,
-            owner_id: None,
         }
     }
 
@@ -2737,7 +2470,7 @@ mod fee_tests {
         }
     }
 
-    /// Любая сумма (после бонусов, с хвостом счёта): уведомление всегда
+    /// Любая сумма (с хвостом счёта): уведомление всегда
     /// покрывает счёт, а переплата — не больше копейки.
     #[test]
     fn no_amount_is_overcharged_or_underpaid() {
@@ -2826,35 +2559,15 @@ mod plan_tests {
     }
 
     #[test]
-    fn a_tier_gets_its_devices_and_no_traffic_cap() {
-        let Some(config) = config() else { return };
-        for (kind, devices) in [("personal", 2), ("family", 3)] {
-            assert_eq!(
-                panel_plan(&config, &work(kind, true)),
-                Plan {
-                    expires_at: NOW,
-                    traffic: 0,
-                    reset: TrafficReset::Never,
-                    devices,
-                    squads: both(),
-                },
-                "{kind}"
-            );
-        }
-    }
-
-    /// Гость — 30 ГБ, каждый месяц заново, одно устройство. Безлимит
-    /// остаётся у владельца, который платит.
-    #[test]
-    fn a_guest_gets_thirty_gigabytes_a_month_on_one_device() {
+    fn a_subscription_gets_two_devices_and_no_traffic_cap() {
         let Some(config) = config() else { return };
         assert_eq!(
-            panel_plan(&config, &work("guest", false)),
+            panel_plan(&config, &work("personal", true)),
             Plan {
                 expires_at: NOW,
-                traffic: 30 * 1024 * 1024 * 1024,
-                reset: TrafficReset::Monthly,
-                devices: 1,
+                traffic: 0,
+                reset: TrafficReset::Never,
+                devices: 2,
                 squads: both(),
             }
         );
@@ -2878,22 +2591,6 @@ mod plan_tests {
         assert_eq!(plan.expires_at, FREE_UNTIL);
         assert_eq!(plan.traffic, 0);
         assert_eq!(plan.squads, vec![FREE.to_owned()]);
-    }
-
-    /// Места для гостей записаны дважды: витрине — в `catalog`, базе — в
-    /// `atlas_store`. Разойдись они, кабинет обещал бы одно, а база
-    /// пускала бы другое.
-    #[test]
-    fn the_shop_and_the_database_agree_on_guest_slots() {
-        for tier in catalog::Tier::ALL {
-            assert_eq!(
-                i64::from(tier.guests()),
-                atlas_store::guest_slots(Some(tier.as_str())),
-                "{}",
-                tier.as_str()
-            );
-        }
-        assert_eq!(atlas_store::guest_slots(None), 0);
     }
 }
 

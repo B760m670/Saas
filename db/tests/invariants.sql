@@ -203,33 +203,14 @@ SELECT must_fail(
     $q$INSERT INTO admin_log (admin_id, action, target_id) VALUES (1, 'extend', 999999)$q$,
     'запись о несуществующем покупателе');
 
--- --- семья: гость, тариф и приглашение -----------------------------------
+-- --- тариф один --------------------------------------------------------------
 
 SELECT must_fail(
-    $q$UPDATE users SET tier = 'gold' WHERE telegram_id = 1002$q$,
-    'неизвестный тариф');
+    $q$UPDATE users SET tier = 'family' WHERE telegram_id = 1002$q$,
+    'тариф «Семья» убран');
 SELECT must_fail(
-    $q$UPDATE users SET owner_id = telegram_id, guest_since = now() WHERE telegram_id = 1002$q$,
-    'гость самого себя');
-SELECT must_fail(
-    $q$UPDATE users SET owner_id = 1001 WHERE telegram_id = 1002$q$,
-    'гость без даты, с которой он гость');
-SELECT must_fail(
-    $q$INSERT INTO invites (code, owner_id) VALUES ('short', 1001)$q$,
-    'угадываемый код приглашения');
-SELECT must_fail(
-    $q$INSERT INTO invites (code, owner_id, used_by) VALUES ('AbCdEfGh12345678', 1001, 1002)$q$,
-    'приглашение использовано, но неизвестно когда');
-
--- Срок гостя следует за сроком владельца — делает это база, а не код.
-UPDATE users SET owner_id = 1001, guest_since = now() WHERE telegram_id = 1002;
-UPDATE users SET expires_at = '2031-01-01T00:00:00Z' WHERE telegram_id = 1001;
-DO $$
-BEGIN
-    IF (SELECT expires_at FROM users WHERE telegram_id = 1002) <> '2031-01-01T00:00:00Z' THEN
-        RAISE EXCEPTION 'срок гостя не пошёл за сроком владельца';
-    END IF;
-END $$;
+    $q$UPDATE users SET panel_plan = 'guest' WHERE telegram_id = 1002$q$,
+    'гостей больше нет');
 
 -- --- итог ------------------------------------------------------------------
 
