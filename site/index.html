@@ -534,6 +534,49 @@ a.btn.off { opacity: 0.45; }
 .plan .price { font-size: 17px; font-weight: 700; white-space: nowrap; }
 .plan .off { font-size: 11.5px; font-weight: 700; color: var(--mid); }
 
+/* Колокольчик новостей в шапке главной. */
+.head { position: relative; }
+.bell {
+  position: absolute; top: 0; right: 0; width: 42px; height: 42px;
+  display: grid; place-items: center; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--card); color: inherit; cursor: pointer;
+}
+.bell svg { width: 20px; height: 20px; }
+.bell .dot {
+  position: absolute; top: 8px; right: 9px; width: 8px; height: 8px; border-radius: 50%;
+  background: #ee982e; box-shadow: 0 0 0 2px #060507;
+}
+.news-item { padding: 14px 0; border-top: 1px solid var(--line); }
+.news-item:first-of-type { border-top: 0; }
+.news-item .when { font-size: 12px; color: var(--muted); }
+.news-item .what { font-size: 15.5px; font-weight: 650; margin: 2px 0 6px; }
+.news-item .text { font-size: 14px; line-height: 1.5; white-space: pre-line; color: var(--text, inherit); }
+#news .list { max-height: 60vh; overflow-y: auto; margin: 4px 0 14px; }
+
+/* Переключатель в настройках. */
+.switch { flex: none; width: 46px; height: 28px; border-radius: 14px; background: var(--line-2); position: relative; transition: background 0.2s; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform 0.2s; }
+.switch.on { background: #ee982e; }
+.switch.on::after { transform: translateX(18px); }
+
+/* Турнир. */
+.prizes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+.prize { text-align: center; padding: 12px 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.prize .p { font-size: 12px; color: var(--muted); }
+.prize .d { font-size: 15px; font-weight: 700; margin-top: 2px; }
+.mine { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-radius: 14px;
+  border: 1px solid rgba(238, 152, 46, 0.4); background: rgba(238, 152, 46, 0.08); margin-bottom: 14px; }
+.mine .big { font-size: 22px; font-weight: 700; }
+.mine .small { font-size: 12.5px; color: var(--muted); }
+.board { border: 1px solid var(--line); border-radius: 14px; background: var(--card); overflow: hidden; }
+.board .line { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 11px 14px; font-size: 14.5px; }
+.board .line + .line { border-top: 1px solid var(--line); }
+.board .line.me { background: rgba(238, 152, 46, 0.1); font-weight: 650; }
+.board .line.out { opacity: 0.55; }
+.board .place { font-weight: 700; color: var(--mid); }
+.board .score { font-variant-numeric: tabular-nums; font-weight: 650; }
+.board .empty { padding: 16px 14px; color: var(--muted); font-size: 14px; }
+
 .toast {
   position: fixed; left: 50%; bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 20px);
   z-index: 30; transform: translate(-50%, 14px);
@@ -551,8 +594,14 @@ a.btn.off { opacity: 0.45; }
 
 <!-- ============================ ГЛАВНАЯ ============================== -->
 <section class="screen on" id="s-home">
-  <h1>Подписка</h1>
-  <p class="sub" id="hello">Gloria VPN</p>
+  <div class="head">
+    <h1>Подписка</h1>
+    <p class="sub" id="hello">Gloria VPN</p>
+    <button class="bell" data-act="news" aria-label="Новости">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+      <span class="dot" id="news-dot" hidden></span>
+    </button>
+  </div>
 
   <div class="card status">
     <svg class="ring" viewBox="0 0 100 100" fill="none" aria-hidden="true">
@@ -659,14 +708,39 @@ a.btn.off { opacity: 0.45; }
 
 <!-- =========================== РЕФЕРАЛЫ ============================== -->
 <section class="screen" id="s-ref">
-  <h1>Приглашайте</h1>
-  <p class="sub">Друг по вашей ссылке получит пробный доступ на 2 дня</p>
+  <!-- Турнир приглашений. Пока он идёт — таблица, своё место и ссылка;
+       между турнирами — ссылка, счётчики и итоги прошлого. Таблица
+       обновляется раз в 20 секунд, пока вкладка открыта. -->
+  <div id="tour-on" hidden>
+    <h1>Турнир приглашений</h1>
+    <p class="sub" id="tour-when">—</p>
 
-  <div class="stats">
-    <div class="stat"><div class="n" id="rf-invited">0</div><div class="k">перешли</div></div>
-    <div class="stat"><div class="n" id="rf-paying">0</div><div class="k">оплатили</div></div>
+    <div class="prizes" id="tour-prizes"></div>
+
+    <div class="mine">
+      <div><div class="small">Ваше место</div><div class="big" id="tour-place">—</div></div>
+      <div style="text-align:right"><div class="small">Засчитано друзей</div><div class="big" id="tour-score">0</div></div>
+    </div>
+
+    <div class="board" id="tour-board"></div>
+    <p class="note" id="tour-rule"></p>
   </div>
 
+  <div id="tour-off">
+    <h1>Приглашайте</h1>
+    <p class="sub">Друг по вашей ссылке получит пробный доступ на 2 дня</p>
+
+    <div class="stats">
+      <div class="stat"><div class="n" id="rf-invited">0</div><div class="k">перешли</div></div>
+      <div class="stat"><div class="n" id="rf-paying">0</div><div class="k">оплатили</div></div>
+    </div>
+    <p class="note">Скоро турнир приглашений: кто приведёт больше друзей, получит до 3 месяцев подписки бесплатно. Объявим в новостях.</p>
+
+    <div id="tour-last" hidden>
+      <h2>Итоги прошлого турнира</h2>
+      <div class="board" id="tour-last-board"></div>
+    </div>
+  </div>
 
   <h2>Ваша ссылка</h2>
   <div class="copy" data-act="copy-ref">
@@ -712,6 +786,12 @@ a.btn.off { opacity: 0.45; }
   <p class="sub" id="set-id">—</p>
 
   <h2>Уведомления</h2>
+  <button class="row" data-act="mute">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+    <span class="body"><span class="title">Новости в боте</span><span class="hint">Акции, турниры и важные изменения сообщением в Telegram</span></span>
+    <span class="switch on" id="mute-switch"></span>
+  </button>
+
   <h2>Подписка</h2>
   <button class="row" data-act="reissue">
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 12a9 9 0 0 1 15.5-6.2M21 12a9 9 0 0 1-15.5 6.2"/><path d="M18 3v5h-5M6 21v-5h5"/></svg>
@@ -741,7 +821,7 @@ a.btn.off { opacity: 0.45; }
 
     <button class="tab" role="tab" aria-selected="false" data-go="ref" data-i="1">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 20v-1.5a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20"/><circle cx="9" cy="7.5" r="3.5"/><path d="M17 11.5h5m-2.5-2.5v5"/></svg>
-      <span>Друзья</span>
+      <span id="tab-ref">Друзья</span>
     </button>
 
     <button class="tab" role="tab" aria-selected="false" data-go="help" data-i="2">
@@ -780,6 +860,13 @@ a.btn.off { opacity: 0.45; }
     </button>
   </div>
   <button class="btn ghost" data-act="close-sheet">Закрыть</button>
+</div>
+
+<div class="sheet" id="news">
+  <div class="grab"></div>
+  <h1 style="font-size:20px;margin-bottom:6px">Новости</h1>
+  <div class="list" id="news-list"><p class="note">Загружаем…</p></div>
+  <button class="btn ghost" data-act="close-news">Закрыть</button>
 </div>
 
 <!-- Счёт. Отдельным листом поверх тарифов: человек уже выбрал, и возвращать
@@ -934,6 +1021,7 @@ a.btn.off { opacity: 0.45; }
     });
     document.getElementById('pill').style.setProperty('--tab', index || 0);
     window.scrollTo(0, 0);
+    watchTournament(name === 'ref');
   }
 
   function plural(n, one, few, many) {
@@ -998,6 +1086,13 @@ a.btn.off { opacity: 0.45; }
     document.getElementById('rf-paying').textContent = r.paying || 0;
     document.getElementById('ref-url').textContent = r.link || '—';
 
+    /* Новости: точка на колокольчике, пока есть непрочитанное. */
+    document.getElementById('news-dot').hidden = !(s.newsUnread > 0);
+    document.getElementById('mute-switch').classList.toggle('on', !s.newsMuted);
+
+    /* Пока идёт турнир, вкладка называется «Турнир». */
+    document.getElementById('tab-ref').textContent = s.tournamentEndsAt ? 'Турнир' : 'Друзья';
+
     var name = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.first_name) || '';
     document.getElementById('hello').textContent = name ? name + ', рады видеть' : 'Gloria VPN';
     document.getElementById('set-id').textContent = s.userId ? 'ID ' + s.userId : '';
@@ -1033,6 +1128,129 @@ a.btn.off { opacity: 0.45; }
       if (!r.ok) throw new Error('нет ответа');
       return r.json();
     }).then(function (data) { state = data; render(); }, function () {});
+  }
+
+  /* ---- Новости ---- */
+  function newsSheet(open) {
+    document.getElementById('news').classList.toggle('on', open);
+    document.getElementById('sheet-bg').classList.toggle('on', open);
+  }
+
+  function openNews() {
+    newsSheet(true);
+    var list = document.getElementById('news-list');
+    fetch('/api/news', { headers: { 'X-Init-Data': (tg && tg.initData) || '' } })
+      .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+      .then(function (data) {
+        list.textContent = '';
+        var items = data.news || [];
+        if (!items.length) {
+          var empty = document.createElement('p');
+          empty.className = 'note';
+          empty.textContent = 'Новостей пока нет.';
+          list.appendChild(empty);
+        }
+        items.forEach(function (n) {
+          var item = document.createElement('div');
+          item.className = 'news-item';
+          [['when', n.date], ['what', n.title], ['text', n.body]].forEach(function (pair) {
+            var el = document.createElement('div');
+            el.className = pair[0];
+            el.textContent = pair[1];
+            item.appendChild(el);
+          });
+          list.appendChild(item);
+        });
+        /* Прочитано — точка гаснет сразу, не дожидаясь сервера. */
+        document.getElementById('news-dot').hidden = true;
+        if (state) state.newsUnread = 0;
+        post('/api/news/seen').catch(function () {});
+      })
+      .catch(function () { list.textContent = 'Не удалось загрузить — попробуйте позже.'; });
+  }
+
+  /* ---- Турнир ---- */
+  var tourTimer = null;
+
+  function left(seconds) {
+    var d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600);
+    var m = Math.floor(seconds % 3600 / 60);
+    if (d > 0) return d + ' ' + plural(d, 'день', 'дня', 'дней') + ' ' + h + ' ч';
+    if (h > 0) return h + ' ч ' + m + ' мин';
+    return m + ' мин';
+  }
+
+  function boardRows(el, rows, empty) {
+    el.textContent = '';
+    if (!rows.length) {
+      var e = document.createElement('div');
+      e.className = 'empty';
+      e.textContent = empty;
+      el.appendChild(e);
+      return;
+    }
+    rows.forEach(function (row) {
+      var line = document.createElement('div');
+      line.className = 'line' + (row.me ? ' me' : '') + (row.qualified === false ? ' out' : '');
+      var place = document.createElement('span');
+      place.className = 'place';
+      place.textContent = row.place;
+      var name = document.createElement('span');
+      name.textContent = row.name + (row.days ? ' · ' + row.days + ' дн.' : '');
+      var score = document.createElement('span');
+      score.className = 'score';
+      score.textContent = row.score;
+      line.appendChild(place); line.appendChild(name); line.appendChild(score);
+      el.appendChild(line);
+    });
+  }
+
+  function loadTournament() {
+    return fetch('/api/tournament', { headers: { 'X-Init-Data': (tg && tg.initData) || '' } })
+      .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+      .then(function (t) {
+        var on = !!t.active;
+        document.getElementById('tour-on').hidden = !on;
+        document.getElementById('tour-off').hidden = on;
+        document.getElementById('tab-ref').textContent = on ? 'Турнир' : 'Друзья';
+
+        var prizes = document.getElementById('tour-prizes');
+        prizes.textContent = '';
+        (t.prizes || []).forEach(function (p) {
+          var box = document.createElement('div');
+          box.className = 'prize';
+          var a = document.createElement('div'); a.className = 'p'; a.textContent = p.places + ' место';
+          var b = document.createElement('div'); b.className = 'd';
+          var months = Math.round(p.days / 30);
+          b.textContent = months + ' ' + plural(months, 'месяц', 'месяца', 'месяцев');
+          box.appendChild(a); box.appendChild(b); prizes.appendChild(box);
+        });
+
+        if (on) {
+          document.getElementById('tour-when').textContent =
+            'до ' + t.active.endsLabel + ' · осталось ' + left(t.secondsLeft || 0);
+          document.getElementById('tour-place').textContent = t.me.place ? t.me.place : '—';
+          document.getElementById('tour-score').textContent = t.me.score || 0;
+          boardRows(document.getElementById('tour-board'), t.table || [],
+            'Пока никто не привёл друзей — станьте первым.');
+          document.getElementById('tour-rule').textContent =
+            'Засчитывается друг, который пришёл по вашей ссылке во время турнира и подключился к VPN через приложение. ' +
+            'Чтобы попасть в призы, нужно не меньше ' + t.active.minScore + '. ' +
+            'При равенстве выше тот, кто набрал раньше. Таблица обновляется сама.';
+        } else if (t.last && t.last.winners && t.last.winners.length) {
+          document.getElementById('tour-last').hidden = false;
+          boardRows(document.getElementById('tour-last-board'), t.last.winners, '');
+        }
+      })
+      .catch(function () {});
+  }
+
+  /* Таблица обновляется, только пока вкладка открыта. */
+  function watchTournament(on) {
+    if (tourTimer) { clearInterval(tourTimer); tourTimer = null; }
+    if (!on) return;
+    loadTournament();
+    tourTimer = setInterval(loadTournament, 20000);
   }
 
   function copy(text, what) {
@@ -1183,6 +1401,20 @@ a.btn.off { opacity: 0.45; }
     var act = el.dataset.act;
 
     if (act === 'plans')       { haptic(); return sheet(true); }
+    if (act === 'news')        { haptic(); return openNews(); }
+    if (act === 'close-news')  return newsSheet(false);
+    if (act === 'mute') {
+      haptic('select');
+      var muted = !(state && state.newsMuted);
+      document.getElementById('mute-switch').classList.toggle('on', !muted);
+      return post('/api/news/mute/' + (muted ? '1' : '0')).then(function () {
+        if (state) state.newsMuted = muted;
+        toast(muted ? 'Новости в боте выключены' : 'Новости в боте включены');
+      }, function () {
+        document.getElementById('mute-switch').classList.toggle('on', muted);
+        toast('Не вышло — попробуйте позже');
+      });
+    }
 
     if (act === 'close-sheet') return sheet(false);
     if (act === 'close-bill')  { bill(false); return go('home', 0); }
@@ -1301,6 +1533,7 @@ a.btn.off { opacity: 0.45; }
      Иначе счёт остался бы висеть без затемнения под ним. */
   document.getElementById('sheet-bg').addEventListener('click', function () {
     sheet(false);
+    newsSheet(false);
     document.getElementById('bill').classList.remove('on');
   });
 
@@ -1527,6 +1760,7 @@ a.btn.off { opacity: 0.45; }
     if (name === 'help')   return go('help');
     if (name === 'ref')    return go('ref');
     if (name === 'set')    return go('set');
+    if (name === 'news')   return openNews();
   }
 
   /* Состояние с сервера.

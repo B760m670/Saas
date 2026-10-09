@@ -150,6 +150,7 @@ docker exec -i remnawave-db psql -U gloria -d gloria -v ON_ERROR_STOP=1 \
 | `migrations/0011_admin_log.sql` | журнал действий в админке |
 | `migrations/0012_family.sql` | тарифы «Личный» и «Семья», гости и приглашения |
 | `migrations/0013_one_tier.sql` | один тариф: «Семья», гости и бонусы убраны |
+| `migrations/0014_news_tournaments.sql` | новости в кабинете и турниры приглашений |
 | `tests/invariants.sql` | проверка того, что ограничения действуют |
 
 Миграции нумеруются и **не переписываются** после того, как применены на

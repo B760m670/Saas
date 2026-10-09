@@ -84,6 +84,15 @@ button:disabled { opacity: 0.45; }
 }
 #toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
 [hidden] { display: none !important; }
+textarea {
+  width: 100%; min-height: 110px; resize: vertical;
+  background: var(--card-2); color: var(--text);
+  border: 1px solid var(--line-2); border-radius: 12px;
+  padding: 11px 12px; font: inherit;
+}
+textarea:focus { outline: none; border-color: var(--mid); }
+.stack { display: flex; flex-direction: column; gap: 8px; }
+.check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
 </style>
 </head>
 <body>
@@ -109,6 +118,35 @@ button:disabled { opacity: 0.45; }
 
   <h2>Последние оплаты</h2>
   <div class="card rows" id="recent"></div>
+
+  <h2>Турнир приглашений</h2>
+  <div class="card" id="tour">
+    <div id="tour-off">
+      <div class="empty" style="margin-bottom: 10px">Сейчас турнир не идёт.</div>
+      <form id="tour-start" class="stack">
+        <div style="display:flex; gap:8px">
+          <input id="tour-days" inputmode="numeric" pattern="[0-9]*" placeholder="дней (14)" autocomplete="off">
+          <input id="tour-min" inputmode="numeric" pattern="[0-9]*" placeholder="порог (3)" autocomplete="off">
+        </div>
+        <button class="main" type="submit">Начать турнир</button>
+      </form>
+      <div class="empty" style="margin-top:8px; font-size:13px">Порог — сколько подключившихся друзей нужно для призового места. Призы: 1 место — 90 дней, 2–3 — по 60, 4–10 — по 30. Итоги подводятся сами в конце срока; в ленте появятся новости о начале и об итогах.</div>
+    </div>
+    <div id="tour-on" hidden>
+      <div class="rows" id="tour-info"></div>
+      <h2 style="margin-top:14px">Таблица</h2>
+      <div class="rows" id="tour-table"></div>
+      <div class="actions"><button id="tour-finish">Подвести итоги сейчас</button></div>
+    </div>
+  </div>
+
+  <h2>Новость</h2>
+  <form id="news-form" class="card stack">
+    <input id="news-title" maxlength="120" placeholder="Заголовок" autocomplete="off">
+    <textarea id="news-body" maxlength="2000" placeholder="Текст новости"></textarea>
+    <label class="check"><input type="checkbox" id="news-push" style="flex:none"> Разослать сообщением в бот</label>
+    <button class="main" type="submit">Опубликовать</button>
+  </form>
 
   <h2>Покупатель</h2>
   <form id="find">
@@ -155,10 +193,13 @@ button:disabled { opacity: 0.45; }
   /* Каждый запрос несёт подпись Telegram. По ней сервер узнаёт, кто открыл
      страницу, и сверяет его со списком владельцев. Без подписи — отказ,
      и страница честно говорит, что открывать её надо из бота. */
-  function api(method, path) {
+  function api(method, path, body) {
+    var headers = { 'X-Init-Data': (tg && tg.initData) || '' };
+    if (body) headers['Content-Type'] = 'application/json';
     return fetch('/api/admin/' + path, {
       method: method,
-      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      headers: headers,
+      body: body ? JSON.stringify(body) : undefined
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (body) {
         if (!r.ok) {
@@ -320,7 +361,64 @@ button:disabled { opacity: 0.45; }
     });
   });
 
+  /* ---- Турнир ---- */
+  function loadTournament() {
+    return api('GET', 'tournament').then(function (t) {
+      var on = !!t.active;
+      document.getElementById('tour-on').hidden = !on;
+      document.getElementById('tour-off').hidden = on;
+      if (!on) return;
+      fill('tour-info', [
+        row('Идёт до', t.active.endsLabel),
+        row('Порог призового места', String(t.active.minScore)),
+        row('Участников с очками', String((t.table || []).length))
+      ], '');
+      fill('tour-table', (t.table || []).map(function (x) {
+        return row(x.place + '. ' + (x.name || 'без имени') + ' · ' + x.userId, String(x.score));
+      }), 'Пока никто не привёл подключившихся друзей');
+    }).catch(function (e) { toast('Турнир: ' + e.message); });
+  }
+
+  document.getElementById('tour-start').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var days = Number(document.getElementById('tour-days').value || 14);
+    var min = Number(document.getElementById('tour-min').value || 3);
+    confirmThen('Начать турнир на ' + days + ' дн. с порогом ' + min + '?', function () {
+      api('POST', 'tournament/start/' + days + '/' + min).then(function () {
+        toast('Турнир начался');
+        loadTournament();
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
+  document.getElementById('tour-finish').addEventListener('click', function () {
+    confirmThen('Подвести итоги сейчас и выдать призы?', function () {
+      api('POST', 'tournament/finish').then(function (r) {
+        toast('Итоги подведены, призов: ' + r.prizes);
+        loadTournament();
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
+  /* ---- Новость ---- */
+  document.getElementById('news-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var title = document.getElementById('news-title').value.trim();
+    var body = document.getElementById('news-body').value.trim();
+    var push = document.getElementById('news-push').checked;
+    if (!title || !body) return toast('Нужны заголовок и текст');
+    confirmThen(push ? 'Опубликовать и разослать всем в бот?' : 'Опубликовать в ленте кабинета?', function () {
+      api('POST', 'news', { title: title, body: body, push: push }).then(function (r) {
+        toast(push ? 'Опубликовано, рассылка: ' + r.sentTo : 'Опубликовано');
+        document.getElementById('news-title').value = '';
+        document.getElementById('news-body').value = '';
+        document.getElementById('news-push').checked = false;
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
   function start() {
+    loadTournament();
     loadSummary().then(function () {
       document.getElementById('gate').hidden = true;
       document.getElementById('app').hidden = false;

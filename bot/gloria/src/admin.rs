@@ -33,6 +33,7 @@ pub(crate) enum Route {
     Summary,
     Card(i64),
     Extend(i64, u32),
+    Community(crate::community::AdminRoute),
 }
 
 /// Разобрать путь и способ. Чистая функция: всё, что стоит проверить
@@ -44,6 +45,14 @@ pub(crate) fn route(method: &str, path: &str) -> Result<Route, (u16, &'static st
         return Err((404, r#"{"error":"нет такого пути"}"#));
     };
     let parts: Vec<&str> = rest.split('/').collect();
+
+    if let Some(found) = crate::community::admin_route(parts.as_slice()) {
+        let (route, wants) = found?;
+        if method != wants {
+            return Err((405, r#"{"error":"не тот способ"}"#));
+        }
+        return Ok(Route::Community(route));
+    }
 
     let (route, wants) = match parts.as_slice() {
         ["summary"] => (Route::Summary, "GET"),
@@ -74,7 +83,19 @@ fn telegram_id(raw: &str) -> Result<i64, (u16, &'static str)> {
 }
 
 /// Ответ админки: код и тело.
-pub(crate) fn answer(shared: &Shared, admin_id: i64, route: Route, now: i64) -> (u16, String) {
+pub(crate) fn answer(
+    shared: &Shared,
+    admin_id: i64,
+    route: Route,
+    body: &[u8],
+    now: i64,
+) -> (u16, String) {
+    if let Route::Community(route) = route {
+        return match crate::community::admin_answer(shared, admin_id, route, body, now) {
+            Ok(json) => (200, json.to_string()),
+            Err((status, why)) => (status, serde_json::json!({ "error": why }).to_string()),
+        };
+    }
     match run(shared, admin_id, route, now) {
         Ok(body) => (200, body),
         Err((status, why)) => (status, serde_json::json!({ "error": why }).to_string()),
@@ -104,6 +125,9 @@ fn run(shared: &Shared, admin_id: i64, route: Route, now: i64) -> Result<String,
                 None => Err((404, "такой в бота не заходил".to_owned())),
             }
         }
+
+        // Разобран выше, в `answer`.
+        Route::Community(_) => Err((404, "нет такого пути".to_owned())),
 
         Route::Extend(id, days) => {
             let extended = lock(shared)?

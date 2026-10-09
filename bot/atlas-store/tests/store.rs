@@ -14,7 +14,7 @@
 //! проект, базы под рукой может не быть.
 
 use atlas_billing::money::{Currency, Money};
-use atlas_store::{Extended, Settled, Store, Trial, MAX_MANUAL_DAYS};
+use atlas_store::{prize_days, Extended, Settled, Started, Store, Trial, MAX_MANUAL_DAYS};
 
 const DAY: i64 = 86_400;
 const NOW: i64 = 1_760_000_000;
@@ -88,6 +88,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0012_family.sql"),
         "\n",
         include_str!("../../../db/migrations/0013_one_tier.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0014_news_tournaments.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -1708,4 +1710,128 @@ fn a_purchase_sets_the_one_tier() {
     };
     owner_on(&mut store, 1, "d30", 199);
     assert_eq!(tier_of(&mut store, 1).as_deref(), Some("personal"));
+}
+
+// --- турнир и новости -------------------------------------------------------
+
+/// Настоящее «сейчас»: строки пользователей получают `created_at` от базы,
+/// и турнир должен идти в то же время.
+fn real_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0))
+}
+
+/// Пригласить `friend` от имени `inviter`; `connected` — подключился ли он.
+fn invite(store: &mut Store, inviter: i64, friend: i64, connected: bool, at: i64) {
+    subscriber(store, friend);
+    assert!(expect(
+        store.remember_invite(friend, inviter),
+        "приглашение"
+    ));
+    if connected {
+        expect(store.mark_connected(friend, at), "подключение");
+    }
+}
+
+/// Засчитывается только подключившийся: пустой аккаунт очков не даёт.
+#[test]
+fn only_a_connected_friend_scores() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    let now = real_now();
+    let Ok(Started::Started(id)) = store.start_tournament(1, 7, 1, now - 60) else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 2);
+    invite(&mut store, 1, 10, true, now);
+    invite(&mut store, 1, 11, false, now);
+    invite(&mut store, 2, 20, true, now);
+    invite(&mut store, 2, 21, true, now + 5);
+
+    let table = expect(store.standings(id), "таблица");
+    let scores: Vec<(i64, i64, i64)> = table
+        .iter()
+        .map(|s| (s.place, s.telegram_id, s.score))
+        .collect();
+    assert_eq!(scores, vec![(1, 2, 2), (2, 1, 1)]);
+}
+
+/// Второй турнир при идущем не начинается: двое считали бы одних и тех же.
+#[test]
+fn only_one_tournament_runs_at_a_time() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    let now = real_now();
+    assert!(matches!(
+        store.start_tournament(1, 7, 3, now),
+        Ok(Started::Started(_))
+    ));
+    assert_eq!(
+        expect(store.start_tournament(1, 7, 3, now), "второй"),
+        Started::AlreadyRunning
+    );
+}
+
+/// Призы — только набравшим порог; дни прибавляются к подписке; повторное
+/// подведение итогов ничего не выдаёт.
+#[test]
+fn prizes_go_to_those_above_the_threshold_once() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    let now = real_now();
+    let Ok(Started::Started(id)) = store.start_tournament(1, 7, 2, now - 60) else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    subscriber(&mut store, 2);
+    for friend in [10, 11, 12] {
+        invite(&mut store, 1, friend, true, now);
+    }
+    invite(&mut store, 2, 20, true, now);
+
+    let end = now + 8 * 86_400;
+    let prizes = expect(store.finish_tournament(id, end), "итоги").unwrap_or_default();
+    assert_eq!(prizes.len(), 1, "{prizes:?}");
+    let Some(first) = prizes.first() else {
+        return;
+    };
+    assert_eq!((first.place, first.telegram_id, first.days), (1, 1, 90));
+    assert_eq!(first.expires_at, end + 90 * 86_400);
+
+    assert_eq!(expect(store.finish_tournament(id, end), "повтор"), None);
+    assert_eq!(expect(store.prizes_of(id), "призы").len(), 1);
+}
+
+#[test]
+fn prize_days_follow_the_places() {
+    assert_eq!(prize_days(1), Some(90));
+    assert_eq!(prize_days(2), Some(60));
+    assert_eq!(prize_days(3), Some(60));
+    assert_eq!(prize_days(4), Some(30));
+    assert_eq!(prize_days(10), Some(30));
+    assert_eq!(prize_days(11), None);
+}
+
+/// Непрочитанное — то, что новее последнего открытия ленты.
+#[test]
+fn news_are_unread_until_seen() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 5);
+    expect(
+        store.publish_news(1, "Акция", "Турнир начался", false, NOW),
+        "новость",
+    );
+    assert_eq!(expect(store.unread_news(5), "до"), 1);
+    expect(store.mark_news_seen(5, NOW + 1), "прочитал");
+    assert_eq!(expect(store.unread_news(5), "после"), 0);
+
+    expect(store.set_news_muted(5, true), "выключил");
+    assert!(!expect(store.news_recipients(), "кому").contains(&5));
 }

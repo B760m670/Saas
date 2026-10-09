@@ -12,6 +12,7 @@
 
 mod admin;
 mod api;
+mod community;
 mod config;
 mod http;
 mod support;
@@ -197,6 +198,7 @@ fn run(deps: &Deps<'_>, store: &mut Store) {
 
         sync_panel(deps.config, deps.panel, store);
         remind(deps, store);
+        community::tick(deps.panel, telegram, store, unix_now());
     }
 }
 

@@ -208,6 +208,13 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         .map(str::to_owned)
         .filter(|id| !id.is_empty());
 
+    // Новости и турнир.
+    let community = match crate::community::route(&request.method, &request.path) {
+        Some(Ok(route)) => Some(route),
+        Some(Err((status, body))) => return send(&mut stream, status, body),
+        None => None,
+    };
+
     // Остальные пути ждут своей очереди — до тех пор честнее отвечать «нет»,
     // чем делать вид.
     if request.path != "/api/me"
@@ -215,6 +222,7 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         && claimed.is_none()
         && order_plan.is_none()
         && transfer_order.is_none()
+        && community.is_none()
     {
         return send(&mut stream, 404, r#"{"error":"нет такого пути"}"#);
     }
@@ -232,7 +240,8 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     } else {
         "POST"
     };
-    if request.method != expected {
+    // Способ путей новостей и турнира уже проверен их разбором.
+    if community.is_none() && request.method != expected {
         return send(&mut stream, 405, r#"{"error":"не тот способ"}"#);
     }
 
@@ -246,6 +255,11 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         // «строка просрочена» полезна только тому, кто подбирает.
         return send(&mut stream, 401, r#"{"error":"подпись не принята"}"#);
     };
+
+    if let Some(route) = community {
+        let (status, body) = crate::community::answer(shared, verified.user_id(), route, now);
+        return send(&mut stream, status, &body);
+    }
 
     if let Some(plan) = order_plan {
         return match crate::open_order_for(shared, verified.user_id(), &plan, now) {
@@ -306,6 +320,15 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         };
     }
 
+    // Имя для таблицы турнира — из подписанной строки, не из запроса.
+    if let Some(name) = verified.first_name() {
+        if let Ok(mut store) = shared.store.lock() {
+            if let Err(error) = store.remember_name(verified.user_id(), name) {
+                eprintln!("Имя {}: {error}", verified.user_id());
+            }
+        }
+    }
+
     let body = match state_of(shared, verified.user_id(), now) {
         Ok(body) => body,
         Err(error) => {
@@ -342,7 +365,8 @@ fn admin_request(shared: &Shared, stream: &mut TcpStream, request: &Request) -> 
         return send(stream, 404, r#"{"error":"нет такого пути"}"#);
     }
 
-    let (status, body) = crate::admin::answer(shared, verified.user_id(), route, now);
+    let (status, body) =
+        crate::admin::answer(shared, verified.user_id(), route, &request.body, now);
     send(stream, status, &body)
 }
 
@@ -759,12 +783,26 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         catalog::PLAN_DEVICES
     };
 
-    let referrals = shared
-        .store
-        .lock()
-        .map_err(|_| "замок базы испорчен".to_owned())?
-        .referral_stats(telegram_id)
-        .map_err(|error| format!("рефералы: {error}"))?;
+    let (referrals, news_unread, news_muted, tournament) = {
+        let mut store = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?;
+        let referrals = store
+            .referral_stats(telegram_id)
+            .map_err(|error| format!("рефералы: {error}"))?;
+        let unread = store
+            .unread_news(telegram_id)
+            .map_err(|error| format!("новости: {error}"))?;
+        let muted = store
+            .news_muted(telegram_id)
+            .map_err(|error| format!("новости: {error}"))?;
+        let tournament = store
+            .open_tournament()
+            .map_err(|error| format!("турнир: {error}"))?
+            .map(|t| t.ends_at);
+        (referrals, unread, muted, tournament)
+    };
 
     Ok(serde_json::json!({
         "status": status,
@@ -776,6 +814,10 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         // значило бы показать «0 из 4» тому, у кого их два.
         "devices": serde_json::Value::Null,
         "deviceLimit": device_limit,
+        "newsUnread": news_unread,
+        "newsMuted": news_muted,
+        // Идёт ли турнир: вкладка «Друзья» называется тогда «Турнир».
+        "tournamentEndsAt": tournament,
         "userId": telegram_id,
         "subscriptionUrl": subscriber.subscription_url,
         // Из него страница строит ссылку «оплатить» в переписку с ботом.

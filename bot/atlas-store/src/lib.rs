@@ -30,8 +30,10 @@ use atlas_billing::subscription;
 use postgres::{Client, NoTls, Row, Transaction};
 
 mod admin;
+mod community;
 
 pub use admin::{Card, Extended, LogEntry, Payment, Summary, MAX_MANUAL_DAYS};
+pub use community::{prize_days, News, Prize, Standing, Started, Tournament, PRIZE_PLACES};
 
 /// Отказ при работе с хранилищем.
 #[derive(Debug)]

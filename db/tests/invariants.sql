@@ -212,6 +212,19 @@ SELECT must_fail(
     $q$UPDATE users SET panel_plan = 'guest' WHERE telegram_id = 1002$q$,
     'гостей больше нет');
 
+-- --- турнир и новости -------------------------------------------------------
+
+INSERT INTO tournaments (starts_at, ends_at, created_by) VALUES (now(), now() + interval '7 days', 1);
+SELECT must_fail(
+    $q$INSERT INTO tournaments (starts_at, ends_at, created_by) VALUES (now(), now() + interval '7 days', 1)$q$,
+    'два турнира одновременно');
+SELECT must_fail(
+    $q$INSERT INTO tournaments (starts_at, ends_at, created_by, finished_at) VALUES (now(), now() - interval '1 day', 1, now())$q$,
+    'турнир, который кончается раньше начала');
+SELECT must_fail(
+    $q$INSERT INTO news (title, body, author_id) VALUES ('', 'текст', 1)$q$,
+    'новость без заголовка');
+
 -- --- итог ------------------------------------------------------------------
 
 DO $$ BEGIN RAISE NOTICE 'все сторожа сработали'; END $$;

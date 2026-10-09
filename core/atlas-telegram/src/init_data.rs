@@ -81,6 +81,7 @@ pub struct Verified {
     user_id: i64,
     auth_date: i64,
     username: Option<String>,
+    first_name: Option<String>,
 }
 
 impl Verified {
@@ -102,12 +103,20 @@ impl Verified {
     pub fn username(&self) -> Option<&str> {
         self.username.as_deref()
     }
+
+    /// Имя, как его показывает Telegram. Только для показа: его тоже
+    /// меняет сам владелец.
+    #[must_use]
+    pub fn first_name(&self) -> Option<&str> {
+        self.first_name.as_deref()
+    }
 }
 
 #[derive(Deserialize)]
 struct TelegramUser {
     id: i64,
     username: Option<String>,
+    first_name: Option<String>,
 }
 
 /// Проверить строку `initData` ключом бота.
@@ -207,6 +216,7 @@ pub fn verify(raw: &str, bot_token: &str, now: i64, max_age: i64) -> Result<Veri
         user_id: user.id,
         auth_date,
         username: user.username,
+        first_name: user.first_name,
     })
 }
 
