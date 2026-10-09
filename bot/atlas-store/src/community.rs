@@ -280,6 +280,22 @@ impl Store {
         })
     }
 
+    /// Продлить идущий турнир на `days` дней. Возвращает новый срок; `None` —
+    /// турнир не идёт.
+    pub fn extend_tournament(&mut self, days: u32) -> Result<Option<i64>, Error> {
+        let row = self.client.query_opt(
+            "UPDATE tournaments
+                SET ends_at = ends_at + make_interval(days => $1::int)
+              WHERE finished_at IS NULL
+              RETURNING FLOOR(EXTRACT(EPOCH FROM ends_at))::bigint",
+            &[&i32::try_from(days).unwrap_or(0)],
+        )?;
+        Ok(match row {
+            Some(row) => Some(row.try_get(0)?),
+            None => None,
+        })
+    }
+
     /// Идущий турнир.
     pub fn open_tournament(&mut self) -> Result<Option<Tournament>, Error> {
         let row = self.client.query_opt(

@@ -136,6 +136,10 @@ textarea:focus { outline: none; border-color: var(--mid); }
       <div class="rows" id="tour-info"></div>
       <h2 style="margin-top:14px">Таблица</h2>
       <div class="rows" id="tour-table"></div>
+      <form id="tour-extend" style="margin-top: 12px">
+        <input id="tour-extend-days" inputmode="numeric" pattern="[0-9]*" placeholder="продлить на, дней" autocomplete="off">
+        <button type="submit">Продлить</button>
+      </form>
       <div class="actions"><button id="tour-finish">Подвести итоги сейчас</button></div>
     </div>
   </div>
@@ -386,6 +390,19 @@ textarea:focus { outline: none; border-color: var(--mid); }
     confirmThen('Начать турнир на ' + days + ' дн. с порогом ' + min + '?', function () {
       api('POST', 'tournament/start/' + days + '/' + min).then(function () {
         toast('Турнир начался');
+        loadTournament();
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
+  document.getElementById('tour-extend').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var days = Number(document.getElementById('tour-extend-days').value);
+    if (!(days >= 1 && days <= 60)) return toast('Дней — от 1 до 60');
+    confirmThen('Продлить турнир на ' + days + ' дн.? В ленте появится новость.', function () {
+      api('POST', 'tournament/extend/' + days).then(function (r) {
+        toast('Турнир продлён до ' + r.endsLabel);
+        document.getElementById('tour-extend-days').value = '';
         loadTournament();
       }).catch(function (e) { toast('Не вышло: ' + e.message); });
     });

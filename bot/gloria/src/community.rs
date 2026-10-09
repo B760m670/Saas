@@ -16,6 +16,7 @@
 //! POST /api/admin/news                          опубликовать: {title, body, push}
 //! GET  /api/admin/tournament                    турнир целиком, без сокращения имён
 //! POST /api/admin/tournament/start/<дней>/<порог>  начать
+//! POST /api/admin/tournament/extend/<дней>      продлить идущий
 //! POST /api/admin/tournament/finish             подвести итоги сейчас
 //! ```
 
@@ -356,6 +357,7 @@ pub(crate) enum AdminRoute {
     PublishNews,
     Tournament,
     Start { days: u32, min_score: i32 },
+    Extend { days: u32 },
     Finish,
 }
 
@@ -368,6 +370,12 @@ pub(crate) fn admin_route(parts: &[&str]) -> Option<Result<(AdminRoute, &'static
         ["news"] => (AdminRoute::PublishNews, "POST"),
         ["tournament"] => (AdminRoute::Tournament, "GET"),
         ["tournament", "finish"] => (AdminRoute::Finish, "POST"),
+        ["tournament", "extend", days] => {
+            let Some(days) = days.parse::<u32>().ok().filter(|d| (1..=60).contains(d)) else {
+                return Some(Err((400, r#"{"error":"дней — от 1 до 60"}"#)));
+            };
+            (AdminRoute::Extend { days }, "POST")
+        }
         ["tournament", "start", days, min] => {
             let days = days.parse::<u32>().ok().filter(|d| (1..=60).contains(d));
             let min = min.parse::<i32>().ok().filter(|m| (1..=1000).contains(m));
@@ -488,6 +496,25 @@ pub(crate) fn admin_answer(
             }
         }
 
+        AdminRoute::Extend { days } => {
+            let Some(ends) = store
+                .extend_tournament(days)
+                .map_err(|error| internal("продление турнира", &error))?
+            else {
+                return Err((404, "турнир не идёт".to_owned()));
+            };
+            let body = format!(
+                "Турнир приглашений продлён до {}. Ещё есть время привести друзей!",
+                day_month_year(ends)
+            );
+            if let Err(error) = store.publish_news(admin_id, "Турнир продлён", &body, false, now)
+            {
+                eprintln!("Турнир, новость о продлении: {error}");
+            }
+            println!("Админка: {admin_id} продлил турнир на {days} дн.");
+            Ok(serde_json::json!({ "endsAt": ends, "endsLabel": day_month_year(ends) }))
+        }
+
         AdminRoute::Finish => {
             let open = store
                 .open_tournament()
@@ -555,6 +582,14 @@ mod tests {
         ));
         assert!(matches!(
             admin_route(&["tournament", "start", "14", "0"]),
+            Some(Err((400, _)))
+        ));
+        assert_eq!(
+            admin_route(&["tournament", "extend", "7"]),
+            Some(Ok((AdminRoute::Extend { days: 7 }, "POST")))
+        );
+        assert!(matches!(
+            admin_route(&["tournament", "extend", "0"]),
             Some(Err((400, _)))
         ));
         assert_eq!(admin_route(&["users"]), None);

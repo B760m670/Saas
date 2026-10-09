@@ -1835,3 +1835,18 @@ fn news_are_unread_until_seen() {
     expect(store.set_news_muted(5, true), "выключил");
     assert!(!expect(store.news_recipients(), "кому").contains(&5));
 }
+
+/// Продление сдвигает конец идущего турнира; без турнира — `None`.
+#[test]
+fn a_tournament_can_be_extended() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    assert_eq!(expect(store.extend_tournament(7), "без турнира"), None);
+    let now = real_now();
+    let Ok(Started::Started(_)) = store.start_tournament(1, 7, 3, now) else {
+        return;
+    };
+    let ends = expect(store.extend_tournament(5), "продление");
+    assert_eq!(ends, Some(now + 12 * 86_400));
+}
