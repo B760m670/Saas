@@ -33,7 +33,7 @@
     },
     {
       "name": "INCY",
-      "description": "Наш клиент.",
+      "description": "Наш клиент. hide-url прячет адрес подписки из «Поделиться», «Копировать URL» и QR-кода.",
       "enabled": true,
       "operator": "AND",
       "conditions": [
@@ -44,7 +44,12 @@
           "caseSensitive": false
         }
       ],
-      "responseType": "XRAY_JSON"
+      "responseType": "XRAY_JSON",
+      "responseModifications": {
+        "headers": [
+          { "key": "hide-url", "value": "1" }
+        ]
+      }
     },
     {
       "name": "Fallback Base64",
