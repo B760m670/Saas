@@ -1250,6 +1250,59 @@ fn the_last_reminder_does_not_wake_anyone_at_night() {
     assert!(due(&mut store, expires_at - 12 * HOUR));
 }
 
+/// «За сутки» ночью тоже не будит, но и не уходит за московские сутки —
+/// иначе «завтра» стало бы неправдой.
+#[test]
+fn the_day_before_reminder_does_not_wake_anyone_at_night() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    // 2 ноября 2026 года, 00:00 UTC (03:00 по Москве).
+    const DAY: i64 = 1_793_577_600;
+    const HOUR: i64 = 3600;
+
+    let due = |store: &mut Store, id: i64, at: i64| {
+        store
+            .due_reminders(at, 10)
+            .map(|due| {
+                due.iter()
+                    .any(|r| r.telegram_id == id && r.kind == "day_before")
+            })
+            .unwrap_or(false)
+    };
+
+    // Окончание 3 ноября в 14:00 МСК: днём — ровно за сутки.
+    subscriber(&mut store, 61);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(61, 2, DAY + 11 * HOUR - 86_400)
+    else {
+        return;
+    };
+    assert!(!due(&mut store, 61, expires_at - 24 * HOUR - 60));
+    assert!(due(&mut store, 61, expires_at - 24 * HOUR));
+
+    // Окончание 3 ноября в 03:00 МСК: «за сутки» — 2 ноября в 03:00,
+    // ночь. Уходит 2 ноября в 9:00 МСК, а не в три ночи.
+    subscriber(&mut store, 62);
+    let Ok(Trial::Granted { expires_at }) = store.grant_trial(62, 2, DAY - 86_400) else {
+        return;
+    };
+    assert!(!due(&mut store, 62, expires_at - 24 * HOUR));
+    assert!(!due(&mut store, 62, DAY + 6 * HOUR - 60));
+    assert!(due(&mut store, 62, DAY + 6 * HOUR));
+
+    // Окончание 3 ноября в 23:30 МСК: «за сутки» — 2 ноября в 23:30.
+    // Уходит в 22:00 того же вечера.
+    subscriber(&mut store, 63);
+    let Ok(Trial::Granted { expires_at }) =
+        store.grant_trial(63, 2, DAY + 20 * HOUR + 30 * 60 - 86_400)
+    else {
+        return;
+    };
+    assert!(!due(&mut store, 63, DAY + 19 * HOUR - 60));
+    assert!(due(&mut store, 63, DAY + 19 * HOUR));
+    assert!(!due(&mut store, 63, expires_at - 24 * HOUR + 60 * 60));
+}
+
 /// Напоминание знает, что кончается проба, — у неё свой текст. Заплатил —
 /// уже не проба.
 #[test]

@@ -505,7 +505,7 @@ impl Store {
     ///
     /// | Вид | Когда | Слово в сообщении |
     /// |---|---|---|
-    /// | `day_before` | за 23–25 часов до окончания | «завтра» |
+    /// | `day_before` | за сутки, ночью — в 22:00 или в 9:00 по Москве | «завтра» |
     /// | `same_day`   | за 3 часа, ночью — накануне в 22:00 по Москве | дата и время |
     /// | `after_3d`   | через 3–4 суток после | — |
     ///
@@ -521,9 +521,16 @@ impl Store {
     /// 9:00 по Москве, сообщение уходит раньше — в 22:00 накануне. Поэтому
     /// в тексте `same_day` не «сегодня», а дата и время окончания.
     ///
+    /// С `day_before` так же, но сдвиг не выходит за московские сутки:
+    /// 23:xx становится 22:00 того же вечера, а время до 9:00 — 9:00 того же
+    /// утра. Сдвиг на вечер накануне сделал бы «завтра» неправдой — до
+    /// окончания оставалось бы двое суток. Проба берётся когда угодно, и
+    /// без этого взявший её в три ночи получил бы «завтра» в три ночи.
+    ///
     /// Окна не пересекаются: иначе человек с остатком в пару часов получил
     /// бы два сообщения подряд. Самое раннее `same_day` — около 14 часов до
-    /// окончания, а `day_before` — не позже 23.
+    /// окончания и не раньше 20:00 предыдущего дня, а окно `day_before`
+    /// закрывается не позже чем за 13 часов и не позже 11:00 утра.
     ///
     /// **Окна ограничены с обеих сторон** намеренно. Без нижней границы
     /// первый же круг после выкладки разослал бы «ваша подписка истекла»
@@ -547,11 +554,26 @@ impl Store {
                                          AND o.status = 'paid')
                FROM users u
                CROSS JOIN (VALUES ('day_before'), ('same_day'), ('after_3d')) AS k(kind)
+               -- Когда уходит `day_before`: ровно за сутки, а ночью — в
+               -- 22:00 того же вечера или в 9:00 того же утра. Оба сдвига
+               -- остаются в тех же московских сутках, и «завтра» верно.
+               CROSS JOIN LATERAL (
+                     WITH t(at) AS (
+                       SELECT (u.expires_at - interval '24 hours')
+                                AT TIME ZONE 'Europe/Moscow')
+                     SELECT CASE
+                              WHEN EXTRACT(HOUR FROM at) >= 23
+                              THEN date_trunc('day', at) + interval '22 hours'
+                              WHEN EXTRACT(HOUR FROM at) < 9
+                              THEN date_trunc('day', at) + interval '9 hours'
+                              ELSE at
+                            END AT TIME ZONE 'Europe/Moscow'
+                       FROM t) AS d(at)
               WHERE u.expires_at IS NOT NULL
                 AND CASE k.kind
                       WHEN 'day_before' THEN
-                           u.expires_at >  to_timestamp($1::bigint) + interval '23 hours'
-                       AND u.expires_at <= to_timestamp($1::bigint) + interval '25 hours'
+                           to_timestamp($1::bigint) >= d.at
+                       AND to_timestamp($1::bigint) <  d.at + interval '2 hours'
                       WHEN 'same_day' THEN
                            u.expires_at > to_timestamp($1::bigint)
                        AND to_timestamp($1::bigint) >= (

@@ -329,8 +329,8 @@ fn remind(deps: &Deps<'_>, store: &mut Store) {
 /// узнаём, кто пришёл.
 ///
 /// У `same_day` вместо «сегодня» — дата и время: ночью напоминание уходит
-/// накануне вечером, и «сегодня» было бы неправдой. У пробы своя пара
-/// текстов: «подписка» человеку, который ещё не платил, звучит как счёт.
+/// накануне вечером, и «сегодня» было бы неправдой. У пробы свои тексты:
+/// «подписка» человеку, который ещё не платил, звучит как счёт.
 fn reminder_text(item: &Reminder) -> Option<String> {
     let at = moscow_time(item.expires_at);
     Some(match (item.kind.as_str(), item.trial) {
@@ -353,7 +353,12 @@ fn reminder_text(item: &Reminder) -> Option<String> {
 
         // Здесь дата уместна: относительной оговорки рядом нет, и она
         // единственное, от чего человек может оттолкнуться.
-        ("after_3d", _) => format!("Подписка закончилась {}.", day_month_year(item.expires_at)),
+        ("after_3d", true) => format!(
+            "Пробный доступ закончился {}.\n\n\
+             Подключитесь снова — оплата займёт минуту.",
+            day_month_year(item.expires_at)
+        ),
+        ("after_3d", false) => format!("Подписка закончилась {}.", day_month_year(item.expires_at)),
 
         _ => return None,
     })
@@ -2425,6 +2430,23 @@ mod reminder_tests {
             assert!(text.contains("Пробный доступ"), "{text}");
             assert!(text.contains("02.11.2026 в 14:05"), "{text}");
         }
+    }
+
+    /// После окончания проба не называется подпиской: человек ещё не платил.
+    #[test]
+    fn an_ended_trial_is_not_called_a_subscription() {
+        let item = Reminder {
+            telegram_id: 1,
+            kind: "after_3d".to_owned(),
+            expires_at: AT,
+            trial: true,
+        };
+        let text = reminder_text(&item).unwrap_or_default();
+        assert!(
+            text.contains("Пробный доступ закончился 02.11.2026"),
+            "{text}"
+        );
+        assert!(!text.contains("Подписка"), "{text}");
     }
 
     /// «Сегодня» в последнем напоминании нет: ночью оно уходит накануне.
