@@ -48,6 +48,10 @@ pub struct Config {
     /// серверы перестают работать, бесплатный (обычно — только Telegram и
     /// кабинет) остаётся, и человеку есть чем зайти в бота и продлить.
     pub free_squads: Vec<String>,
+    /// Отряды опции «Без рекламы»: серверы, где реклама и трекеры режутся
+    /// DNS-фильтром. Даются сверх платных, пока идёт опция
+    /// (`users.adblock_until`). Пусто — опция не продаётся.
+    pub adblock_squads: Vec<String>,
     /// Кому разрешены админские действия.
     pub admins: Vec<i64>,
     /// Ссылка на перевод — та, что стоит за QR-кодом в банковском
@@ -107,6 +111,7 @@ impl core::fmt::Debug for Config {
             .field("database_url", &"<скрыт>")
             .field("squads", &self.squads.len())
             .field("бесплатные отряды", &self.free_squads.len())
+            .field("отряды без рекламы", &self.adblock_squads.len())
             .field("admins", &self.admins.len())
             .field("мини-приложение", &self.api_addr)
             .field("принимает переводы", &self.accepts_transfers())
@@ -125,6 +130,7 @@ pub const PANEL_TOKEN: &str = "GLORIA_PANEL_TOKEN";
 pub const DATABASE_URL: &str = "GLORIA_DATABASE_URL";
 pub const SQUADS: &str = "GLORIA_SQUADS";
 pub const FREE_SQUADS: &str = "GLORIA_FREE_SQUADS";
+pub const ADBLOCK_SQUADS: &str = "GLORIA_ADBLOCK_SQUADS";
 pub const ADMINS: &str = "GLORIA_ADMINS";
 pub const PAY_LINK: &str = "GLORIA_PAY_LINK";
 pub const MANUAL_TRANSFER: &str = "GLORIA_MANUAL_TRANSFER";
@@ -209,6 +215,27 @@ impl Config {
             return Err(Error::Invalid {
                 name: FREE_SQUADS,
                 why: "бесплатный отряд не может быть и в GLORIA_SQUADS: платное осталось бы у всех навсегда",
+            });
+        }
+
+        let adblock_squads = list(vars, ADBLOCK_SQUADS);
+        if adblock_squads
+            .iter()
+            .any(|squad| !squad.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+        {
+            return Err(Error::Invalid {
+                name: ADBLOCK_SQUADS,
+                why: "UUID отрядов через запятую",
+            });
+        }
+        // Отряд опции среди платных или бесплатных отдал бы её всем даром.
+        if adblock_squads
+            .iter()
+            .any(|squad| squads.contains(squad) || free_squads.contains(squad))
+        {
+            return Err(Error::Invalid {
+                name: ADBLOCK_SQUADS,
+                why: "отряд «Без рекламы» не может стоять в GLORIA_SQUADS или GLORIA_FREE_SQUADS",
             });
         }
 
@@ -318,6 +345,7 @@ impl Config {
             database_url: get(DATABASE_URL)?,
             squads,
             free_squads,
+            adblock_squads,
             admins,
             pay_link,
             manual_transfer,
@@ -395,6 +423,24 @@ impl Config {
     #[must_use]
     pub fn free_enabled(&self) -> bool {
         !self.free_squads.is_empty()
+    }
+
+    /// Продаётся ли опция «Без рекламы».
+    #[must_use]
+    pub fn adblock_enabled(&self) -> bool {
+        !self.adblock_squads.is_empty()
+    }
+
+    /// Отряды подписки с опцией «Без рекламы»: платные и отряды опции.
+    #[must_use]
+    pub fn adblock_plan_squads(&self) -> Vec<String> {
+        let mut all = self.paid_squads();
+        for squad in &self.adblock_squads {
+            if !all.contains(squad) {
+                all.push(squad.clone());
+            }
+        }
+        all
     }
 
     /// Отряды человека с действующей подпиской: платные и бесплатные вместе.

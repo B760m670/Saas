@@ -159,7 +159,8 @@ impl Store {
                              WHERE orders.telegram_id = users.telegram_id
                                AND orders.status = 'paid'),
                     FLOOR(EXTRACT(EPOCH FROM created_at))::bigint,
-                    invited_by, panel_plan, tier
+                    invited_by, panel_plan, tier,
+                    FLOOR(EXTRACT(EPOCH FROM adblock_until))::bigint
                FROM users WHERE telegram_id = $1",
             &[&telegram_id],
         )?
@@ -176,6 +177,7 @@ impl Store {
             subscription_url: row.try_get(5)?,
             has_paid: row.try_get(6)?,
             tier: row.try_get(10)?,
+            adblock_until: row.try_get(11)?,
         };
 
         let log = self

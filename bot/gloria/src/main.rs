@@ -531,7 +531,7 @@ fn panel_plan(config: &Config, item: &atlas_store::PanelWork) -> Plan {
     }
 
     let devices = match item.kind.as_str() {
-        "personal" => catalog::PLAN_DEVICES,
+        "personal" | "plus" => catalog::PLAN_DEVICES,
         // Платил до октября 2026 — прежние три устройства до конца срока.
         _ if item.has_paid => catalog::DEVICES,
         // Проба — как подписка.
@@ -539,12 +539,20 @@ fn panel_plan(config: &Config, item: &atlas_store::PanelWork) -> Plan {
     };
     let (traffic, reset) = (0, TrafficReset::Never);
 
+    // С опцией «Без рекламы» — ещё и её серверы. Опция выключена — отрядов
+    // у неё нет, и `plus` ничем не отличается от обычной подписки.
+    let squads = if item.kind == "plus" {
+        config.adblock_plan_squads()
+    } else {
+        config.paid_squads()
+    };
+
     Plan {
         expires_at: item.expires_at,
         traffic,
         reset,
         devices,
-        squads: config.paid_squads(),
+        squads,
     }
 }
 
@@ -864,6 +872,7 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         subscription_url: subscriber.subscription_url.as_deref(),
         app_url: config.miniapp_url.as_deref(),
         trial_left: trial_left(panel, &subscriber),
+        adblock: config.adblock_enabled(),
         now,
     };
 
@@ -1166,6 +1175,15 @@ fn apply(
             let Some(plan) = catalog::plan(plan) else {
                 return Ok(None);
             };
+            // Опция не настроена — продавать её нельзя: человек заплатил бы
+            // за серверы, которых у него не появится.
+            if atlas_store::is_adblock_plan(&plan.id) && !config.adblock_enabled() {
+                return Ok(Some(
+                    "Тарифы «Без рекламы» сейчас недоступны. Выберите обычный тариф."
+                        .to_owned()
+                        .into(),
+                ));
+            }
 
             let taken = store
                 .taken_amounts(now, catalog::INVOICE_LIFETIME)
@@ -1772,6 +1790,9 @@ pub(crate) fn open_order_for(
     let Some(plan) = catalog::plan(plan_id) else {
         return Err(format!("тарифа {plan_id} нет в витрине"));
     };
+    if atlas_store::is_adblock_plan(&plan.id) && !shared.adblock {
+        return Err("тарифы «Без рекламы» сейчас недоступны".to_owned());
+    }
 
     let (order_id, amount) = {
         let mut store = shared
@@ -2171,6 +2192,7 @@ mod reconcile_tests {
             subscription_url: Some("https://panel.example.org/api/sub/AbCdE".to_owned()),
             has_paid: false,
             tier: None,
+            adblock_until: None,
         }
     }
 
@@ -2535,7 +2557,7 @@ mod fee_tests {
 #[cfg(test)]
 mod plan_tests {
     use super::{panel_plan, Plan, FREE_MARK, FREE_UNTIL};
-    use crate::config::{Config, FREE_SQUADS};
+    use crate::config::{Config, ADBLOCK_SQUADS, FREE_SQUADS};
     use atlas_bot::catalog;
     use atlas_panel::TrafficReset;
     use atlas_store::PanelWork;
@@ -2544,8 +2566,13 @@ mod plan_tests {
     const NOW: i64 = 1_788_861_600;
     const PAID: &str = "b6f5d810-8ef3-4be9-9012-3456789abcde";
     const FREE: &str = "0a0b0c0d-0000-4000-8000-000000000001";
+    const ADBLOCK: &str = "0a0b0c0d-0000-4000-8000-0000000000ad";
 
     fn config() -> Option<Config> {
+        config_with(&[])
+    }
+
+    fn config_with(extra: &[(&str, &str)]) -> Option<Config> {
         let vars: HashMap<String, String> = [
             ("GLORIA_BOT_TOKEN", "123456:AAHkTestToken"),
             ("GLORIA_PANEL_URL", "https://panel.example.org"),
@@ -2555,6 +2582,7 @@ mod plan_tests {
             (FREE_SQUADS, FREE),
         ]
         .into_iter()
+        .chain(extra.iter().copied())
         .map(|(k, v)| (k.to_owned(), v.to_owned()))
         .collect();
         let config = Config::from_map(&vars);
@@ -2615,6 +2643,46 @@ mod plan_tests {
         assert_eq!(plan.expires_at, FREE_UNTIL);
         assert_eq!(plan.traffic, 0);
         assert_eq!(plan.squads, vec![FREE.to_owned()]);
+    }
+
+    /// С опцией «Без рекламы» — ещё и её отряд; без опции его нет.
+    #[test]
+    fn adblock_adds_its_squad() {
+        let Some(config) = config_with(&[(ADBLOCK_SQUADS, ADBLOCK)]) else {
+            return;
+        };
+        let plus = panel_plan(&config, &work("plus", true));
+        assert_eq!(plus.devices, catalog::PLAN_DEVICES);
+        assert_eq!(
+            plus.squads,
+            vec![PAID.to_owned(), FREE.to_owned(), ADBLOCK.to_owned()]
+        );
+        assert_eq!(panel_plan(&config, &work("personal", true)).squads, both());
+    }
+
+    /// Опция не настроена — `plus` ничем не отличается от подписки.
+    #[test]
+    fn adblock_without_squads_is_a_plain_subscription() {
+        let Some(config) = config() else { return };
+        assert!(!config.adblock_enabled());
+        assert_eq!(panel_plan(&config, &work("plus", false)).squads, both());
+    }
+
+    /// Отряд опции среди платных отдал бы её всем.
+    #[test]
+    fn an_adblock_squad_cannot_be_a_paid_one() {
+        let vars: HashMap<String, String> = [
+            ("GLORIA_BOT_TOKEN", "123456:AAHkTestToken"),
+            ("GLORIA_PANEL_URL", "https://panel.example.org"),
+            ("GLORIA_PANEL_TOKEN", "panel-token"),
+            ("GLORIA_DATABASE_URL", "postgres://gloria@localhost/gloria"),
+            ("GLORIA_SQUADS", PAID),
+            (ADBLOCK_SQUADS, PAID),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        assert!(Config::from_map(&vars).is_err());
     }
 }
 

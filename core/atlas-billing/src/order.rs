@@ -67,6 +67,16 @@ pub(crate) fn order_id(value: &str) -> OrderId {
     }
 }
 
+/// Покупается ли тариф с опцией «Без рекламы».
+///
+/// По имени: заказ хранит имя тарифа, а цены и сроки живут в витрине бота
+/// (`atlas_bot::catalog`), от которой база не зависит. Витрина проверяет в
+/// тестах, что её тарифы с опцией названы именно так.
+#[must_use]
+pub fn is_adblock_plan(plan: &str) -> bool {
+    plan.starts_with("ad")
+}
+
 /// Тариф — то, что выбирают в боте.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
