@@ -1654,6 +1654,28 @@ fn claim_text(telegram_id: i64, order: Option<&(String, Money)>, sent: Money) ->
     )
 }
 
+/// Тариф из номера заказа: `u<кто>-<тариф>-<когда>` — середина.
+fn order_plan(order_id: &str) -> Option<&str> {
+    let rest = order_id.strip_prefix('u')?;
+    let (_, rest) = rest.split_once('-')?;
+    let (plan, _) = rest.rsplit_once('-')?;
+    Some(plan)
+}
+
+/// Что добавить к сообщению об оплате, если куплена опция «Без рекламы».
+///
+/// Сервер 🛡 появляется в приложении только после обновления подписки, а
+/// само оно обновляется не сразу. Не скажи об этом — человек заплатит, не
+/// увидит нового сервера и решит, что опция не включилась.
+pub(crate) fn adblock_note(order_id: &str) -> Option<&'static str> {
+    order_plan(order_id)
+        .filter(|plan| atlas_store::is_adblock_plan(plan))
+        .map(|_| {
+            "\n\n🛡 Опция «Без рекламы» включена. Обновите подписку в приложении — \
+             появится сервер 🛡, подключайтесь к нему."
+        })
+}
+
 /// Закрыть счёт полученной суммой и рассказать об этом обеим сторонам.
 ///
 /// `invoiced` — сумма, которую мы назвали, `paid` — та, что пришла. Обычно
@@ -1682,12 +1704,18 @@ fn settle_order(
     // платежа читается как «деньги пропали», и следующим сообщением
     // будет обращение в поддержку.
     if let Settled::Extended { expires_at } = settled {
-        let text = format!(
-            "Оплата получена. Подписка продлена до {}.\n\n\
-             Ничего перенастраивать не нужно — ключ прежний, \
-             приложение подхватит новый срок само.",
-            day_month_year(expires_at)
-        );
+        let text = match adblock_note(order_id) {
+            Some(note) => format!(
+                "Оплата получена. Подписка до {}.{note}",
+                day_month_year(expires_at)
+            ),
+            None => format!(
+                "Оплата получена. Подписка продлена до {}.\n\n\
+                 Ничего перенастраивать не нужно — ключ прежний, \
+                 приложение подхватит новый срок само.",
+                day_month_year(expires_at)
+            ),
+        };
         tell(telegram, buyer, &text);
     }
 
@@ -2575,6 +2603,29 @@ mod fee_tests {
         let price = Money::from_minor(19_900, Currency::Rub);
         assert_eq!(with_fee(price, 600).minor(), 21_094);
         assert_eq!(with_fee(price, 0).minor(), 19_900);
+    }
+}
+
+#[cfg(test)]
+mod adblock_note_tests {
+    use super::{adblock_note, order_plan};
+
+    #[test]
+    fn the_plan_is_read_from_the_order_number() {
+        assert_eq!(order_plan("u42-d30-1760000000"), Some("d30"));
+        assert_eq!(order_plan("u42-d30-ad-1760000000"), Some("d30-ad"));
+        assert_eq!(order_plan("u42-ad-rest-1760000000"), Some("ad-rest"));
+        assert_eq!(order_plan("garbage"), None);
+    }
+
+    /// Купил опцию — узнаёт, что делать дальше; без опции — ни слова о ней.
+    #[test]
+    fn only_an_adblock_purchase_mentions_the_shield_server() {
+        assert!(
+            adblock_note("u42-d30-ad-1760000000").is_some_and(|n| n.contains("Обновите подписку"))
+        );
+        assert!(adblock_note("u42-ad-rest-1760000000").is_some());
+        assert!(adblock_note("u42-d30-1760000000").is_none());
     }
 }
 

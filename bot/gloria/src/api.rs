@@ -681,8 +681,9 @@ fn tell_buyer(shared: &Shared, order_id: &str, expires_at: i64) {
     };
 
     let text = format!(
-        "Оплата получена. Подписка действует до {}.",
-        day_month_year(expires_at)
+        "Оплата получена. Подписка действует до {}.{}",
+        day_month_year(expires_at),
+        crate::adblock_note(order_id).unwrap_or("")
     );
     match telegram.send_message(buyer, &text, None) {
         Ok(request) => {
