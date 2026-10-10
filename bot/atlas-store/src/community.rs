@@ -39,6 +39,8 @@ pub struct Tournament {
     pub ends_at: i64,
     pub min_score: i32,
     pub finished_at: Option<i64>,
+    /// С какого момента турнир на паузе. `None` — идёт.
+    pub paused_at: Option<i64>,
 }
 
 /// Строка таблицы турнира.
@@ -74,10 +76,10 @@ pub enum Started {
 /// иначе показанное место однажды разошлось бы с выданным призом.
 ///
 /// `$1` — номер турнира. Засчитывается приглашённый, пришедший во время
-/// турнира и подключившийся до его конца. Ничья — выше тот, чьё последнее
-/// засчитанное подключение раньше.
+/// турнира, но не во время паузы, и подключившийся до его конца. Ничья —
+/// выше тот, чьё последнее засчитанное подключение раньше.
 const STANDINGS: &str = "
-    WITH t AS (SELECT starts_at, ends_at FROM tournaments WHERE id = $1),
+    WITH t AS (SELECT starts_at, ends_at, paused_at FROM tournaments WHERE id = $1),
     scored AS (
         SELECT friend.invited_by AS inviter,
                COUNT(*) AS score,
@@ -88,6 +90,12 @@ const STANDINGS: &str = "
            AND friend.created_at < t.ends_at
            AND friend.connected_at IS NOT NULL
            AND friend.connected_at < t.ends_at
+           AND (t.paused_at IS NULL OR friend.created_at < t.paused_at)
+           AND NOT EXISTS (
+                 SELECT 1 FROM tournament_pauses AS p
+                  WHERE p.tournament_id = $1
+                    AND friend.created_at >= p.from_at
+                    AND friend.created_at < p.to_at)
          GROUP BY friend.invited_by
     )
     SELECT ROW_NUMBER() OVER (ORDER BY score DESC, reached, inviter)::bigint,
@@ -102,6 +110,7 @@ fn tournament(row: &postgres::Row) -> Result<Tournament, Error> {
         ends_at: row.try_get(2)?,
         min_score: row.try_get(3)?,
         finished_at: row.try_get(4)?,
+        paused_at: row.try_get(5)?,
     })
 }
 
@@ -109,7 +118,8 @@ const TOURNAMENT_COLUMNS: &str = "id,
     FLOOR(EXTRACT(EPOCH FROM starts_at))::bigint,
     FLOOR(EXTRACT(EPOCH FROM ends_at))::bigint,
     min_score,
-    FLOOR(EXTRACT(EPOCH FROM finished_at))::bigint";
+    FLOOR(EXTRACT(EPOCH FROM finished_at))::bigint,
+    FLOOR(EXTRACT(EPOCH FROM paused_at))::bigint";
 
 impl Store {
     // --- имя и подключение ------------------------------------------------
@@ -305,12 +315,14 @@ impl Store {
         row.as_ref().map(tournament).transpose()
     }
 
-    /// Последний завершённый турнир.
+    /// Последний турнир с подведёнными итогами. Выключенный итогов не
+    /// имеет и сюда не попадает.
     pub fn last_finished_tournament(&mut self) -> Result<Option<Tournament>, Error> {
         let row = self.client.query_opt(
             &format!(
                 "SELECT {TOURNAMENT_COLUMNS} FROM tournaments
-                  WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1"
+                  WHERE finished_at IS NOT NULL AND NOT cancelled
+                  ORDER BY finished_at DESC LIMIT 1"
             ),
             &[],
         )?;
@@ -442,11 +454,81 @@ impl Store {
         Ok(Some(prizes))
     }
 
-    /// Турниры, срок которых вышел, а итоги не подведены.
+    /// Поставить идущий турнир на паузу. `false` — турнир не идёт или уже
+    /// на паузе.
+    ///
+    /// Очки остаются как были; новые приглашённые, пока пауза, не
+    /// засчитываются (`STANDINGS`).
+    pub fn pause_tournament(&mut self, now: i64) -> Result<bool, Error> {
+        let changed = self.client.execute(
+            "UPDATE tournaments SET paused_at = to_timestamp($1::bigint)
+              WHERE finished_at IS NULL AND paused_at IS NULL",
+            &[&now],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Снять паузу: срок сдвигается на её длину, и турнир продолжается с
+    /// того места, где остановился. Возвращает новый срок; `None` — турнир
+    /// не на паузе.
+    pub fn resume_tournament(&mut self, now: i64) -> Result<Option<i64>, Error> {
+        let mut tx = self.client.transaction()?;
+        let Some(row) = tx.query_opt(
+            "SELECT id, paused_at FROM tournaments
+              WHERE finished_at IS NULL AND paused_at IS NOT NULL FOR UPDATE",
+            &[],
+        )?
+        else {
+            return Ok(None);
+        };
+        let id: i64 = row.try_get(0)?;
+
+        // Пауза записывается, чтобы пришедшие в неё не засчитались и потом.
+        // `GREATEST` — на случай часов, ушедших назад: пауза не бывает
+        // отрицательной.
+        tx.execute(
+            "INSERT INTO tournament_pauses (tournament_id, from_at, to_at)
+             SELECT id, paused_at, GREATEST(paused_at, to_timestamp($2::bigint))
+               FROM tournaments WHERE id = $1",
+            &[&id, &now],
+        )?;
+        let row = tx.query_one(
+            "UPDATE tournaments
+                SET ends_at = ends_at + GREATEST(to_timestamp($2::bigint) - paused_at, interval '0'),
+                    paused_at = NULL
+              WHERE id = $1
+              RETURNING FLOOR(EXTRACT(EPOCH FROM ends_at))::bigint",
+            &[&id, &now],
+        )?;
+        let ends_at: i64 = row.try_get(0)?;
+        tx.commit()?;
+        Ok(Some(ends_at))
+    }
+
+    /// Выключить идущий турнир: закрыть без итогов и призов. Следующий
+    /// начнётся с нуля — очки считаются от его собственного начала.
+    /// Возвращает номер выключенного; `None` — турнир не идёт.
+    pub fn cancel_tournament(&mut self, now: i64) -> Result<Option<i64>, Error> {
+        let row = self.client.query_opt(
+            "UPDATE tournaments
+                SET finished_at = to_timestamp($1::bigint), cancelled = true
+              WHERE finished_at IS NULL
+              RETURNING id",
+            &[&now],
+        )?;
+        Ok(match row {
+            Some(row) => Some(row.try_get(0)?),
+            None => None,
+        })
+    }
+
+    /// Турниры, срок которых вышел, а итоги не подведены. Турнир на паузе
+    /// не кончается: его время стоит.
     pub fn due_tournament(&mut self, now: i64) -> Result<Option<i64>, Error> {
         let row = self.client.query_opt(
             "SELECT id FROM tournaments
-              WHERE finished_at IS NULL AND ends_at <= to_timestamp($1::bigint)",
+              WHERE finished_at IS NULL AND paused_at IS NULL
+                AND ends_at <= to_timestamp($1::bigint)",
             &[&now],
         )?;
         Ok(match row {

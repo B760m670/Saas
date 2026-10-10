@@ -18,6 +18,9 @@
 //! POST /api/admin/tournament/start/<дней>/<порог>  начать
 //! POST /api/admin/tournament/extend/<дней>      продлить идущий
 //! POST /api/admin/tournament/finish             подвести итоги сейчас
+//! POST /api/admin/tournament/pause              пауза: время стоит, очки целы
+//! POST /api/admin/tournament/resume             продолжить с того же места
+//! POST /api/admin/tournament/cancel             выключить без итогов и призов
 //! ```
 
 use atlas_store::{prize_days, Prize, Standing, Started, Store, Tournament, PRIZE_PLACES};
@@ -155,6 +158,14 @@ pub(crate) fn finish(store: &mut Store, telegram: Option<&Telegram>, id: i64, no
     }
 }
 
+/// Новость о турнире в ленту, без рассылки. Не вышло — только в журнал:
+/// само действие уже сделано.
+fn announce(store: &mut Store, admin_id: i64, title: &str, body: &str, now: i64) {
+    if let Err(error) = store.publish_news(admin_id, title, body, false, now) {
+        eprintln!("Турнир, новость «{title}»: {error}");
+    }
+}
+
 /// Отправить одно сообщение. Ошибка — только в журнал: человек мог
 /// заблокировать бота.
 fn send(telegram: &Telegram, chat: i64, text: &str) {
@@ -211,7 +222,13 @@ fn tournament_json(t: &Tournament) -> serde_json::Value {
         "endsAt": t.ends_at,
         "endsLabel": day_month_year(t.ends_at),
         "minScore": t.min_score,
+        "paused": t.paused_at.is_some(),
     })
+}
+
+/// Сколько осталось. На паузе время стоит — считаем от её начала.
+fn seconds_left(t: &Tournament, now: i64) -> i64 {
+    (t.ends_at - t.paused_at.unwrap_or(now)).max(0)
 }
 
 /// Таблица для участника: имена сокращены, своя строка помечена.
@@ -311,7 +328,7 @@ fn tournament_for(
         let mine = table.iter().find(|row| row.telegram_id == me);
         return Ok(serde_json::json!({
             "active": tournament_json(&t),
-            "secondsLeft": (t.ends_at - now).max(0),
+            "secondsLeft": seconds_left(&t, now),
             "prizes": prizes_json(),
             "table": table_json(&table, me, t.min_score),
             "me": {
@@ -359,6 +376,9 @@ pub(crate) enum AdminRoute {
     Start { days: u32, min_score: i32 },
     Extend { days: u32 },
     Finish,
+    Pause,
+    Resume,
+    Cancel,
 }
 
 /// Отказ: код и готовое тело ответа.
@@ -370,6 +390,9 @@ pub(crate) fn admin_route(parts: &[&str]) -> Option<Result<(AdminRoute, &'static
         ["news"] => (AdminRoute::PublishNews, "POST"),
         ["tournament"] => (AdminRoute::Tournament, "GET"),
         ["tournament", "finish"] => (AdminRoute::Finish, "POST"),
+        ["tournament", "pause"] => (AdminRoute::Pause, "POST"),
+        ["tournament", "resume"] => (AdminRoute::Resume, "POST"),
+        ["tournament", "cancel"] => (AdminRoute::Cancel, "POST"),
         ["tournament", "extend", days] => {
             let Some(days) = days.parse::<u32>().ok().filter(|d| (1..=60).contains(d)) else {
                 return Some(Err((400, r#"{"error":"дней — от 1 до 60"}"#)));
@@ -456,6 +479,7 @@ pub(crate) fn admin_answer(
                 .map_err(|error| internal("таблица", &error))?;
             Ok(serde_json::json!({
                 "active": tournament_json(&t),
+                "secondsLeft": seconds_left(&t, now),
                 "table": table.iter().map(|row| serde_json::json!({
                     "place": row.place,
                     "userId": row.telegram_id,
@@ -529,6 +553,62 @@ pub(crate) fn admin_answer(
             println!("Админка: {admin_id} завершил турнир {}", t.id);
             Ok(serde_json::json!({ "prizes": prizes.len() }))
         }
+
+        AdminRoute::Pause => {
+            if !store
+                .pause_tournament(now)
+                .map_err(|error| internal("пауза турнира", &error))?
+            {
+                return Err((404, "турнир не идёт или уже на паузе".to_owned()));
+            }
+            announce(
+                &mut store,
+                admin_id,
+                "Турнир на паузе",
+                "Турнир приглашений приостановлен. Набранные очки сохранены, \
+                 время до конца не идёт. Друзья, пришедшие во время паузы, не \
+                 засчитываются. О продолжении сообщим здесь же.",
+                now,
+            );
+            println!("Админка: {admin_id} поставил турнир на паузу");
+            Ok(serde_json::json!({ "ok": true }))
+        }
+
+        AdminRoute::Resume => {
+            let Some(ends) = store
+                .resume_tournament(now)
+                .map_err(|error| internal("снятие паузы", &error))?
+            else {
+                return Err((404, "турнир не на паузе".to_owned()));
+            };
+            let body = format!(
+                "Турнир приглашений продолжается с того же места — до {}. \
+                 Очки, набранные до паузы, на месте.",
+                day_month_year(ends)
+            );
+            announce(&mut store, admin_id, "Турнир продолжается", &body, now);
+            println!("Админка: {admin_id} снял турнир с паузы");
+            Ok(serde_json::json!({ "endsAt": ends, "endsLabel": day_month_year(ends) }))
+        }
+
+        AdminRoute::Cancel => {
+            let Some(id) = store
+                .cancel_tournament(now)
+                .map_err(|error| internal("выключение турнира", &error))?
+            else {
+                return Err((404, "турнир не идёт".to_owned()));
+            };
+            announce(
+                &mut store,
+                admin_id,
+                "Турнир остановлен",
+                "Турнир приглашений остановлен, итоги по нему не подводятся. \
+                 Следующий турнир начнётся с нуля — о нём сообщим здесь же.",
+                now,
+            );
+            println!("Админка: {admin_id} выключил турнир {id}");
+            Ok(serde_json::json!({ "id": id }))
+        }
     }
 }
 
@@ -592,6 +672,13 @@ mod tests {
             admin_route(&["tournament", "extend", "0"]),
             Some(Err((400, _)))
         ));
+        for (path, want) in [
+            ("pause", AdminRoute::Pause),
+            ("resume", AdminRoute::Resume),
+            ("cancel", AdminRoute::Cancel),
+        ] {
+            assert_eq!(admin_route(&["tournament", path]), Some(Ok((want, "POST"))));
+        }
         assert_eq!(admin_route(&["users"]), None);
     }
 }

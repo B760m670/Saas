@@ -1227,8 +1227,9 @@ a.btn.off { opacity: 0.45; }
         });
 
         if (on) {
-          document.getElementById('tour-when').textContent =
-            'до ' + t.active.endsLabel + ' · осталось ' + left(t.secondsLeft || 0);
+          document.getElementById('tour-when').textContent = t.active.paused
+            ? '⏸ Турнир на паузе · очки сохранены, время стоит · останется ' + left(t.secondsLeft || 0)
+            : 'до ' + t.active.endsLabel + ' · осталось ' + left(t.secondsLeft || 0);
           document.getElementById('tour-place').textContent = t.me.place ? t.me.place : '—';
           document.getElementById('tour-score').textContent = t.me.score || 0;
           boardRows(document.getElementById('tour-board'), t.table || [],
@@ -1236,7 +1237,8 @@ a.btn.off { opacity: 0.45; }
           document.getElementById('tour-rule').textContent =
             'Засчитывается друг, который пришёл по вашей ссылке во время турнира и подключился к VPN через приложение. ' +
             'Чтобы попасть в призы, нужно не меньше ' + t.active.minScore + '. ' +
-            'При равенстве выше тот, кто набрал раньше. Таблица обновляется сама.';
+            'При равенстве выше тот, кто набрал раньше. Таблица обновляется сама.' +
+            (t.active.paused ? ' Пока турнир на паузе, новые друзья не засчитываются.' : '');
         } else if (t.last && t.last.winners && t.last.winners.length) {
           document.getElementById('tour-last').hidden = false;
           boardRows(document.getElementById('tour-last-board'), t.last.winners, '');

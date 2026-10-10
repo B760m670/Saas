@@ -140,7 +140,12 @@ textarea:focus { outline: none; border-color: var(--mid); }
         <input id="tour-extend-days" inputmode="numeric" pattern="[0-9]*" placeholder="продлить на, дней" autocomplete="off">
         <button type="submit">Продлить</button>
       </form>
-      <div class="actions"><button id="tour-finish">Подвести итоги сейчас</button></div>
+      <div class="actions">
+        <button id="tour-pause">Пауза</button>
+        <button id="tour-finish">Подвести итоги сейчас</button>
+        <button id="tour-cancel">Выключить турнир</button>
+      </div>
+      <div class="empty" style="margin-top:8px; font-size:13px">Пауза — время стоит, очки сохраняются, пришедшие на паузе не засчитываются; «Продолжить» сдвигает конец на длину паузы. Выключить — турнир закрывается без итогов и призов; следующий начнётся с нуля.</div>
     </div>
   </div>
 
@@ -366,14 +371,26 @@ textarea:focus { outline: none; border-color: var(--mid); }
   });
 
   /* ---- Турнир ---- */
+  function left(seconds) {
+    var d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600);
+    var m = Math.floor(seconds % 3600 / 60);
+    if (d > 0) return d + ' дн. ' + h + ' ч';
+    if (h > 0) return h + ' ч ' + m + ' мин';
+    return m + ' мин';
+  }
+
   function loadTournament() {
     return api('GET', 'tournament').then(function (t) {
       var on = !!t.active;
       document.getElementById('tour-on').hidden = !on;
       document.getElementById('tour-off').hidden = on;
       if (!on) return;
+      var paused = !!t.active.paused;
+      document.getElementById('tour-pause').textContent = paused ? 'Продолжить' : 'Пауза';
       fill('tour-info', [
-        row('Идёт до', t.active.endsLabel),
+        row('Состояние', paused ? '⏸ на паузе' : '▶️ идёт'),
+        row(paused ? 'Конец до паузы' : 'Идёт до', t.active.endsLabel),
+        row('Осталось', left(t.secondsLeft || 0)),
         row('Порог призового места', String(t.active.minScore)),
         row('Участников с очками', String((t.table || []).length))
       ], '');
@@ -412,6 +429,28 @@ textarea:focus { outline: none; border-color: var(--mid); }
     confirmThen('Подвести итоги сейчас и выдать призы?', function () {
       api('POST', 'tournament/finish').then(function (r) {
         toast('Итоги подведены, призов: ' + r.prizes);
+        loadTournament();
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
+  document.getElementById('tour-pause').addEventListener('click', function () {
+    var resume = this.textContent === 'Продолжить';
+    var question = resume
+      ? 'Продолжить турнир? Конец сдвинется на длину паузы. В ленте появится новость.'
+      : 'Поставить турнир на паузу? Очки сохранятся, время остановится. В ленте появится новость.';
+    confirmThen(question, function () {
+      api('POST', 'tournament/' + (resume ? 'resume' : 'pause')).then(function (r) {
+        toast(resume ? 'Турнир продолжается до ' + r.endsLabel : 'Турнир на паузе');
+        loadTournament();
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
+  document.getElementById('tour-cancel').addEventListener('click', function () {
+    confirmThen('Выключить турнир без итогов и призов? Следующий начнётся с нуля.', function () {
+      api('POST', 'tournament/cancel').then(function () {
+        toast('Турнир выключен');
         loadTournament();
       }).catch(function (e) { toast('Не вышло: ' + e.message); });
     });

@@ -90,6 +90,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0013_one_tier.sql"),
         "\n",
         include_str!("../../../db/migrations/0014_news_tournaments.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0015_tournament_pause.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -1902,4 +1904,114 @@ fn a_tournament_can_be_extended() {
     };
     let ends = expect(store.extend_tournament(5), "продление");
     assert_eq!(ends, Some(now + 12 * 86_400));
+}
+
+/// Пауза сохраняет набранное.
+#[test]
+fn a_paused_tournament_keeps_scores() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    let now = real_now();
+    let Ok(Started::Started(id)) = store.start_tournament(1, 7, 1, now - 600) else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    invite(&mut store, 1, 10, true, now);
+
+    // Пауза с этой минуты: друг 10 пришёл до неё и остаётся в таблице.
+    assert!(expect(store.pause_tournament(now + 60), "пауза"));
+    assert!(!expect(store.pause_tournament(now + 61), "вторая пауза"));
+    let score = |store: &mut Store| {
+        expect(store.standings(id), "таблица")
+            .iter()
+            .find(|s| s.telegram_id == 1)
+            .map_or(0, |s| s.score)
+    };
+    assert_eq!(score(&mut store), 1);
+
+    expect(store.resume_tournament(now + 120), "снять");
+    assert_eq!(score(&mut store), 1, "после паузы очки пропали");
+    let open = expect(store.open_tournament(), "турнир");
+    assert_eq!(open.map(|t| t.paused_at), Some(None));
+}
+
+/// Пришедший во время паузы не засчитывается ни пока она идёт, ни после.
+#[test]
+fn a_friend_who_came_during_a_pause_never_scores() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    let now = real_now();
+    let Ok(Started::Started(id)) = store.start_tournament(1, 7, 1, now - 600) else {
+        return;
+    };
+    subscriber(&mut store, 1);
+
+    // Пауза идёт с прошлого: приглашённый сейчас попадает внутрь неё.
+    assert!(expect(store.pause_tournament(now - 5), "пауза"));
+    invite(&mut store, 1, 11, true, now);
+    assert!(expect(store.standings(id), "на паузе").is_empty());
+
+    // Пауза записана — и после снятия он не засчитывается.
+    expect(store.resume_tournament(now + 30), "снять");
+    assert!(expect(store.standings(id), "после").is_empty());
+}
+
+/// Время на паузе стоит: срок не выходит, а после снятия сдвигается на её
+/// длину.
+#[test]
+fn a_paused_tournament_does_not_run_out() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    let now = real_now();
+    let Ok(Started::Started(id)) = store.start_tournament(1, 2, 1, now) else {
+        return;
+    };
+    let ends = now + 2 * 86_400;
+
+    assert!(expect(store.pause_tournament(now + 86_400), "пауза"));
+    assert_eq!(
+        expect(store.due_tournament(now + 10 * 86_400), "на паузе"),
+        None
+    );
+
+    // Пауза длиной в пять дней — конец сдвигается на пять дней.
+    let resumed = expect(store.resume_tournament(now + 6 * 86_400), "снять");
+    assert_eq!(resumed, Some(ends + 5 * 86_400));
+    assert_eq!(expect(store.resume_tournament(now), "не на паузе"), None);
+    assert_eq!(
+        expect(store.due_tournament(ends + 5 * 86_400), "срок"),
+        Some(id)
+    );
+}
+
+/// Выключенный турнир закрыт без призов и итогами не показывается;
+/// следующий начинается с нуля.
+#[test]
+fn a_cancelled_tournament_gives_nothing_and_the_next_starts_clean() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    let now = real_now();
+    let Ok(Started::Started(old)) = store.start_tournament(1, 7, 1, now - 600) else {
+        return;
+    };
+    subscriber(&mut store, 1);
+    invite(&mut store, 1, 10, true, now);
+
+    assert_eq!(expect(store.cancel_tournament(now), "выключить"), Some(old));
+    assert_eq!(expect(store.cancel_tournament(now), "повтор"), None);
+    assert_eq!(expect(store.open_tournament(), "идущий"), None);
+    assert_eq!(expect(store.last_finished_tournament(), "итоги"), None);
+    assert!(expect(store.prizes_of(old), "призы").is_empty());
+    assert_eq!(expect(store.finish_tournament(old, now), "итоги"), None);
+
+    // Новый турнир — с нуля: друг, пришедший до него, не считается.
+    let started = expect(store.start_tournament(1, 7, 1, now + 1), "новый");
+    let Started::Started(new) = started else {
+        unreachable!("новый турнир не начался: {started:?}");
+    };
+    assert!(expect(store.standings(new), "таблица").is_empty());
 }
