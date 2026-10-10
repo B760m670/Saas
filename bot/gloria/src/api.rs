@@ -99,6 +99,7 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         server_ip: config.server_ip.clone(),
         freekassa_fee_bp: config.freekassa_fee_bp,
         admins: config.admins.clone(),
+        adblock: config.adblock_enabled(),
     };
 
     println!("Мини-приложение слушает {}", config.api_addr);
@@ -142,6 +143,8 @@ pub(crate) struct Shared {
     /// Кому сообщать о новом счёте. Подтверждает оплату человек, и узнать о
     /// счёте он должен сразу, а не когда вспомнит про `/pending`.
     pub(crate) admins: Vec<i64>,
+    /// Продаётся ли опция «Без рекламы».
+    pub(crate) adblock: bool,
 }
 
 /// Ответить на одно соединение.
@@ -816,6 +819,16 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         "deviceLimit": device_limit,
         "newsUnread": news_unread,
         "newsMuted": news_muted,
+        // Опция «Без рекламы»: продаётся ли и до какого числа она у человека.
+        "adblock": {
+            "available": shared.adblock,
+            "until": subscriber
+                .adblock_until
+                .filter(|until| *until > now)
+                .map(day_month_year),
+            // Цена добавки к идущей подписке; `null` — добавлять не к чему.
+            "restPrice": adblock_rest_price(shared.adblock, &subscriber, now),
+        },
         // Идёт ли турнир: вкладка «Друзья» называется тогда «Турнир».
         "tournamentEndsAt": tournament,
         "userId": telegram_id,
@@ -1015,6 +1028,20 @@ fn send(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
         .and_then(|()| stream.write_all(body.as_bytes()))
         .and_then(|()| stream.flush())
         .map_err(|error| format!("отправка: {error}"))
+}
+
+/// Цена добавки «Без рекламы» к идущей подписке, готовой надписью. `None` —
+/// опция не продаётся, подписка не идёт или опция уже до её конца.
+fn adblock_rest_price(
+    sold: bool,
+    subscriber: &atlas_store::Subscriber,
+    now: i64,
+) -> Option<String> {
+    if !sold {
+        return None;
+    }
+    catalog::adblock_rest(subscriber.expires_at, subscriber.adblock_until, now)
+        .map(|plan| atlas_bot::menu::price_label(plan.price))
 }
 
 #[cfg(test)]

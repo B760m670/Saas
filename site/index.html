@@ -534,6 +534,8 @@ a.btn.off { opacity: 0.45; }
 .plan .price { font-size: 17px; font-weight: 700; white-space: nowrap; }
 .plan .off { font-size: 11.5px; font-weight: 700; color: var(--mid); }
 
+.chip[hidden], .row[hidden] { display: none; }
+
 /* Колокольчик новостей в шапке главной. */
 .head { position: relative; }
 .bell {
@@ -622,6 +624,7 @@ a.btn.off { opacity: 0.45; }
            Обещать безлимит тому, у кого пять гигабайт, — обман, который
            вскроется ровно в тот момент, когда VPN отключится. -->
       <span class="chip" id="st-traffic">Безлимитный трафик</span>
+      <span class="chip" id="st-adblock" hidden>🛡 Без рекламы</span>
     </div>
     <button class="btn" id="renew" data-act="plans" style="margin-top:18px">Продлить</button>
   </div>
@@ -841,7 +844,13 @@ a.btn.off { opacity: 0.45; }
   <div class="grab"></div>
   <h1 style="font-size:20px;margin-bottom:14px">Продлить подписку</h1>
   <p class="note" style="margin-top:0">2 устройства, трафик без ограничений.</p>
-  <div class="plans">
+  <!-- Опция «Без рекламы» — добавка к сроку, а не отдельный тариф:
+       переключатель меняет цены на те же сроки +50 ₽ за месяц. -->
+  <button class="row" id="plan-kind" data-kind="toggle" hidden style="margin-top:14px">
+    <span class="body"><span class="title">🛡 Без рекламы · +50 ₽ в месяц</span><span class="hint">Реклама, трекеры и опасные сайты не открываются в приложениях и браузере. Работает на серверах со значком 🛡.</span></span>
+    <span class="switch" id="adblock-switch"></span>
+  </button>
+  <div class="plans" id="plans-plain">
     <button class="plan" data-buy="d30">
       <span><span class="term">1 месяц</span><span class="per">199 ₽ в месяц</span></span>
       <span style="text-align:right"><span class="price">199 ₽</span></span>
@@ -859,6 +868,28 @@ a.btn.off { opacity: 0.45; }
       <span style="text-align:right"><span class="price">1790 ₽</span><br><span class="off">−26 %</span></span>
     </button>
   </div>
+  <!-- Те же сроки с опцией: цена + 50 ₽ за месяц (`catalog::adblock_plans`). -->
+  <div class="plans" id="plans-adblock" hidden>
+    <button class="plan" data-buy="d30-ad">
+      <span><span class="term">1 месяц · 🛡</span><span class="per">249 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">249 ₽</span></span>
+    </button>
+    <button class="plan" data-buy="d90-ad">
+      <span><span class="term">3 месяца · 🛡</span><span class="per">233 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">699 ₽</span><br><span class="off">−6 %</span></span>
+    </button>
+    <button class="plan" data-buy="d180-ad">
+      <span><span class="term">6 месяцев · 🛡</span><span class="per">217 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">1299 ₽</span><br><span class="off">−13 %</span></span>
+    </button>
+    <button class="plan best" data-buy="d365-ad">
+      <span><span class="term">12 месяцев · 🛡</span><span class="per">196 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">2390 ₽</span><br><span class="off">−21 %</span></span>
+    </button>
+  </div>
+  <!-- Добавка к идущей подписке: до её конца, цена — за оставшиеся дни
+       (считает сервер, `catalog::adblock_rest`). -->
+  <button class="btn" id="adblock-rest" data-buy="ad-rest" hidden style="margin-top:12px">🛡 Добавить к текущей подписке</button>
   <button class="btn ghost" data-act="close-sheet">Закрыть</button>
 </div>
 
@@ -1076,6 +1107,21 @@ a.btn.off { opacity: 0.45; }
       s.devices == null ? 'до ' + limit + ' ' + word
                         : s.devices + ' из ' + limit + ' ' + word;
 
+    /* Опция «Без рекламы»: отметка в статусе и переключатель в тарифах. */
+    var ab = s.adblock || {};
+    var abChip = document.getElementById('st-adblock');
+    abChip.hidden = !ab.until;
+    if (ab.until) abChip.textContent = '🛡 Без рекламы до ' + ab.until;
+    document.getElementById('plan-kind').hidden = !ab.available;
+    if (!ab.available) planKind(false);
+    /* У кого опция уже есть, продлевает обычно с ней же. Один раз, при
+       первой загрузке, — дальше выбор за человеком. */
+    else if (ab.until && !kindChosen) planKind(true);
+    kindChosen = true;
+    var rest = document.getElementById('adblock-rest');
+    rest.hidden = !(ab.available && ab.restPrice);
+    if (ab.restPrice) rest.textContent = '🛡 Добавить к текущей подписке — ' + ab.restPrice;
+
     document.querySelectorAll('[data-sub]').forEach(function (el) {
       el.textContent = s.subscriptionUrl || '—';
     });
@@ -1171,6 +1217,14 @@ a.btn.off { opacity: 0.45; }
 
   /* ---- Турнир ---- */
   var tourTimer = null;
+
+  /* Добавлена ли к сроку опция «Без рекламы»: те же сроки с её ценой. */
+  var kindChosen = false;
+  function planKind(adblock) {
+    document.getElementById('adblock-switch').classList.toggle('on', adblock);
+    document.getElementById('plans-plain').hidden = adblock;
+    document.getElementById('plans-adblock').hidden = !adblock;
+  }
 
   function left(seconds) {
     var d = Math.floor(seconds / 86400), h = Math.floor(seconds % 86400 / 3600);
@@ -1389,8 +1443,13 @@ a.btn.off { opacity: 0.45; }
       return;
     }
 
-    var el = event.target.closest('[data-act], [data-buy], [data-doc]');
+    var el = event.target.closest('[data-act], [data-buy], [data-doc], [data-kind]');
     if (!el) return;
+
+    if (el.dataset.kind) {
+      haptic();
+      return planKind(!document.getElementById('adblock-switch').classList.contains('on'));
+    }
 
     /* Документы лежат рядом со страницей, поэтому адрес строится от неё:
        кабинет и они переезжают вместе, и переезд не оставит ссылок в

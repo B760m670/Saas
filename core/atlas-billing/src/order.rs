@@ -67,6 +67,21 @@ pub(crate) fn order_id(value: &str) -> OrderId {
     }
 }
 
+/// Добавка «Без рекламы» к уже идущей подписке — до её конца, без
+/// продления срока.
+pub const ADBLOCK_REST: &str = "ad-rest";
+
+/// Покупается ли с этим тарифом опция «Без рекламы»: срок с опцией
+/// (`d30-ad`…) или добавка к идущей подписке ([`ADBLOCK_REST`]).
+///
+/// По имени: заказ хранит имя тарифа, а цены живут в витрине бота
+/// (`atlas_bot::catalog`), от которой база не зависит. Витрина проверяет в
+/// тестах, что её имена узнаются здесь.
+#[must_use]
+pub fn is_adblock_plan(plan: &str) -> bool {
+    plan.ends_with("-ad") || plan == ADBLOCK_REST
+}
+
 /// Тариф — то, что выбирают в боте.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {

@@ -82,17 +82,87 @@ const SHOWCASE: [(&str, &str, u32, u64); 4] = [
     ("d365", "12 месяцев", 365, 1790),
 ];
 
+/// Сколько стоит опция «Без рекламы» за месяц, рублей.
+///
+/// Опция — добавка, а не отдельный тариф: к любому сроку прибавляется
+/// столько за каждый его месяц, а к идущей подписке — за оставшиеся дни.
+pub const ADBLOCK_MONTHLY: u64 = 50;
+
+/// Самая маленькая добавка к идущей подписке, рублей. Счёт на пять рублей
+/// за пару оставшихся дней не стоит комиссии и внимания.
+pub const ADBLOCK_REST_MIN: u64 = 30;
+
 /// Цена месяца — то, относительно чего считается выгода длинных сроков.
 #[must_use]
 pub fn monthly_base() -> Option<Money> {
     Money::from_major(199, Currency::Rub)
 }
 
-/// Все тарифы.
+/// Все тарифы без опции.
 #[must_use]
 pub fn plans() -> Vec<Plan> {
-    SHOWCASE
+    build(&SHOWCASE)
+}
+
+/// Те же сроки с опцией «Без рекламы»: имя `<срок>-ad`, к цене — по
+/// [`ADBLOCK_MONTHLY`] за каждый месяц срока.
+#[must_use]
+pub fn adblock_plans() -> Vec<Plan> {
+    plans()
         .into_iter()
+        .filter_map(|plan| {
+            let months = u64::from(plan.days.saturating_add(15) / 30).max(1);
+            let extra = Money::from_major(ADBLOCK_MONTHLY.checked_mul(months)?, Currency::Rub)?;
+            let price = Money::from_minor(
+                plan.price.minor().checked_add(extra.minor())?,
+                Currency::Rub,
+            );
+            Some(Plan {
+                id: format!("{}-ad", plan.id),
+                price,
+                ..plan
+            })
+        })
+        .collect()
+}
+
+/// Добавка «Без рекламы» к идущей подписке: до её конца, за оставшиеся
+/// дни — по [`ADBLOCK_MONTHLY`] за 30 дней, с округлением вверх до 10 ₽ и
+/// не дешевле [`ADBLOCK_REST_MIN`]. `None` — подписка не идёт или опция
+/// (`adblock_until`) уже до её конца.
+///
+/// В `days` — сколько дней покрывает добавка; срок подписки она не
+/// продлевает (это видит база по имени, `ADBLOCK_REST`).
+#[must_use]
+pub fn adblock_rest(expires_at: Option<i64>, adblock_until: Option<i64>, now: i64) -> Option<Plan> {
+    let expires_at = expires_at?;
+    if adblock_until.is_some_and(|until| until >= expires_at) {
+        return None;
+    }
+    let left = expires_at.checked_sub(now)?;
+    if left <= 0 {
+        return None;
+    }
+    let days = u64::try_from(left.checked_add(86_399)? / 86_400).ok()?;
+    let rubles = ADBLOCK_MONTHLY
+        .checked_mul(days)?
+        .checked_add(299)?
+        .checked_div(300)?
+        .checked_mul(10)?
+        .max(ADBLOCK_REST_MIN);
+    Some(Plan {
+        id: atlas_billing::order::ADBLOCK_REST.to_owned(),
+        title: "Без рекламы до конца подписки".to_owned(),
+        days: u32::try_from(days).ok()?,
+        devices: PLAN_DEVICES,
+        price: Money::from_major(rubles, Currency::Rub)?,
+    })
+}
+
+fn build(showcase: &[(&str, &str, u32, u64)]) -> Vec<Plan> {
+    showcase
+        .iter()
+        .copied()
         .filter_map(|(id, title, days, rubles)| {
             Some(Plan {
                 id: id.to_owned(),
@@ -108,12 +178,65 @@ pub fn plans() -> Vec<Plan> {
 /// Найти тариф по имени, пришедшему с кнопки.
 #[must_use]
 pub fn plan(id: &str) -> Option<Plan> {
-    plans().into_iter().find(|plan| plan.id == id)
+    plans()
+        .into_iter()
+        .chain(adblock_plans())
+        .find(|plan| plan.id == id)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{monthly_base, plan, plans, PLAN_DEVICES, SHOWCASE};
+    use super::{adblock_plans, adblock_rest, monthly_base, plan, plans, PLAN_DEVICES, SHOWCASE};
+
+    /// Тарифы с опцией узнаются базой по имени — и только они; цена — та
+    /// же плюс 50 ₽ за месяц срока.
+    #[test]
+    fn adblock_plans_are_the_same_terms_plus_fifty_a_month() {
+        let with: Vec<(String, u32, u64)> = adblock_plans()
+            .iter()
+            .map(|p| (p.id.clone(), p.days, p.price.minor() / 100))
+            .collect();
+        assert_eq!(
+            with,
+            vec![
+                ("d30-ad".to_owned(), 30, 249),
+                ("d90-ad".to_owned(), 90, 699),
+                ("d180-ad".to_owned(), 180, 1299),
+                ("d365-ad".to_owned(), 365, 2390),
+            ]
+        );
+        for p in adblock_plans() {
+            assert!(atlas_billing::order::is_adblock_plan(&p.id), "{}", p.id);
+            assert!(plan(&p.id).is_some(), "{}", p.id);
+            let action = crate::Action::Buy(p.id.clone());
+            assert_eq!(crate::Action::decode(&action.encode()), Ok(action));
+        }
+        for p in plans() {
+            assert!(!atlas_billing::order::is_adblock_plan(&p.id), "{}", p.id);
+        }
+    }
+
+    /// Добавка к идущей подписке — за оставшиеся дни, вверх до 10 ₽, не
+    /// дешевле 30 ₽; без подписки её нет.
+    #[test]
+    fn adblock_for_the_rest_of_a_subscription_is_priced_by_days() {
+        const NOW: i64 = 1_760_000_000;
+        let price = |days: i64| {
+            adblock_rest(Some(NOW + days * 86_400), None, NOW).map(|p| p.price.minor() / 100)
+        };
+        assert_eq!(price(30), Some(50));
+        assert_eq!(price(20), Some(40));
+        assert_eq!(price(1), Some(30));
+        assert_eq!(price(365), Some(610));
+        assert_eq!(adblock_rest(Some(NOW - 1), None, NOW), None);
+        assert_eq!(adblock_rest(None, None, NOW), None);
+        let end = NOW + 9 * 86_400;
+        assert_eq!(adblock_rest(Some(end), Some(end), NOW), None);
+        assert!(adblock_rest(Some(end), Some(end - 86_400), NOW).is_some());
+        let rest = adblock_rest(Some(NOW + 3600), None, NOW);
+        assert_eq!(rest.as_ref().map(|p| p.days), Some(1));
+        assert!(rest.is_some_and(|p| atlas_billing::order::is_adblock_plan(&p.id)));
+    }
 
     /// Витрина обязана собираться целиком. Молчаливая потеря тарифа из-за
     /// переполнения оставила бы покупателя без части кнопок.

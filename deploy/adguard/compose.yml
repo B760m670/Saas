@@ -1,0 +1,20 @@
+# DNS-фильтр опции «Без рекламы». Ставится на узел VPN — как и зачем,
+# в README.md рядом.
+#
+# Слушает только 127.0.0.1: снаружи его не видно, и firewall не нужен.
+# Узел Xray работает в сети хоста (`network_mode: host`) и спрашивает
+# 127.0.0.1:5353. Порт 5353, а не 53: на 53 сидит системный резолвер.
+services:
+  adguard:
+    image: adguard/adguardhome:latest
+    container_name: adguard
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5353:53/udp"
+      - "127.0.0.1:5353:53/tcp"
+      - "127.0.0.1:3000:3000/tcp"
+    volumes:
+      - ./work:/opt/adguardhome/work
+      - ./conf:/opt/adguardhome/conf
+    mem_limit: 512m
+    cpus: 1.0

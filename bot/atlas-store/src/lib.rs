@@ -33,6 +33,7 @@ mod admin;
 mod community;
 
 pub use admin::{Card, Extended, LogEntry, Payment, Summary, MAX_MANUAL_DAYS};
+pub use atlas_billing::order::is_adblock_plan;
 pub use community::{prize_days, News, Prize, Standing, Started, Tournament, PRIZE_PLACES};
 
 /// Отказ при работе с хранилищем.
@@ -91,6 +92,8 @@ pub struct Subscriber {
     /// Тариф последней покупки: `personal`. `None` — платил до появления
     /// тарифов (у таких прежние 3 устройства до конца срока) или не платил.
     pub tier: Option<String>,
+    /// До какого момента действует опция «Без рекламы». `None` — не было.
+    pub adblock_until: Option<i64>,
 }
 
 /// Один человек, до которого панель ещё не доехала.
@@ -117,8 +120,9 @@ pub struct PanelWork {
     /// отметке [`Store::mark_panel_free`], чтобы не съесть оплату, случившуюся
     /// между чтением очереди и ответом панели.
     pub lapsed: bool,
-    /// Что должно стоять в панели: `free`, `personal` или `paid` — прежний
-    /// платный без тарифа либо проба. От этого зависят
+    /// Что должно стоять в панели: `free`, `plus` — подписка или проба с
+    /// опцией «Без рекламы», `personal` или `paid` — прежний платный без
+    /// тарифа либо проба без опции. От этого зависят
     /// устройства, трафик и отряды; [`Store::mark_panel_synced`] запоминает
     /// то же слово.
     pub kind: String,
@@ -264,7 +268,8 @@ impl Store {
                        EXISTS (SELECT 1 FROM orders
                                 WHERE orders.telegram_id = users.telegram_id
                                   AND orders.status = 'paid'),
-                       tier",
+                       tier,
+                       FLOOR(EXTRACT(EPOCH FROM adblock_until))::bigint",
             &[&telegram_id],
         )?;
 
@@ -277,6 +282,7 @@ impl Store {
             subscription_url: row.try_get(5)?,
             has_paid: row.try_get(6)?,
             tier: row.try_get(7)?,
+            adblock_until: row.try_get(8)?,
         })
     }
 
@@ -368,6 +374,7 @@ impl Store {
                     kind
                FROM (SELECT users.*,
                             CASE WHEN expires_at <= to_timestamp($2::bigint) THEN 'free'
+                                 WHEN adblock_until > to_timestamp($2::bigint) THEN 'plus'
                                  WHEN tier IS NOT NULL THEN tier
                                  ELSE 'paid' END AS kind
                        FROM users) AS users
@@ -653,7 +660,8 @@ impl Store {
 
         let updated = self.client.query_opt(
             "UPDATE users
-                SET trial_granted_at = to_timestamp($3::bigint), expires_at = to_timestamp($2::bigint)
+                SET trial_granted_at = to_timestamp($3::bigint), expires_at = to_timestamp($2::bigint),
+                    adblock_until = to_timestamp($2::bigint)
               WHERE telegram_id = $1 AND trial_granted_at IS NULL
               RETURNING FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint",
             &[&telegram_id, &expires_at, &now],
@@ -1275,6 +1283,7 @@ fn settle_in(
     let expected_minor: i64 = order.try_get(2)?;
     let currency: String = order.try_get(3)?;
     let telegram_id: i64 = order.try_get(4)?;
+    let plan: String = order.try_get(5)?;
 
     let Some(currency) = Currency::parse(&currency) else {
         return Err(Error::Inconsistent("валюта заказа неизвестна"));
@@ -1301,6 +1310,20 @@ fn settle_in(
     )?;
     let current: Option<i64> = user.try_get(0)?;
 
+    // Добавка «Без рекламы» к идущей подписке срок не продлевает: опция
+    // встаёт до нынешнего конца подписки, и всё.
+    if plan == atlas_billing::order::ADBLOCK_REST {
+        let Some(expires_at) = current else {
+            return Err(Error::Inconsistent("добавка без подписки"));
+        };
+        tx.execute(
+            "UPDATE users SET adblock_until = GREATEST(adblock_until, expires_at)
+              WHERE telegram_id = $1",
+            &[&telegram_id],
+        )?;
+        return Ok(Settled::Extended { expires_at });
+    }
+
     let days = u32::try_from(days).map_err(|_| Error::Inconsistent("отрицательный срок заказа"))?;
     let Some(expires_at) = subscription::extend(current, days, now) else {
         return Err(Error::Inconsistent("срок не считается"));
@@ -1317,6 +1340,18 @@ fn settle_in(
         "UPDATE users SET tier = 'personal' WHERE telegram_id = $1",
         &[&telegram_id],
     )?;
+
+    // Срок с опцией «Без рекламы» — опция до нового конца подписки.
+    // Покупка без опции дату не трогает: оплаченное с опцией остаётся, а
+    // дальше подписка идёт без неё. Дни, оставшиеся от покупки без опции,
+    // при этом получают её тоже — делить срок на куски ради разницы в пару
+    // рублей незачем.
+    if is_adblock_plan(&plan) {
+        tx.execute(
+            "UPDATE users SET adblock_until = to_timestamp($2::bigint) WHERE telegram_id = $1",
+            &[&telegram_id, &expires_at],
+        )?;
+    }
 
     Ok(Settled::Extended { expires_at })
 }
