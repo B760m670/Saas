@@ -99,7 +99,6 @@ pub fn spawn(config: &Config) -> Result<(), String> {
         server_ip: config.server_ip.clone(),
         freekassa_fee_bp: config.freekassa_fee_bp,
         admins: config.admins.clone(),
-        adblock: config.adblock_enabled(),
     };
 
     println!("Мини-приложение слушает {}", config.api_addr);
@@ -143,8 +142,6 @@ pub(crate) struct Shared {
     /// Кому сообщать о новом счёте. Подтверждает оплату человек, и узнать о
     /// счёте он должен сразу, а не когда вспомнит про `/pending`.
     pub(crate) admins: Vec<i64>,
-    /// Продаётся ли опция «Без рекламы».
-    pub(crate) adblock: bool,
 }
 
 /// Ответить на одно соединение.
@@ -819,14 +816,6 @@ fn state_of(shared: &Shared, telegram_id: i64, now: i64) -> Result<String, Strin
         "deviceLimit": device_limit,
         "newsUnread": news_unread,
         "newsMuted": news_muted,
-        // Опция «Без рекламы»: продаётся ли и до какого числа она у человека.
-        "adblock": {
-            "available": shared.adblock,
-            "until": subscriber
-                .adblock_until
-                .filter(|until| *until > now)
-                .map(day_month_year),
-        },
         // Идёт ли турнир: вкладка «Друзья» называется тогда «Турнир».
         "tournamentEndsAt": tournament,
         "userId": telegram_id,

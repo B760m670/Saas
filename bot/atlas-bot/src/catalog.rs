@@ -82,45 +82,17 @@ const SHOWCASE: [(&str, &str, u32, u64); 4] = [
     ("d365", "12 месяцев", 365, 1790),
 ];
 
-/// Тарифы с опцией «Без рекламы»: те же сроки, +50 ₽ за месяц.
-///
-/// Имена начинаются с `ad` — по этому признаку база узнаёт опцию в
-/// оплаченном заказе (`atlas_billing::order::is_adblock_plan`).
-const ADBLOCK_SHOWCASE: [(&str, &str, u32, u64); 4] = [
-    ("ad30", "1 месяц", 30, 249),
-    ("ad90", "3 месяца", 90, 699),
-    ("ad180", "6 месяцев", 180, 1299),
-    ("ad365", "12 месяцев", 365, 2290),
-];
-
 /// Цена месяца — то, относительно чего считается выгода длинных сроков.
 #[must_use]
 pub fn monthly_base() -> Option<Money> {
     Money::from_major(199, Currency::Rub)
 }
 
-/// Цена месяца с опцией «Без рекламы».
-#[must_use]
-pub fn adblock_monthly_base() -> Option<Money> {
-    Money::from_major(249, Currency::Rub)
-}
-
-/// Все тарифы без опции.
+/// Все тарифы.
 #[must_use]
 pub fn plans() -> Vec<Plan> {
-    build(&SHOWCASE)
-}
-
-/// Тарифы с опцией «Без рекламы».
-#[must_use]
-pub fn adblock_plans() -> Vec<Plan> {
-    build(&ADBLOCK_SHOWCASE)
-}
-
-fn build(showcase: &[(&str, &str, u32, u64)]) -> Vec<Plan> {
-    showcase
-        .iter()
-        .copied()
+    SHOWCASE
+        .into_iter()
         .filter_map(|(id, title, days, rubles)| {
             Some(Plan {
                 id: id.to_owned(),
@@ -136,45 +108,12 @@ fn build(showcase: &[(&str, &str, u32, u64)]) -> Vec<Plan> {
 /// Найти тариф по имени, пришедшему с кнопки.
 #[must_use]
 pub fn plan(id: &str) -> Option<Plan> {
-    plans()
-        .into_iter()
-        .chain(adblock_plans())
-        .find(|plan| plan.id == id)
+    plans().into_iter().find(|plan| plan.id == id)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        adblock_monthly_base, adblock_plans, monthly_base, plan, plans, ADBLOCK_SHOWCASE,
-        PLAN_DEVICES, SHOWCASE,
-    };
-
-    /// Тарифы с опцией узнаются базой по имени — и только они.
-    #[test]
-    fn adblock_plans_are_recognised_by_the_store() {
-        assert_eq!(adblock_plans().len(), ADBLOCK_SHOWCASE.len());
-        assert!(adblock_monthly_base().is_some());
-        for plan in adblock_plans() {
-            assert!(
-                atlas_billing::order::is_adblock_plan(&plan.id),
-                "{}",
-                plan.id
-            );
-            assert!(super::plan(&plan.id).is_some());
-        }
-        for plan in plans() {
-            assert!(
-                !atlas_billing::order::is_adblock_plan(&plan.id),
-                "{}",
-                plan.id
-            );
-        }
-        // Те же сроки, что без опции, и дороже.
-        for (with, without) in adblock_plans().iter().zip(plans()) {
-            assert_eq!(with.days, without.days);
-            assert!(with.price.minor() > without.price.minor());
-        }
-    }
+    use super::{monthly_base, plan, plans, PLAN_DEVICES, SHOWCASE};
 
     /// Витрина обязана собираться целиком. Молчаливая потеря тарифа из-за
     /// переполнения оставила бы покупателя без части кнопок.

@@ -92,8 +92,6 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0014_news_tournaments.sql"),
         "\n",
         include_str!("../../../db/migrations/0015_tournament_pause.sql"),
-        "\n",
-        include_str!("../../../db/migrations/0016_adblock.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -671,8 +669,7 @@ fn a_confirmed_date_leaves_the_queue() {
     let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
     let _ = store.grant_trial(42, 3, NOW);
 
-    // Проба — с опцией «Без рекламы».
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "plus");
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
 
     let Ok(work) = store.panel_work(10, NOW, false) else {
         return;
@@ -874,7 +871,7 @@ fn an_adopted_date_leaves_the_queue_empty() {
         "очередь везёт не принятую дату: {work:?}"
     );
 
-    let _ = store.mark_panel_synced(42, NOW + 22 * DAY, "plus");
+    let _ = store.mark_panel_synced(42, NOW + 22 * DAY, "paid");
     assert_eq!(
         store.panel_work(10, NOW, false).map(|work| work.len()).ok(),
         Some(0)
@@ -1070,9 +1067,9 @@ fn a_person_whose_panel_plan_is_unknown_is_queued_once() {
         return;
     };
     assert_eq!(work.len(), 1, "неподтверждённые отряды не встали в очередь");
-    assert_eq!(work.first().map(|w| w.kind.as_str()), Some("plus"));
+    assert_eq!(work.first().map(|w| w.kind.as_str()), Some("paid"));
 
-    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "plus");
+    let _ = store.mark_panel_synced(42, NOW + 3 * DAY, "paid");
     assert_eq!(
         store.panel_work(10, NOW, false).map(|work| work.len()).ok(),
         Some(0)
@@ -2017,79 +2014,4 @@ fn a_cancelled_tournament_gives_nothing_and_the_next_starts_clean() {
         unreachable!("новый турнир не начался: {started:?}");
     };
     assert!(expect(store.standings(new), "таблица").is_empty());
-}
-
-// --- опция «Без рекламы» ----------------------------------------------------
-
-fn kind_at(store: &mut Store, id: i64, now: i64) -> Option<String> {
-    expect(store.panel_work(10, now, false), "очередь")
-        .into_iter()
-        .find(|w| w.telegram_id == id)
-        .map(|w| w.kind)
-}
-
-/// Проба — с опцией: проба показывает то, что продаётся.
-#[test]
-fn a_trial_comes_with_adblock() {
-    let Some((mut store, _lock)) = store() else {
-        return;
-    };
-    subscriber(&mut store, 42);
-    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
-    let Ok(Trial::Granted { expires_at }) = store.grant_trial(42, 2, NOW) else {
-        return;
-    };
-    assert_eq!(
-        expect(store.ensure_subscriber(42), "человек").adblock_until,
-        Some(expires_at)
-    );
-    assert_eq!(kind_at(&mut store, 42, NOW).as_deref(), Some("plus"));
-}
-
-/// Покупка с опцией даёт её до нового конца подписки; покупка без опции
-/// оплаченное с опцией не отнимает, а после него подписка идёт без неё.
-#[test]
-fn adblock_lasts_as_long_as_it_was_paid_for() {
-    let Some((mut store, _lock)) = store() else {
-        return;
-    };
-    subscriber(&mut store, 42);
-    let _ = store.link_to_panel(42, 7, "https://panel.example.org/api/sub/aaa");
-
-    let _ = store.open_order("ord-ad", 42, "ad30", 30, rub(24_900), NOW);
-    let Ok(Settled::Extended { expires_at: first }) =
-        store.settle("ord-ad", "freekassa", "fk-ad", rub(24_900), "{}", NOW)
-    else {
-        return;
-    };
-    assert_eq!(
-        expect(store.ensure_subscriber(42), "после первой").adblock_until,
-        Some(first)
-    );
-
-    let _ = store.open_order("ord-d", 42, "d30", 30, rub(19_900), NOW);
-    let Ok(Settled::Extended { expires_at: second }) =
-        store.settle("ord-d", "freekassa", "fk-d", rub(19_900), "{}", NOW)
-    else {
-        return;
-    };
-    assert_eq!(
-        expect(store.ensure_subscriber(42), "после второй").adblock_until,
-        Some(first),
-        "покупка без опции сдвинула или стёрла её"
-    );
-
-    // До конца первой покупки — с опцией, после — без неё.
-    assert_eq!(kind_at(&mut store, 42, NOW).as_deref(), Some("plus"));
-    assert_eq!(
-        kind_at(&mut store, 42, first + 60).as_deref(),
-        Some("personal")
-    );
-    assert!(second > first);
-}
-
-#[test]
-fn adblock_plans_are_named_by_prefix() {
-    assert!(atlas_store::is_adblock_plan("ad30"));
-    assert!(!atlas_store::is_adblock_plan("d30"));
 }

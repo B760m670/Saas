@@ -62,8 +62,6 @@ pub struct View<'a> {
     /// будет обещать ещё неделю. Ровно та же ложь, что была с датой,
     /// поправленной в панели руками.
     pub trial_left: Option<u64>,
-    /// Продаётся ли опция «Без рекламы».
-    pub adblock: bool,
     /// Текущий момент.
     pub now: i64,
 }
@@ -187,7 +185,7 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
 pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
     match action {
         Action::Subscription | Action::Home => (subscription_screen(view), Effect::None),
-        Action::Plans => (plans_screen(view.adblock), Effect::None),
+        Action::Plans => (plans_screen(), Effect::None),
         Action::Connect => (connect_screen(view), Effect::None),
         Action::ConnectTo(device) => (device_screen(*device, view), Effect::None),
         Action::Help => (help_screen(view), Effect::None),
@@ -386,46 +384,26 @@ fn subscription_screen(view: &View<'_>) -> Reply {
     }
 }
 
-fn plans_screen(adblock: bool) -> Reply {
-    let option = if adblock {
-        "\n\n🛡 <b>Без рекламы</b> — те же сроки, но реклама, трекеры и \
-         опасные сайты не открываются: в приложениях, играх и браузере. \
-         Работает на серверах со значком 🛡."
-    } else {
-        ""
-    };
+fn plans_screen() -> Reply {
     Reply {
         text: format!(
-            "Подписка: {} устройства, трафик без ограничений.{option}\n\n\
+            "Подписка: {} устройства, трафик без ограничений.\n\n\
              Срок складывается с текущим: если подписка ещё действует, \
              оплаченные дни добавятся к оставшимся.",
             catalog::PLAN_DEVICES
         ),
-        keyboard: Some(plans_keyboard(adblock)),
+        keyboard: Some(plans_keyboard()),
     }
 }
 
-/// Сроки подписки кнопками; с опцией — ещё и тарифы «Без рекламы».
-fn plans_keyboard(adblock: bool) -> Keyboard {
-    let Some(base) = catalog::monthly_base() else {
-        return Keyboard {
+/// Сроки подписки кнопками.
+fn plans_keyboard() -> Keyboard {
+    match catalog::monthly_base() {
+        Some(base) => plans_menu(&catalog::plans(), base),
+        None => Keyboard {
             rows: vec![vec![Button::new("Назад", Action::Home)]],
-        };
-    };
-    let mut keyboard = plans_menu(&catalog::plans(), base);
-    if adblock {
-        if let Some(base) = catalog::adblock_monthly_base() {
-            let back = keyboard.rows.pop();
-            for plan in catalog::adblock_plans() {
-                keyboard.rows.push(vec![Button::new(
-                    format!("🛡 {}", crate::menu::plan_label(&plan, base)),
-                    Action::Buy(plan.id.clone()),
-                )]);
-            }
-            keyboard.rows.extend(back);
-        }
+        },
     }
-    keyboard
 }
 
 fn connect_screen(view: &View<'_>) -> Reply {
@@ -499,7 +477,7 @@ fn buy(plan_id: &str) -> (Reply, Effect) {
         return (
             Reply {
                 text: "Этого тарифа больше нет. Вот те, что есть:".to_owned(),
-                keyboard: Some(plans_keyboard(false)),
+                keyboard: Some(plans_keyboard()),
             },
             Effect::None,
         );
@@ -536,7 +514,6 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
             now: NOW,
         }
     }
@@ -549,7 +526,6 @@ mod tests {
             subscription_url: Some(LINK),
             app_url: None,
             trial_left: None,
-            adblock: false,
             now: NOW,
         }
     }
@@ -562,7 +538,6 @@ mod tests {
             subscription_url: Some(LINK),
             app_url: None,
             trial_left: None,
-            adblock: false,
             now: NOW,
         }
     }
@@ -1018,26 +993,10 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
             now: NOW,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
         assert!(reply.text.contains("2 дня"), "{}", reply.text);
-    }
-
-    /// Опция продаётся — её тарифы стоят в меню; нет — их не видно.
-    #[test]
-    fn adblock_plans_appear_only_when_sold() {
-        let count = |adblock: bool| {
-            super::plans_keyboard(adblock)
-                .rows
-                .iter()
-                .flatten()
-                .filter(|b| matches!(b.action(), Some(Action::Buy(id)) if id.starts_with("ad")))
-                .count()
-        };
-        assert_eq!(count(false), 0);
-        assert_eq!(count(true), crate::catalog::adblock_plans().len());
     }
 
     /// Случай с боевого запуска: `/start` выдал три пробных дня, человек
@@ -1053,7 +1012,6 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
             now: granted_at + 10 * 60,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -1072,7 +1030,6 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
             now: NOW,
         };
         assert!(view.is_active());
