@@ -845,9 +845,9 @@ a.btn.off { opacity: 0.45; }
   <h1 style="font-size:20px;margin-bottom:14px">Продлить подписку</h1>
   <p class="note" style="margin-top:0">2 устройства, трафик без ограничений.</p>
   <!-- Опция «Без рекламы» — добавка к сроку, а не отдельный тариф:
-       переключатель меняет цены на те же сроки +50 ₽ за месяц. -->
+       переключатель меняет цены на те же сроки +50 ₽ к любому. -->
   <button class="row" id="plan-kind" data-kind="toggle" hidden style="margin-top:14px">
-    <span class="body"><span class="title">🛡 Без рекламы · +50 ₽ в месяц</span><span class="hint">Реклама, трекеры и опасные сайты не открываются в приложениях и браузере. Работает на серверах со значком 🛡.</span></span>
+    <span class="body"><span class="title">🛡 Без рекламы · +50 ₽</span><span class="hint">Реклама, трекеры и опасные сайты не открываются в приложениях и браузере. Работает на серверах со значком 🛡.</span></span>
     <span class="switch" id="adblock-switch"></span>
   </button>
   <div class="plans" id="plans-plain">
@@ -868,27 +868,26 @@ a.btn.off { opacity: 0.45; }
       <span style="text-align:right"><span class="price">1790 ₽</span><br><span class="off">−26 %</span></span>
     </button>
   </div>
-  <!-- Те же сроки с опцией: цена + 50 ₽ за месяц (`catalog::adblock_plans`). -->
+  <!-- Те же сроки с опцией: цена + 50 ₽ (`catalog::adblock_plans`). -->
   <div class="plans" id="plans-adblock" hidden>
     <button class="plan" data-buy="d30-ad">
       <span><span class="term">1 месяц · 🛡</span><span class="per">249 ₽ в месяц</span></span>
       <span style="text-align:right"><span class="price">249 ₽</span></span>
     </button>
     <button class="plan" data-buy="d90-ad">
-      <span><span class="term">3 месяца · 🛡</span><span class="per">233 ₽ в месяц</span></span>
-      <span style="text-align:right"><span class="price">699 ₽</span><br><span class="off">−6 %</span></span>
+      <span><span class="term">3 месяца · 🛡</span><span class="per">200 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">599 ₽</span><br><span class="off">−19 %</span></span>
     </button>
     <button class="plan" data-buy="d180-ad">
-      <span><span class="term">6 месяцев · 🛡</span><span class="per">217 ₽ в месяц</span></span>
-      <span style="text-align:right"><span class="price">1299 ₽</span><br><span class="off">−13 %</span></span>
+      <span><span class="term">6 месяцев · 🛡</span><span class="per">175 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">1049 ₽</span><br><span class="off">−29 %</span></span>
     </button>
     <button class="plan best" data-buy="d365-ad">
-      <span><span class="term">12 месяцев · 🛡</span><span class="per">196 ₽ в месяц</span></span>
-      <span style="text-align:right"><span class="price">2390 ₽</span><br><span class="off">−21 %</span></span>
+      <span><span class="term">12 месяцев · 🛡</span><span class="per">151 ₽ в месяц</span></span>
+      <span style="text-align:right"><span class="price">1840 ₽</span><br><span class="off">−39 %</span></span>
     </button>
   </div>
-  <!-- Добавка к идущей подписке: до её конца, цена — за оставшиеся дни
-       (считает сервер, `catalog::adblock_rest`). -->
+  <!-- Добавка к идущей подписке: до её конца за 50 ₽ (`catalog::adblock_rest`). -->
   <button class="btn" id="adblock-rest" data-buy="ad-rest" hidden style="margin-top:12px">🛡 Добавить к текущей подписке</button>
   <button class="btn ghost" data-act="close-sheet">Закрыть</button>
 </div>
