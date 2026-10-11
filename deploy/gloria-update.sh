@@ -145,6 +145,12 @@ fi
 echo "== мини-приложение"
 install -m 644 site/index.html "$SITE/index.html"
 
+# Значок и манифест для «На экран „Домой“» — без них ярлык получил бы
+# снимок страницы вместо значка.
+install -m 644 site/manifest.json "$SITE/manifest.json"
+install -d -m 755 "$SITE/icons"
+install -m 644 site/icons/*.png "$SITE/icons/"
+
 # Админка — рядом с кабинетом, в своей папке. Пускает её не адрес, а подпись
 # Telegram и список владельцев на сервере: страница без них пуста.
 install -d -m 755 "$SITE/admin"

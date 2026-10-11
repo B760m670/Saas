@@ -14,6 +14,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Gloria</title>
 <meta name="robots" content="noindex, nofollow">
+<!-- Иконка и манифест — для «На экран „Домой“»: из Telegram, Safari или
+     Chrome кабинет открывается отдельным приложением со своим значком. -->
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Gloria VPN">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <!-- `async`, а не `defer`, и это не придирка.
      Скрипт лежит на telegram.org, а он из России достаётся не всегда.
      Блокирующий тег в <head> подвесил бы отрисовку до таймаута — ровно так
@@ -1037,6 +1046,12 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
 
+  <button class="row" data-act="home-screen" id="home-row">
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="3"/><path d="M12 8v6M9 11h6"/></svg>
+    <span class="body"><span class="title">На экран «Домой»</span><span class="hint" id="home-hint">Значок кабинета рядом с приложениями</span></span>
+    <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
+  </button>
+
   <h2>Уведомления</h2>
   <button class="row" data-act="mute">
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
@@ -1377,7 +1392,13 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     tg.expand();
     // Полоса над кабинетом — цвета нашего фона, а не темы клиента.
     applyTheme();
-    if (tg.onEvent) tg.onEvent('themeChanged', applyTheme);
+    if (tg.onEvent) {
+      tg.onEvent('themeChanged', applyTheme);
+      tg.onEvent('homeScreenAdded', function () {
+        toast('Готово — значок Gloria VPN на экране «Домой»');
+        refreshHome();
+      });
+    }
     return true;
   }
 
@@ -1411,6 +1432,53 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      за сервисом стоит, и не даёт ни очереди, ни истории обращений. Бот
      подставляет к каждому сообщению, кто пишет и что у него с подпиской. */
   var SUPPORT = 'https://t.me/GloriaVPNSupport_Bot';
+
+  /* «На экран „Домой“». В Telegram — его собственным вызовом (Bot API 8.0):
+     значок открывает мини-приложение сразу, без чата с ботом. В браузере —
+     окном установки Chrome, а в Safari такого окна нет, только подсказка. */
+  var installPrompt = null;
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault();
+    installPrompt = e;
+  });
+
+  function tgHome() {
+    return !!(tg && tg.initData && tg.addToHomeScreen &&
+              tg.isVersionAtLeast && tg.isVersionAtLeast('8.0'));
+  }
+
+  function installed() {
+    return (window.matchMedia && matchMedia('(display-mode: standalone)').matches) ||
+           navigator.standalone === true;
+  }
+
+  function refreshHome() {
+    var row = document.getElementById('home-row');
+    var hint = document.getElementById('home-hint');
+    row.hidden = installed();
+    if (row.hidden || !tgHome() || !tg.checkHomeScreenStatus) return;
+    tg.checkHomeScreenStatus(function (status) {
+      if (status === 'added') hint.textContent = 'Уже добавлен — значок «Gloria VPN»';
+      else if (status === 'unsupported') hint.textContent = 'Этот Telegram не умеет — обновите его';
+    });
+  }
+
+  function addToHome() {
+    haptic('select');
+    if (tg && tg.initData) {
+      if (tgHome()) return tg.addToHomeScreen();
+      return toast('Обновите Telegram — в этой версии такой кнопки нет');
+    }
+    if (installPrompt) {
+      installPrompt.prompt();
+      installPrompt = null;
+      return;
+    }
+    if (/iPhone|iPad|iPod/.test(navigator.userAgent)) {
+      return toast('В Safari: «Поделиться» → «На экран „Домой“»');
+    }
+    toast('Меню браузера ⋮ → «Добавить на главный экран»');
+  }
 
   function toast(text) {
     var el = document.getElementById('toast');
@@ -1564,6 +1632,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     document.getElementById('home-plans-p').textContent = ab.until ? '🛡 без рекламы до ' + ab.until : '2 устройства, безлимит';
     applyTheme();
     document.getElementById('logout-row').hidden = !inBrowser();
+    refreshHome();
     document.getElementById('set-id').textContent = s.userId ? 'ID ' + s.userId : '';
     document.getElementById('set-plan').textContent =
       s.status === 'expired' ? 'Подписка не активна' : 'Активна до ' + s.expiresAt;
@@ -1992,6 +2061,8 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     }
 
     /* Строка в настройках — по кругу: как в системе → тёмная → светлая. */
+    if (act === 'home-screen') return addToHome();
+
     if (act === 'theme-cycle') {
       haptic('select');
       var order = ['auto', 'dark', 'light'];
