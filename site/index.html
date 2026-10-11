@@ -1994,8 +1994,8 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     /* Строка в настройках — по кругу: как в системе → тёмная → светлая. */
     if (act === 'theme-cycle') {
       haptic('select');
-      var order = ['auto', 'dark', 'light'];
-      return setThemePref(order[(order.indexOf(themePref()) + 1) % order.length]);
+      var themes = ['auto', 'dark', 'light'];
+      return setThemePref(themes[(themes.indexOf(themePref()) + 1) % themes.length]);
     }
 
     if (act === 'logout') {
