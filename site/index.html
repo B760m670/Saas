@@ -1253,6 +1253,14 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      сайта (cookie), полученная входом через бота. */
   function inBrowser() { return !(tg && tg.initData); }
 
+  /* Telegram кладёт данные запуска в адрес (#tgWebAppData=…) ещё до своего
+     скрипта. По ним видно, что кабинет открыт как мини-приложение, даже
+     пока скрипт Telegram не доехал, — и вход через бота здесь не нужен. */
+  var launchedInTelegram = /tgWebApp(Data|Platform|Version)=/.test(location.hash + location.search);
+  // Скрипт Telegram уже загрузился или не загрузится: решать про вход можно.
+  var sdkSettled = false;
+  var loginPending = false;
+
   /* Заголовки каждого запроса к серверу. `X-Gloria-Web` нужен сессии сайта:
      без него сервер cookie не примет — так чужая страница не сможет
      сделать запрос от имени вошедшего. */
@@ -1263,7 +1271,19 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
   var loginTimer = null;
 
   function showLogin() {
+    /* Пока скрипт Telegram не доехал, отказ сервера ничего не значит:
+       запрос ушёл без подписи. Решаем, когда станет ясно, где мы. */
+    if (!sdkSettled) { loginPending = true; return; }
+    if (launchedInTelegram) {
+      toast('Не удалось связаться с Telegram — закройте кабинет и откройте заново');
+      return;
+    }
     document.getElementById('login').hidden = false;
+  }
+
+  function hideLogin() {
+    loginPending = false;
+    document.getElementById('login').hidden = true;
   }
 
   function resetLogin() {
@@ -1361,14 +1381,28 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     return true;
   }
 
-  if (!connectTelegram()) {
+  function sdkDone() {
+    if (sdkSettled) return;
+    sdkSettled = true;
+    if (loginPending && inBrowser()) showLogin();
+  }
+
+  if (connectTelegram()) {
+    sdkSettled = true;
+  } else {
     var sdk = document.getElementById('tg-sdk');
     // Приехал позже — подключаемся и перезапрашиваем состояние: до этого
     // запрос ушёл без подписи и получил отказ.
     if (sdk) {
       sdk.addEventListener('load', function () {
-        if (connectTelegram()) load();
+        if (connectTelegram() && tg.initData) { loginPending = false; sdkSettled = true; load(); }
+        else sdkDone();
       });
+      sdk.addEventListener('error', sdkDone);
+      // Не загрузился и не упал (висит на медленной сети) — не ждём вечно.
+      setTimeout(sdkDone, 6000);
+    } else {
+      sdkSettled = true;
     }
   }
 
@@ -2269,6 +2303,8 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     }).then(function (data) {
       // Устаревший ответ: следом ушёл новый запрос, решает он.
       if (mine !== loadSeq) return;
+      // Сервер узнал — экран входа, если успел показаться, больше не нужен.
+      if (data) hideLogin();
 
       if (!data) {
         /* Однажды повторяем сами: подпись Telegram могла доехать чуть позже
