@@ -31,10 +31,12 @@ use postgres::{Client, NoTls, Row, Transaction};
 
 mod admin;
 mod community;
+mod web;
 
 pub use admin::{Card, Extended, LogEntry, Payment, Summary, MAX_MANUAL_DAYS};
 pub use atlas_billing::order::is_adblock_plan;
 pub use community::{prize_days, News, Prize, Standing, Started, Tournament, PRIZE_PLACES};
+pub use web::LoginCheck;
 
 /// Отказ при работе с хранилищем.
 #[derive(Debug)]

@@ -94,6 +94,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0015_tournament_pause.sql"),
         "\n",
         include_str!("../../../db/migrations/0016_adblock.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0017_web_login.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -2123,4 +2125,86 @@ fn adblock_for_the_rest_keeps_the_subscription_date() {
     let after = expect(store.ensure_subscriber(42), "после");
     assert_eq!(after.expires_at, Some(expires_at), "добавка продлила срок");
     assert_eq!(after.adblock_until, Some(expires_at));
+}
+
+// --- вход на сайт через бота -------------------------------------------------
+
+/// Код живёт, пока его не подтвердили в боте; после подтверждения один раз
+/// меняется на сессию, и сессия узнаёт своего человека.
+#[test]
+fn a_login_is_confirmed_in_the_bot_and_traded_for_a_session_once() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    expect(store.create_login("code-1", NOW, 300), "код");
+
+    assert_eq!(
+        expect(
+            store.take_login("code-1", "sess-1", NOW + 5, 86_400),
+            "рано"
+        ),
+        atlas_store::LoginCheck::Pending
+    );
+    assert!(expect(
+        store.confirm_login("code-1", 42, NOW + 10),
+        "подтвердить"
+    ));
+    // Второй раз — уже подтверждён, чужой его не перехватит.
+    assert!(!expect(
+        store.confirm_login("code-1", 43, NOW + 11),
+        "чужой"
+    ));
+
+    assert_eq!(
+        expect(
+            store.take_login("code-1", "sess-1", NOW + 12, 86_400),
+            "обмен"
+        ),
+        atlas_store::LoginCheck::Signed(42)
+    );
+    assert_eq!(
+        expect(
+            store.take_login("code-1", "sess-2", NOW + 13, 86_400),
+            "повтор"
+        ),
+        atlas_store::LoginCheck::Gone
+    );
+
+    assert_eq!(
+        expect(store.session_user("sess-1", NOW + 20), "сессия"),
+        Some(42)
+    );
+    assert_eq!(
+        expect(store.session_user("sess-2", NOW + 20), "чужая"),
+        None
+    );
+    assert_eq!(
+        expect(store.session_user("sess-1", NOW + 12 + 86_400), "истекла"),
+        None
+    );
+
+    expect(store.drop_session("sess-1"), "выйти");
+    assert_eq!(
+        expect(store.session_user("sess-1", NOW + 30), "после выхода"),
+        None
+    );
+}
+
+/// Просроченный код не подтверждается и не меняется на сессию.
+#[test]
+fn an_expired_login_code_is_dead() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    subscriber(&mut store, 42);
+    expect(store.create_login("code-2", NOW, 300), "код");
+    assert!(!expect(
+        store.confirm_login("code-2", 42, NOW + 301),
+        "поздно"
+    ));
+    assert_eq!(
+        expect(store.take_login("code-2", "s", NOW + 302, 86_400), "обмен"),
+        atlas_store::LoginCheck::Gone
+    );
 }

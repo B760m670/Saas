@@ -536,6 +536,19 @@ a.btn.off { opacity: 0.45; }
 
 .chip[hidden], .row[hidden] { display: none; }
 
+/* Вход в браузере: поверх всего, пока нет сессии. */
+#login { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+         padding: 24px 16px; background: var(--bg, #0d0a10); }
+#login[hidden] { display: none; }
+#login .box { width: 100%; max-width: 400px; text-align: center; }
+#login .mark { width: 76px; height: 76px; margin: 0 auto 22px; border-radius: 24px; display: grid; place-items: center;
+               background: linear-gradient(140deg, #ffecbe, #ee982e); box-shadow: 0 14px 50px rgba(238,152,46,.35); }
+#login h1 { font-size: 26px; margin-bottom: 10px; }
+#login p { color: var(--muted); font-size: 15px; line-height: 1.45; }
+#login .btn { margin-top: 22px; }
+#login .wait { margin-top: 16px; font-size: 14px; color: var(--muted); }
+#login .wait a { color: inherit; }
+
 /* Колокольчик новостей в шапке главной. */
 .head { position: relative; }
 .bell {
@@ -591,6 +604,21 @@ a.btn.off { opacity: 0.45; }
 </style>
 </head>
 <body>
+
+<!-- Вход в обычном браузере. В Telegram его не видно: там удостоверение —
+     подпись мини-приложения. -->
+<section id="login" hidden>
+  <div class="box">
+    <div class="mark"><svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="#1a1006" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/></svg></div>
+    <h1>Личный кабинет Gloria VPN</h1>
+    <p>Вход через нашего бота в Telegram: откройте ссылку и нажмите «Подтвердить вход». Пароль не нужен.</p>
+    <button class="btn primary" id="login-go" data-act="login">Войти через Telegram</button>
+    <!-- Ссылкой, а не window.open после запроса: открытие окна не по нажатию
+         браузеры на телефонах блокируют молча. -->
+    <a class="btn primary" id="login-link" href="#" target="_blank" rel="noopener" hidden>Открыть бота и подтвердить</a>
+    <div class="wait" id="login-wait" hidden>Ждём подтверждения в боте…</div>
+  </div>
+</section>
 
 <main>
 
@@ -808,6 +836,12 @@ a.btn.off { opacity: 0.45; }
     <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
   </button>
 
+  <!-- Только в браузере: в Telegram выходить не из чего. -->
+  <button class="row" data-act="logout" id="logout-row" hidden>
+    <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17-5-5 5-5"/><path d="M15 12H5"/></svg>
+    <span class="body"><span class="title">Выйти</span><span class="hint">На этом устройстве понадобится войти снова</span></span>
+  </button>
+
 </section>
 
 </main>
@@ -993,6 +1027,72 @@ a.btn.off { opacity: 0.45; }
      но это ответ, а не зависание. */
   var tg = null;
 
+  /* Кабинет открыт не из Telegram: подписи нет, удостоверение — сессия
+     сайта (cookie), полученная входом через бота. */
+  function inBrowser() { return !(tg && tg.initData); }
+
+  /* Заголовки каждого запроса к серверу. `X-Gloria-Web` нужен сессии сайта:
+     без него сервер cookie не примет — так чужая страница не сможет
+     сделать запрос от имени вошедшего. */
+  function authHeaders() {
+    return { 'X-Init-Data': (tg && tg.initData) || '', 'X-Gloria-Web': '1' };
+  }
+
+  var loginTimer = null;
+
+  function showLogin() {
+    document.getElementById('login').hidden = false;
+  }
+
+  function resetLogin() {
+    document.getElementById('login-go').hidden = false;
+    document.getElementById('login-link').hidden = true;
+    document.getElementById('login-wait').hidden = true;
+  }
+
+  /* Вход: код от сервера → ссылка на бота → ждём, пока человек нажмёт
+     «Подтвердить вход», спрашивая сервер раз в две секунды. */
+  function startLogin() {
+    fetch('/api/login/start', { method: 'POST', headers: authHeaders() })
+      .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
+      .then(function (l) {
+        var link = document.getElementById('login-link');
+        link.href = l.link;
+        link.hidden = false;
+        document.getElementById('login-go').hidden = true;
+        document.getElementById('login-wait').hidden = false;
+        var deadline = Date.now() + (l.expiresIn || 300) * 1000;
+        if (loginTimer) clearInterval(loginTimer);
+        loginTimer = setInterval(function () {
+          if (Date.now() > deadline) {
+            clearInterval(loginTimer);
+            resetLogin();
+            return toast('Время вышло — нажмите «Войти» ещё раз');
+          }
+          fetch('/api/login/check/' + l.code, { method: 'POST', headers: authHeaders() })
+            .then(function (r) {
+              if (r.status === 410) throw new Error('gone');
+              return r.json();
+            })
+            .then(function (c) {
+              if (!c.ok) return;
+              clearInterval(loginTimer);
+              resetLogin();
+              document.getElementById('login').hidden = true;
+              load();
+            })
+            .catch(function (e) {
+              if (String(e && e.message) === 'gone') {
+                clearInterval(loginTimer);
+                resetLogin();
+                toast('Ссылка устарела — нажмите «Войти» ещё раз');
+              }
+            });
+        }, 2000);
+      })
+      .catch(function () { toast('Вход сейчас недоступен. Попробуйте позже'); });
+  }
+
   function connectTelegram() {
     tg = (window.Telegram && window.Telegram.WebApp) || null;
     if (!tg) return false;
@@ -1140,6 +1240,7 @@ a.btn.off { opacity: 0.45; }
 
     var name = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.first_name) || '';
     document.getElementById('hello').textContent = name ? name + ', рады видеть' : 'Gloria VPN';
+    document.getElementById('logout-row').hidden = !inBrowser();
     document.getElementById('set-id').textContent = s.userId ? 'ID ' + s.userId : '';
     document.getElementById('set-plan').textContent =
       s.status === 'expired' ? 'Подписка не активна' : 'Активна до ' + s.expiresAt;
@@ -1157,7 +1258,7 @@ a.btn.off { opacity: 0.45; }
   function post(path) {
     return fetch(path, {
       method: 'POST',
-      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      headers: authHeaders()
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (body) {
         if (!r.ok) throw new Error(body.error || 'отказ');
@@ -1168,7 +1269,7 @@ a.btn.off { opacity: 0.45; }
 
   function refresh() {
     return fetch('/api/me', {
-      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      headers: authHeaders()
     }).then(function (r) {
       if (!r.ok) throw new Error('нет ответа');
       return r.json();
@@ -1184,7 +1285,7 @@ a.btn.off { opacity: 0.45; }
   function openNews() {
     newsSheet(true);
     var list = document.getElementById('news-list');
-    fetch('/api/news', { headers: { 'X-Init-Data': (tg && tg.initData) || '' } })
+    fetch('/api/news', { headers: authHeaders() })
       .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
       .then(function (data) {
         list.textContent = '';
@@ -1259,7 +1360,7 @@ a.btn.off { opacity: 0.45; }
   }
 
   function loadTournament() {
-    return fetch('/api/tournament', { headers: { 'X-Init-Data': (tg && tg.initData) || '' } })
+    return fetch('/api/tournament', { headers: authHeaders() })
       .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
       .then(function (t) {
         var on = !!t.active;
@@ -1552,6 +1653,14 @@ a.btn.off { opacity: 0.45; }
       return claimSent(el.dataset.minor, money(Number(el.dataset.minor)));
     }
 
+    if (act === 'login') return startLogin();
+
+    if (act === 'logout') {
+      fetch('/api/logout', { method: 'POST', headers: authHeaders() })
+        .finally(function () { location.reload(); });
+      return;
+    }
+
     if (act === 'reissue') {
       /* Спрашиваем прежде, чем делать: старая ссылка умрёт сразу, и на всех
          устройствах придётся добавлять заново. Нажать это по ошибке легко —
@@ -1561,7 +1670,7 @@ a.btn.off { opacity: 0.45; }
       toast('Перевыпускаем…');
       fetch('/api/reissue', {
         method: 'POST',
-        headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+        headers: authHeaders()
       }).then(function (r) {
         if (!r.ok) throw new Error('отказ');
         return r.json();
@@ -1633,7 +1742,7 @@ a.btn.off { opacity: 0.45; }
 
     fetch('/api/order/' + encodeURIComponent(plan), {
       method: 'POST',
-      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      headers: authHeaders()
     }).then(function (r) {
       if (!r.ok) throw new Error('счёт не выставился');
       return r.json();
@@ -1686,7 +1795,7 @@ a.btn.off { opacity: 0.45; }
     if (o.orderId) {
       fetch('/api/transfer/' + encodeURIComponent(o.orderId), {
         method: 'POST',
-        headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+        headers: authHeaders()
       }).catch(function () {});
     }
 
@@ -1717,7 +1826,7 @@ a.btn.off { opacity: 0.45; }
 
     fetch('/api/paid/' + encodeURIComponent(minor), {
       method: 'POST',
-      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      headers: authHeaders()
     }).then(function (r) {
       if (!r.ok) throw new Error('отказ');
       box.hidden = true;
@@ -1839,7 +1948,7 @@ a.btn.off { opacity: 0.45; }
     var mine = ++loadSeq;
     var failure = null;
     return fetch('/api/me', {
-      headers: { 'X-Init-Data': (tg && tg.initData) || '' }
+      headers: authHeaders()
     }).then(function (r) {
       if (!r.ok) { failure = r.status; throw new Error('код ' + r.status); }
       return r.json();
@@ -1860,6 +1969,7 @@ a.btn.off { opacity: 0.45; }
           setTimeout(load, 1200);
           return;
         }
+        if (failure === 401 && inBrowser()) return showLogin();
         if (state && state.status) return;
         toast(failure === 401
           ? 'Сессия устарела — закройте кабинет и откройте заново'

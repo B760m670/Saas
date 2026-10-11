@@ -1157,6 +1157,22 @@ fn apply(
     match effect {
         flow::Effect::None => Ok(None),
 
+        flow::Effect::ConfirmLogin { code } => {
+            let confirmed = store
+                .confirm_login(code, telegram_id, now)
+                .map_err(|error| format!("вход на сайт: {error}"))?;
+            Ok(Some(
+                if confirmed {
+                    "✅ Вход подтверждён. Вернитесь на сайт — кабинет откроется сам."
+                } else {
+                    "Ссылка для входа устарела или уже использована. \
+                     Нажмите «Войти» на сайте ещё раз."
+                }
+                .to_owned()
+                .into(),
+            ))
+        }
+
         flow::Effect::GrantTrial => {
             let Trial::Granted { expires_at } = store
                 .grant_trial(telegram_id, catalog::TRIAL_DAYS, now)

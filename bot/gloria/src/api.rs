@@ -179,6 +179,15 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         return freekassa_notice(shared, &mut stream, &request);
     }
 
+    // Вход на сайт через бота и выход. Без удостоверения: им вход и
+    // добывается.
+    if let Some(rest) = request.path.strip_prefix("/api/login/") {
+        return login_request(shared, &mut stream, &request, rest);
+    }
+    if request.path == "/api/logout" {
+        return logout(shared, &mut stream, &request);
+    }
+
     // Админка. Своя ветка: пути, способы и вторая проверка — номер из
     // подписи обязан быть в списке владельцев.
     if request.path.starts_with("/api/admin/") {
@@ -248,15 +257,10 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
         return send(&mut stream, 405, r#"{"error":"не тот способ"}"#);
     }
 
-    let Some(raw) = request.init_data.as_deref() else {
-        return send(&mut stream, 401, r#"{"error":"нет подписи Telegram"}"#);
-    };
-
     let now = crate::unix_now();
-    let Ok(verified) = telegram_init::verify(raw, &shared.bot_token, now, INIT_DATA_MAX_AGE) else {
-        // Отказ без подробностей: разница между «подпись не сошлась» и
-        // «строка просрочена» полезна только тому, кто подбирает.
-        return send(&mut stream, 401, r#"{"error":"подпись не принята"}"#);
+    let verified = match identify(shared, &request, now) {
+        Ok(who) => who,
+        Err(body) => return send(&mut stream, 401, body),
     };
 
     if let Some(route) = community {
@@ -343,6 +347,169 @@ fn serve(shared: &Shared, mut stream: TcpStream) -> Result<(), String> {
     send(&mut stream, 200, &body)
 }
 
+/// Cookie сессии сайта.
+const SESSION_COOKIE: &str = "gloria_session";
+
+/// Сколько живёт сессия сайта: 30 дней, потом вход ещё раз.
+const SESSION_TTL: i64 = 30 * 24 * 60 * 60;
+
+/// Сколько живёт код входа: пять минут — открыть бота и нажать кнопку.
+const LOGIN_TTL: i64 = 5 * 60;
+
+/// Сессия — 64 шестнадцатеричных знака. Всё прочее в cookie — не наше.
+fn is_session_token(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `bytes` случайных байт шестнадцатеричной строкой — из генератора ядра.
+fn random_hex(bytes: usize) -> Result<String, String> {
+    let mut buf = vec![0u8; bytes];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut buf))
+        .map_err(|error| format!("случайные байты: {error}"))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Кто спрашивает.
+struct Who {
+    user_id: i64,
+    /// Имя из подписи Telegram. В браузере его нет.
+    first_name: Option<String>,
+}
+
+impl Who {
+    const fn user_id(&self) -> i64 {
+        self.user_id
+    }
+
+    fn first_name(&self) -> Option<&str> {
+        self.first_name.as_deref()
+    }
+}
+
+/// Узнать, кто спрашивает: по подписи Telegram в мини-приложении или по
+/// сессии сайта в браузере. Ошибка — готовое тело ответа `401`.
+///
+/// Подпись Telegram главнее: в мини-приложении сессии нет, а если вдруг
+/// есть обе, решает та, что проверяется криптографией прямо сейчас.
+fn identify(shared: &Shared, request: &Request, now: i64) -> Result<Who, &'static str> {
+    if let Some(raw) = request.init_data.as_deref().filter(|raw| !raw.is_empty()) {
+        // Отказ без подробностей: разница между «подпись не сошлась» и
+        // «строка просрочена» полезна только тому, кто подбирает.
+        let verified = telegram_init::verify(raw, &shared.bot_token, now, INIT_DATA_MAX_AGE)
+            .map_err(|_| r#"{"error":"подпись не принята"}"#)?;
+        return Ok(Who {
+            user_id: verified.user_id(),
+            first_name: verified.first_name().map(str::to_owned),
+        });
+    }
+
+    let (Some(token), true) = (request.session.as_deref(), request.web) else {
+        return Err(r#"{"error":"нужен вход"}"#);
+    };
+    let user = shared
+        .store
+        .lock()
+        .map_err(|_| r#"{"error":"внутренняя ошибка"}"#)?
+        .session_user(token, now);
+    match user {
+        Ok(Some(user_id)) => Ok(Who {
+            user_id,
+            first_name: None,
+        }),
+        Ok(None) => Err(r#"{"error":"нужен вход"}"#),
+        Err(error) => {
+            eprintln!("Сессия сайта: {error}");
+            Err(r#"{"error":"внутренняя ошибка"}"#)
+        }
+    }
+}
+
+/// Вход на сайт через бота.
+///
+/// ```text
+/// POST /api/login/start          новый код и ссылка на бота
+/// POST /api/login/check/<код>    подтверждён ли; да — ставит cookie сессии
+/// ```
+fn login_request(
+    shared: &Shared,
+    stream: &mut TcpStream,
+    request: &Request,
+    rest: &str,
+) -> Result<(), String> {
+    if request.method != "POST" {
+        return send(stream, 405, r#"{"error":"не тот способ"}"#);
+    }
+    let now = crate::unix_now();
+
+    if rest == "start" {
+        let Some(bot) = shared.bot_username.as_deref() else {
+            return send(stream, 503, r#"{"error":"вход на сайт не настроен"}"#);
+        };
+        let code = random_hex(12)?;
+        let created = shared
+            .store
+            .lock()
+            .map_err(|_| "замок базы испорчен".to_owned())?
+            .create_login(&code, now, LOGIN_TTL);
+        if let Err(error) = created {
+            eprintln!("Вход на сайт: {error}");
+            return send(stream, 500, r#"{"error":"внутренняя ошибка"}"#);
+        }
+        let body = serde_json::json!({
+            "code": code,
+            "link": format!("https://t.me/{bot}?start=login_{code}"),
+            "expiresIn": LOGIN_TTL,
+        });
+        return send(stream, 200, &body.to_string());
+    }
+
+    let Some(code) = rest
+        .strip_prefix("check/")
+        .filter(|code| atlas_bot::menu::is_login_code(code))
+    else {
+        return send(stream, 404, r#"{"error":"нет такого пути"}"#);
+    };
+
+    let token = random_hex(32)?;
+    let taken = shared
+        .store
+        .lock()
+        .map_err(|_| "замок базы испорчен".to_owned())?
+        .take_login(code, &token, now, SESSION_TTL);
+    match taken {
+        Ok(atlas_store::LoginCheck::Pending) => send(stream, 200, r#"{"pending":true}"#),
+        Ok(atlas_store::LoginCheck::Gone) => send(stream, 410, r#"{"error":"код устарел"}"#),
+        Ok(atlas_store::LoginCheck::Signed(user_id)) => {
+            println!("Вход на сайт: {user_id}");
+            let cookie = format!(
+                "{SESSION_COOKIE}={token}; Path=/; Max-Age={SESSION_TTL}; HttpOnly; Secure; SameSite=Lax"
+            );
+            send_with_cookie(stream, 200, r#"{"ok":true}"#, &cookie)
+        }
+        Err(error) => {
+            eprintln!("Вход на сайт: {error}");
+            send(stream, 500, r#"{"error":"внутренняя ошибка"}"#)
+        }
+    }
+}
+
+/// Выйти на сайте: сессия гаснет в базе, cookie стирается.
+fn logout(shared: &Shared, stream: &mut TcpStream, request: &Request) -> Result<(), String> {
+    if request.method != "POST" {
+        return send(stream, 405, r#"{"error":"не тот способ"}"#);
+    }
+    if let (Some(token), true) = (request.session.as_deref(), request.web) {
+        if let Ok(mut store) = shared.store.lock() {
+            if let Err(error) = store.drop_session(token) {
+                eprintln!("Выход с сайта: {error}");
+            }
+        }
+    }
+    let cookie = format!("{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax");
+    send_with_cookie(stream, 200, r#"{"ok":true}"#, &cookie)
+}
+
 /// Запрос админки.
 ///
 /// Порядок проверок важен. Сначала путь — неизвестному отвечаем «нет», не
@@ -355,12 +522,10 @@ fn admin_request(shared: &Shared, stream: &mut TcpStream, request: &Request) -> 
         Err((status, body)) => return send(stream, status, body),
     };
 
-    let Some(raw) = request.init_data.as_deref() else {
-        return send(stream, 401, r#"{"error":"нет подписи Telegram"}"#);
-    };
     let now = crate::unix_now();
-    let Ok(verified) = telegram_init::verify(raw, &shared.bot_token, now, INIT_DATA_MAX_AGE) else {
-        return send(stream, 401, r#"{"error":"подпись не принята"}"#);
+    let verified = match identify(shared, request, now) {
+        Ok(who) => who,
+        Err(body) => return send(stream, 401, body),
     };
 
     if !shared.admins.contains(&verified.user_id()) {
@@ -874,6 +1039,14 @@ struct Request {
     /// уведомлению Freekassa, настроенному на GET: поля платежа лежат там.
     query: Option<String>,
     init_data: Option<String>,
+    /// Сессия сайта из cookie `gloria_session` — вход в браузере без
+    /// Telegram.
+    session: Option<String>,
+    /// Пришёл ли заголовок `X-Gloria-Web`. Страница ставит его сама; чужой
+    /// сайт без нашего разрешения поставить его не может, поэтому по cookie
+    /// без него не пускаем — это и есть защита от подделки запроса с чужой
+    /// страницы.
+    web: bool,
     /// Тело. Пустое у всего, кроме уведомлений о платеже.
     body: Vec<u8>,
     /// Кого Caddy видит на том конце.
@@ -908,6 +1081,8 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
     };
 
     let mut init_data = None;
+    let mut session = None;
+    let mut web = false;
     let mut forwarded_for = None;
     let mut content_length: u64 = 0;
     loop {
@@ -929,6 +1104,15 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
             let value = value.trim();
             if name.eq_ignore_ascii_case("x-init-data") {
                 init_data = Some(value.to_owned());
+            } else if name.eq_ignore_ascii_case("cookie") {
+                session = value
+                    .split(';')
+                    .filter_map(|pair| pair.trim().split_once('='))
+                    .find(|(key, _)| *key == SESSION_COOKIE)
+                    .map(|(_, token)| token.to_owned())
+                    .filter(|token| is_session_token(token));
+            } else if name.eq_ignore_ascii_case("x-gloria-web") {
+                web = true;
             } else if name.eq_ignore_ascii_case("x-forwarded-for") {
                 forwarded_for = Some(value.to_owned());
             } else if name.eq_ignore_ascii_case("content-length") {
@@ -956,6 +1140,8 @@ fn read_request(stream: &TcpStream) -> Result<Request, String> {
         path,
         query,
         init_data,
+        session,
+        web,
         body,
         forwarded_for,
     })
@@ -1001,6 +1187,29 @@ fn send_text(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), Stri
         .map_err(|error| format!("отправка: {error}"))
 }
 
+/// Ответ JSON с cookie — только для входа и выхода.
+fn send_with_cookie(
+    stream: &mut TcpStream,
+    status: u16,
+    body: &str,
+    cookie: &str,
+) -> Result<(), String> {
+    let head = format!(
+        "HTTP/1.1 {status} OK\r\n\
+         Content-Type: application/json; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Set-Cookie: {cookie}\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    stream
+        .write_all(head.as_bytes())
+        .and_then(|()| stream.write_all(body.as_bytes()))
+        .and_then(|()| stream.flush())
+        .map_err(|error| format!("отправка: {error}"))
+}
+
 fn send(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
@@ -1009,6 +1218,8 @@ fn send(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
         404 => "Not Found",
         403 => "Forbidden",
         405 => "Method Not Allowed",
+        410 => "Gone",
+        503 => "Service Unavailable",
         502 => "Bad Gateway",
         _ => "Internal Server Error",
     };
@@ -1076,5 +1287,22 @@ mod tests {
     fn the_helper_actually_parses_the_date() {
         assert!(at("2026-08-31T00:00:00Z") > 0);
         assert_ne!(at("2026-08-31T00:00:00Z"), at("2027-01-01T00:00:00Z"));
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::{is_session_token, random_hex};
+
+    #[test]
+    fn a_fresh_session_token_is_accepted_and_junk_is_not() {
+        let token = random_hex(32).unwrap_or_default();
+        assert!(is_session_token(&token), "{token}");
+        assert_ne!(token, random_hex(32).unwrap_or_default());
+        assert!(!is_session_token("abc"));
+        assert!(!is_session_token(&"z".repeat(64)));
+        assert!(atlas_bot::menu::is_login_code(
+            &random_hex(12).unwrap_or_default()
+        ));
     }
 }

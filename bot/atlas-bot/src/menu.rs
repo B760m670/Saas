@@ -99,6 +99,17 @@ pub enum Action {
     /// «напишите в поддержку» значит вернуть ту самую переписку вручную,
     /// ради ухода от которой всё и заведено.
     SentOther,
+    /// «Подтвердить вход» на сайт. Внутри — код входа, который сайт
+    /// положил в ссылку на бота.
+    ConfirmLogin(String),
+}
+
+/// Годится ли строка в код входа на сайт: сайт выдаёт 24 шестнадцатеричных
+/// знака, и всё остальное — не его код. Проверка нужна дважды — в ссылке
+/// `/start login_…` и в кнопке, — и обе приходят от клиента.
+#[must_use]
+pub fn is_login_code(code: &str) -> bool {
+    code.len() == 24 && code.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Почему нажатие нельзя принять.
@@ -134,6 +145,7 @@ impl Action {
             Self::Paid(minor) => format!("paid:{minor}"),
             Self::Sent(minor) => format!("sent:{minor}"),
             Self::SentOther => "other".to_owned(),
+            Self::ConfirmLogin(code) => format!("login:{code}"),
         }
     }
 
@@ -157,6 +169,14 @@ impl Action {
 
         if let Some(minor) = data.strip_prefix("paid:") {
             return parse_claim(minor).map(Self::Paid);
+        }
+
+        if let Some(code) = data.strip_prefix("login:") {
+            return if is_login_code(code) {
+                Ok(Self::ConfirmLogin(code.to_owned()))
+            } else {
+                Err(Unknown::NoSuchAction)
+            };
         }
 
         if let Some(minor) = data.strip_prefix("sent:") {

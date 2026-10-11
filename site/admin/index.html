@@ -203,7 +203,7 @@ textarea:focus { outline: none; border-color: var(--mid); }
      страницу, и сверяет его со списком владельцев. Без подписи — отказ,
      и страница честно говорит, что открывать её надо из бота. */
   function api(method, path, body) {
-    var headers = { 'X-Init-Data': (tg && tg.initData) || '' };
+    var headers = { 'X-Init-Data': (tg && tg.initData) || '', 'X-Gloria-Web': '1' };
     if (body) headers['Content-Type'] = 'application/json';
     return fetch('/api/admin/' + path, {
       method: method,

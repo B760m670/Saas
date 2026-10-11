@@ -31,6 +31,8 @@ pub enum Effect {
     /// мог отправить не то, что мы выставили. Проверяет её владелец по
     /// выписке, зачисляется она только его командой.
     ClaimPaid { minor: u64 },
+    /// Подтвердить вход на сайт с этим кодом.
+    ConfirmLogin { code: String },
 }
 
 /// Ответ покупателю.
@@ -146,6 +148,20 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
     //
     // Имя тарифа пришло снаружи и здесь не проверяется: этим занимается
     // `buy`, и выдуманное имя получит список нынешних тарифов.
+    // `/start login_…` — вход на сайт. Сам переход ничего не подтверждает:
+    // ссылку мог подсунуть кто угодно со своим кодом, и тогда вошёл бы он, а
+    // не тот, кто по ней перешёл. Поэтому — вопрос и кнопка.
+    if command == "/start" {
+        if let Some(code) = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|arg| arg.strip_prefix("login_"))
+            .filter(|code| crate::menu::is_login_code(code))
+        {
+            return (login_screen(code), Effect::None);
+        }
+    }
+
     if command == "/start" {
         if let Some(plan) = text.split_whitespace().nth(1) {
             if catalog::plan(plan).is_some() || plan == atlas_billing::order::ADBLOCK_REST {
@@ -194,6 +210,13 @@ pub fn on_action(action: &Action, view: &View<'_>) -> (Reply, Effect) {
         Action::ConnectTo(device) => (device_screen(*device, view), Effect::None),
         Action::Help => (help_screen(view), Effect::None),
         Action::Buy(plan) => buy(plan, view),
+        Action::ConfirmLogin(code) => (
+            Reply {
+                text: "Проверяю вход…".to_owned(),
+                keyboard: None,
+            },
+            Effect::ConfirmLogin { code: code.clone() },
+        ),
 
         Action::Paid(minor) => (paid_screen(*minor), Effect::None),
         Action::SentOther => (other_amount_screen(view), Effect::None),
@@ -511,6 +534,26 @@ fn help_screen(view: &View<'_>) -> Reply {
                чаще всего дело в старых настройках."
             .to_owned(),
         keyboard: Some(main_menu(view.app_url)),
+    }
+}
+
+/// Вопрос «войти на сайт?».
+fn login_screen(code: &str) -> Reply {
+    Reply {
+        text: "🔐 <b>Вход на сайт Gloria VPN</b>\n\n\
+               Подтвердите, только если вы <b>сами</b> сейчас входите в личный \
+               кабинет на сайте. Если ссылку прислал кто-то другой — \
+               не нажимайте: он получит доступ к вашему кабинету."
+            .to_owned(),
+        keyboard: Some(Keyboard {
+            rows: vec![
+                vec![Button::new(
+                    "✅ Подтвердить вход",
+                    Action::ConfirmLogin(code.to_owned()),
+                )],
+                vec![Button::new("Отмена", Action::Home)],
+            ],
+        }),
     }
 }
 
@@ -1059,6 +1102,30 @@ mod tests {
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
         assert!(reply.text.contains("2 дня"), "{}", reply.text);
+    }
+
+    /// Ссылка входа спрашивает, а не входит; подтверждает только кнопка.
+    #[test]
+    fn a_login_link_asks_before_confirming() {
+        let code = "0123456789abcdef01234567";
+        let (reply, effect) = on_message(&format!("/start login_{code}"), &active());
+        assert_eq!(effect, Effect::None);
+        assert!(reply.text.contains("Вход на сайт"), "{}", reply.text);
+
+        let (_, effect) = on_action(&Action::ConfirmLogin(code.to_owned()), &active());
+        assert_eq!(
+            effect,
+            Effect::ConfirmLogin {
+                code: code.to_owned()
+            }
+        );
+
+        // Чужой мусор вместо кода — обычное приветствие.
+        let (reply, _) = on_message("/start login_zz", &active());
+        assert!(!reply.text.contains("Вход на сайт"));
+        let action = Action::ConfirmLogin(code.to_owned());
+        assert_eq!(Action::decode(&action.encode()), Ok(action));
+        assert!(Action::decode("login:short").is_err());
     }
 
     /// Опция продаётся — её сроки и добавка стоят в меню; нет — их не видно.
