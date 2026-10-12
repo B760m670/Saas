@@ -829,9 +829,9 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     </div>
 
     <button class="tile fresh" id="setup-btn" data-act="setup">
-      <span class="k">Новое устройство</span>
-      <span class="v">Подключить за минуту</span>
-      <span class="p">iPhone · Android · Windows · Mac</span>
+      <span class="k">Настройка VPN</span>
+      <span class="v">Подключить</span>
+      <span class="p">Пошагово для iPhone, Android, Windows и Mac</span>
       <span class="go" aria-hidden="true">→</span>
     </button>
 
@@ -1504,7 +1504,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     document.getElementById('greet').textContent = name ? part + ', ' + name : part;
     document.getElementById('hello').textContent = !known ? 'Gloria VPN'
       : (s.status === 'expired' ? 'подписка закончилась — продлите, чтобы продолжить'
-        : 'защита включена · Gloria VPN');
+        : 'Gloria VPN');
 
     /* Плитки главной. */
     if (s.tournamentEndsAt) {
