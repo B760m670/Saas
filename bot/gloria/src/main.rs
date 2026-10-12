@@ -539,13 +539,9 @@ fn panel_plan(config: &Config, item: &atlas_store::PanelWork) -> Plan {
     };
     let (traffic, reset) = (0, TrafficReset::Never);
 
-    // С опцией «Без рекламы» — ещё и её серверы. Опция выключена — отрядов
-    // у неё нет, и `plus` ничем не отличается от обычной подписки.
-    let squads = if item.kind == "plus" {
-        config.adblock_plan_squads()
-    } else {
-        config.paid_squads()
-    };
+    // `plus` — подписка с опцией «Без рекламы», которую убрали. Такие люди
+    // получают обычные отряды: серверов опции больше нет.
+    let squads = config.paid_squads();
 
     Plan {
         expires_at: item.expires_at,
@@ -872,8 +868,6 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         subscription_url: subscriber.subscription_url.as_deref(),
         app_url: config.miniapp_url.as_deref(),
         trial_left: trial_left(panel, &subscriber),
-        adblock: config.adblock_enabled(),
-        adblock_until: subscriber.adblock_until,
         now,
     };
 
@@ -1189,8 +1183,7 @@ fn apply(
         }
 
         flow::Effect::OpenOrder { plan } => {
-            let Some(plan) = priced_plan(store, telegram_id, plan, config.adblock_enabled(), now)?
-            else {
+            let Some(plan) = catalog::plan(plan) else {
                 return Ok(Some(
                     "Этот тариф сейчас недоступен. Выберите другой в меню оплаты."
                         .to_owned()
@@ -1670,28 +1663,6 @@ fn claim_text(telegram_id: i64, order: Option<&(String, Money)>, sent: Money) ->
     )
 }
 
-/// Тариф из номера заказа: `u<кто>-<тариф>-<когда>` — середина.
-fn order_plan(order_id: &str) -> Option<&str> {
-    let rest = order_id.strip_prefix('u')?;
-    let (_, rest) = rest.split_once('-')?;
-    let (plan, _) = rest.rsplit_once('-')?;
-    Some(plan)
-}
-
-/// Что добавить к сообщению об оплате, если куплена опция «Без рекламы».
-///
-/// Сервер 🛡 появляется в приложении только после обновления подписки, а
-/// само оно обновляется не сразу. Не скажи об этом — человек заплатит, не
-/// увидит нового сервера и решит, что опция не включилась.
-pub(crate) fn adblock_note(order_id: &str) -> Option<&'static str> {
-    order_plan(order_id)
-        .filter(|plan| atlas_store::is_adblock_plan(plan))
-        .map(|_| {
-            "\n\n🛡 Опция «Без рекламы» включена. Обновите подписку в приложении — \
-             появится сервер 🛡, подключайтесь к нему."
-        })
-}
-
 /// Закрыть счёт полученной суммой и рассказать об этом обеим сторонам.
 ///
 /// `invoiced` — сумма, которую мы назвали, `paid` — та, что пришла. Обычно
@@ -1720,18 +1691,12 @@ fn settle_order(
     // платежа читается как «деньги пропали», и следующим сообщением
     // будет обращение в поддержку.
     if let Settled::Extended { expires_at } = settled {
-        let text = match adblock_note(order_id) {
-            Some(note) => format!(
-                "Оплата получена. Подписка до {}.{note}",
-                day_month_year(expires_at)
-            ),
-            None => format!(
-                "Оплата получена. Подписка продлена до {}.\n\n\
-                 Ничего перенастраивать не нужно — ключ прежний, \
-                 приложение подхватит новый срок само.",
-                day_month_year(expires_at)
-            ),
-        };
+        let text = format!(
+            "Оплата получена. Подписка продлена до {}.\n\n\
+             Ничего перенастраивать не нужно — ключ прежний, \
+             приложение подхватит новый срок само.",
+            day_month_year(expires_at)
+        );
         tell(telegram, buyer, &text);
     }
 
@@ -1811,36 +1776,6 @@ pub fn reissue(panel: &Panel, store: &mut Store, telegram_id: i64) -> Result<Str
     Ok(user.subscription_url)
 }
 
-/// Тариф с ценой — то, на что выставляется счёт. `None` — такого сейчас
-/// нет: имя выдумано или устарело, опция «Без рекламы» не продаётся, или
-/// добавлять её не к чему (подписка не идёт либо опция уже до её конца).
-///
-/// Добавка к идущей подписке считается здесь, по нашей дате, а не берётся
-/// с кнопки: цена зависит от остатка дней, и старая кнопка не должна
-/// выставлять старую цену.
-fn priced_plan(
-    store: &mut Store,
-    telegram_id: i64,
-    plan_id: &str,
-    adblock: bool,
-    now: i64,
-) -> Result<Option<atlas_billing::order::Plan>, String> {
-    if atlas_store::is_adblock_plan(plan_id) && !adblock {
-        return Ok(None);
-    }
-    if plan_id != atlas_billing::order::ADBLOCK_REST {
-        return Ok(catalog::plan(plan_id));
-    }
-    let subscriber = store
-        .ensure_subscriber(telegram_id)
-        .map_err(|error| format!("покупатель: {error}"))?;
-    Ok(catalog::adblock_rest(
-        subscriber.expires_at,
-        subscriber.adblock_until,
-        now,
-    ))
-}
-
 /// Выставить счёт из кабинета и вернуть его описание страницей.
 ///
 /// То же самое, что делает кнопка тарифа в чате, но без ухода в переписку:
@@ -1864,7 +1799,7 @@ pub(crate) fn open_order_for(
             .lock()
             .map_err(|_| "замок базы испорчен".to_owned())?;
 
-        let Some(plan) = priced_plan(&mut store, telegram_id, plan_id, shared.adblock, now)? else {
+        let Some(plan) = catalog::plan(plan_id) else {
             return Err(format!("тарифа {plan_id} сейчас нет"));
         };
 
@@ -2623,32 +2558,9 @@ mod fee_tests {
 }
 
 #[cfg(test)]
-mod adblock_note_tests {
-    use super::{adblock_note, order_plan};
-
-    #[test]
-    fn the_plan_is_read_from_the_order_number() {
-        assert_eq!(order_plan("u42-d30-1760000000"), Some("d30"));
-        assert_eq!(order_plan("u42-d30-ad-1760000000"), Some("d30-ad"));
-        assert_eq!(order_plan("u42-ad-rest-1760000000"), Some("ad-rest"));
-        assert_eq!(order_plan("garbage"), None);
-    }
-
-    /// Купил опцию — узнаёт, что делать дальше; без опции — ни слова о ней.
-    #[test]
-    fn only_an_adblock_purchase_mentions_the_shield_server() {
-        assert!(
-            adblock_note("u42-d30-ad-1760000000").is_some_and(|n| n.contains("Обновите подписку"))
-        );
-        assert!(adblock_note("u42-ad-rest-1760000000").is_some());
-        assert!(adblock_note("u42-d30-1760000000").is_none());
-    }
-}
-
-#[cfg(test)]
 mod plan_tests {
     use super::{panel_plan, Plan, FREE_MARK, FREE_UNTIL};
-    use crate::config::{Config, ADBLOCK_SQUADS, FREE_SQUADS};
+    use crate::config::{Config, FREE_SQUADS};
     use atlas_bot::catalog;
     use atlas_panel::TrafficReset;
     use atlas_store::PanelWork;
@@ -2657,7 +2569,6 @@ mod plan_tests {
     const NOW: i64 = 1_788_861_600;
     const PAID: &str = "b6f5d810-8ef3-4be9-9012-3456789abcde";
     const FREE: &str = "0a0b0c0d-0000-4000-8000-000000000001";
-    const ADBLOCK: &str = "0a0b0c0d-0000-4000-8000-0000000000ad";
 
     fn config() -> Option<Config> {
         config_with(&[])
@@ -2736,44 +2647,11 @@ mod plan_tests {
         assert_eq!(plan.squads, vec![FREE.to_owned()]);
     }
 
-    /// С опцией «Без рекламы» — ещё и её отряд; без опции его нет.
+    /// `plus` — подписка с убранной опцией «Без рекламы»: обычные отряды.
     #[test]
-    fn adblock_adds_its_squad() {
-        let Some(config) = config_with(&[(ADBLOCK_SQUADS, ADBLOCK)]) else {
-            return;
-        };
-        let plus = panel_plan(&config, &work("plus", true));
-        assert_eq!(plus.devices, catalog::PLAN_DEVICES);
-        assert_eq!(
-            plus.squads,
-            vec![PAID.to_owned(), FREE.to_owned(), ADBLOCK.to_owned()]
-        );
-        assert_eq!(panel_plan(&config, &work("personal", true)).squads, both());
-    }
-
-    /// Опция не настроена — `plus` ничем не отличается от подписки.
-    #[test]
-    fn adblock_without_squads_is_a_plain_subscription() {
+    fn a_former_adblock_subscription_is_a_plain_one() {
         let Some(config) = config() else { return };
-        assert!(!config.adblock_enabled());
         assert_eq!(panel_plan(&config, &work("plus", false)).squads, both());
-    }
-
-    /// Отряд опции среди платных отдал бы её всем.
-    #[test]
-    fn an_adblock_squad_cannot_be_a_paid_one() {
-        let vars: HashMap<String, String> = [
-            ("GLORIA_BOT_TOKEN", "123456:AAHkTestToken"),
-            ("GLORIA_PANEL_URL", "https://panel.example.org"),
-            ("GLORIA_PANEL_TOKEN", "panel-token"),
-            ("GLORIA_DATABASE_URL", "postgres://gloria@localhost/gloria"),
-            ("GLORIA_SQUADS", PAID),
-            (ADBLOCK_SQUADS, PAID),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_owned(), v.to_owned()))
-        .collect();
-        assert!(Config::from_map(&vars).is_err());
     }
 }
 

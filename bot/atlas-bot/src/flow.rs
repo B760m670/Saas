@@ -64,10 +64,6 @@ pub struct View<'a> {
     /// будет обещать ещё неделю. Ровно та же ложь, что была с датой,
     /// поправленной в панели руками.
     pub trial_left: Option<u64>,
-    /// Продаётся ли опция «Без рекламы».
-    pub adblock: bool,
-    /// До какого момента у человека опция «Без рекламы».
-    pub adblock_until: Option<i64>,
     /// Текущий момент.
     pub now: i64,
 }
@@ -164,7 +160,7 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
 
     if command == "/start" {
         if let Some(plan) = text.split_whitespace().nth(1) {
-            if catalog::plan(plan).is_some() || plan == atlas_billing::order::ADBLOCK_REST {
+            if catalog::plan(plan).is_some() {
                 return buy(plan, view);
             }
         }
@@ -412,16 +408,9 @@ fn subscription_screen(view: &View<'_>) -> Reply {
 }
 
 fn plans_screen(view: &View<'_>) -> Reply {
-    let option = if view.adblock {
-        "\n\n🛡 <b>Без рекламы</b> — опция к подписке, +50 ₽ к любому сроку: реклама, \
-         трекеры и опасные сайты не открываются в приложениях и браузере. \
-         Работает на серверах со значком 🛡."
-    } else {
-        ""
-    };
     Reply {
         text: format!(
-            "Подписка: {} устройства, трафик без ограничений.{option}\n\n\
+            "Подписка: {} устройства, трафик без ограничений.\n\n\
              Срок складывается с текущим: если подписка ещё действует, \
              оплаченные дни добавятся к оставшимся.",
             catalog::PLAN_DEVICES
@@ -430,48 +419,14 @@ fn plans_screen(view: &View<'_>) -> Reply {
     }
 }
 
-/// Нужна ли человеку добавка «Без рекламы» к идущей подписке: опция
-/// продаётся, подписка идёт, а опция кончается раньше подписки.
-fn adblock_rest_for(view: &View<'_>) -> Option<atlas_billing::order::Plan> {
-    if !view.adblock {
-        return None;
-    }
-    catalog::adblock_rest(view.expires_at, view.adblock_until, view.now)
-}
-
-/// Сроки подписки кнопками. Опция продаётся — ещё и те же сроки с ней, и
-/// добавка к идущей подписке.
-fn plans_keyboard(view: &View<'_>) -> Keyboard {
+/// Сроки подписки кнопками.
+fn plans_keyboard(_view: &View<'_>) -> Keyboard {
     let Some(base) = catalog::monthly_base() else {
         return Keyboard {
             rows: vec![vec![Button::new("Назад", Action::Home)]],
         };
     };
-    let mut keyboard = plans_menu(&catalog::plans(), base);
-    if !view.adblock {
-        return keyboard;
-    }
-    let back = keyboard.rows.pop();
-    let with = catalog::adblock_plans();
-    if let Some(base) = with.first().map(|plan| plan.price) {
-        for plan in &with {
-            keyboard.rows.push(vec![Button::new(
-                format!("🛡 {}", crate::menu::plan_label(plan, base)),
-                Action::Buy(plan.id.clone()),
-            )]);
-        }
-    }
-    if let Some(rest) = adblock_rest_for(view) {
-        keyboard.rows.push(vec![Button::new(
-            format!(
-                "🛡 Добавить к текущей подписке — {}",
-                crate::menu::price_label(rest.price)
-            ),
-            Action::Buy(rest.id),
-        )]);
-    }
-    keyboard.rows.extend(back);
-    keyboard
+    plans_menu(&catalog::plans(), base)
 }
 
 fn connect_screen(view: &View<'_>) -> Reply {
@@ -561,16 +516,9 @@ fn buy(plan_id: &str, view: &View<'_>) -> (Reply, Effect) {
     // Имя тарифа пришло с кнопки, то есть от клиента. Оно уже прошло проверку
     // набора символов при разборе, но существование тарифа — отдельный
     // вопрос: цены меняются, а старая кнопка у человека в переписке остаётся.
-    // Добавка к подписке считается от сегодняшнего остатка, и кнопка
-    // недельной давности тоже получит нынешнюю цену — или список тарифов,
-    // если добавлять уже не к чему.
-    let plan = if plan_id == atlas_billing::order::ADBLOCK_REST {
-        adblock_rest_for(view)
-    } else {
-        catalog::plan(plan_id)
-            .filter(|plan| view.adblock || !atlas_billing::order::is_adblock_plan(&plan.id))
-    };
-    let Some(plan) = plan else {
+    // Так и с опцией «Без рекламы», которую убрали: её кнопки `d30-ad`
+    // остались в старых сообщениях и теперь ведут к списку тарифов.
+    let Some(plan) = catalog::plan(plan_id) else {
         return (
             Reply {
                 text: "Этого тарифа больше нет. Вот те, что есть:".to_owned(),
@@ -611,8 +559,6 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
-            adblock_until: None,
             now: NOW,
         }
     }
@@ -625,8 +571,6 @@ mod tests {
             subscription_url: Some(LINK),
             app_url: None,
             trial_left: None,
-            adblock: false,
-            adblock_until: None,
             now: NOW,
         }
     }
@@ -639,8 +583,6 @@ mod tests {
             subscription_url: Some(LINK),
             app_url: None,
             trial_left: None,
-            adblock: false,
-            adblock_until: None,
             now: NOW,
         }
     }
@@ -1096,8 +1038,6 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
-            adblock_until: None,
             now: NOW,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -1128,40 +1068,16 @@ mod tests {
         assert!(Action::decode("login:short").is_err());
     }
 
-    /// Опция продаётся — её сроки и добавка стоят в меню; нет — их не видно.
+    /// Опцию «Без рекламы» убрали: старая кнопка с ней ничего не покупает.
     #[test]
-    fn adblock_appears_only_when_sold() {
-        let buttons = |view: &View<'_>| -> Vec<String> {
-            super::plans_keyboard(view)
-                .rows
-                .iter()
-                .flatten()
-                .filter_map(|b| match b.action() {
-                    Some(Action::Buy(id)) if id.contains("ad") => Some(id.clone()),
-                    _ => None,
-                })
-                .collect()
-        };
-        let mut view = active();
-        assert!(buttons(&view).is_empty());
-
-        view.adblock = true;
-        let with = buttons(&view);
-        assert_eq!(
-            with.len(),
-            crate::catalog::adblock_plans().len() + 1,
-            "{with:?}"
-        );
-        assert!(with.contains(&"ad-rest".to_owned()));
-
-        // Опция уже до конца подписки — добавлять нечего.
-        view.adblock_until = view.expires_at;
-        assert!(!buttons(&view).contains(&"ad-rest".to_owned()));
-
-        // Не продаётся — и купить по старой кнопке нельзя.
-        view.adblock = false;
-        let (_, effect) = on_action(&Action::Buy("d30-ad".to_owned()), &view);
+    fn an_old_adblock_button_buys_nothing() {
+        let (reply, effect) = on_action(&Action::Buy("d30-ad".to_owned()), &active());
         assert_eq!(effect, Effect::None);
+        assert!(
+            reply.text.contains("Этого тарифа больше нет"),
+            "{}",
+            reply.text
+        );
     }
 
     /// Случай с боевого запуска: `/start` выдал три пробных дня, человек
@@ -1177,8 +1093,6 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
-            adblock_until: None,
             now: granted_at + 10 * 60,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -1197,8 +1111,6 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
-            adblock: false,
-            adblock_until: None,
             now: NOW,
         };
         assert!(view.is_active());
