@@ -147,6 +147,10 @@ textarea:focus { outline: none; border-color: var(--mid); }
         <button data-status="new">Не брали пробу</button>
       </div>
       <label class="check"><input type="checkbox" id="p-never" style="flex:none"> Только ни разу не подключавшиеся</label>
+      <div class="chips" id="p-order">
+        <button class="on" data-order="new">Сначала новые</button>
+        <button data-order="old">Сначала старые</button>
+      </div>
       <input id="p-search" placeholder="Поиск: номер или имя" autocomplete="off">
     </div>
 
@@ -546,6 +550,9 @@ textarea:focus { outline: none; border-color: var(--mid); }
   var people = null;
   var picked = {};
   var statusFilter = '';
+  /* Сервер отдаёт людей в порядке панели: её номер по убыванию, как в
+     списке Remnawave. «Сначала старые» — тот же список наоборот. */
+  var oldFirst = false;
 
   function loadPeople() {
     document.getElementById('p-count').textContent = 'Загружаем…';
@@ -561,12 +568,13 @@ textarea:focus { outline: none; border-color: var(--mid); }
   function shown() {
     var never = document.getElementById('p-never').checked;
     var q = document.getElementById('p-search').value.trim().toLowerCase();
-    return (people || []).filter(function (u) {
+    var list = (people || []).filter(function (u) {
       if (statusFilter && u.status !== statusFilter) return false;
       if (never && u.connected !== false) return false;
       if (q && String(u.id).indexOf(q) < 0 && String(u.name || '').toLowerCase().indexOf(q) < 0) return false;
       return true;
     });
+    return oldFirst ? list.slice().reverse() : list;
   }
 
   function pickedCount() {
@@ -599,7 +607,7 @@ textarea:focus { outline: none; border-color: var(--mid); }
     top.className = 'top';
     var id = document.createElement('span');
     id.className = 'id';
-    id.textContent = u.name ? u.name + ' · ' + u.id : String(u.id);
+    id.textContent = (u.panelId ? '#' + u.panelId + ' · ' : '') + (u.name ? u.name + ' · ' : '') + u.id;
     id.addEventListener('click', function () {
       view('main');
       document.getElementById('find-id').value = String(u.id);
@@ -659,6 +667,13 @@ textarea:focus { outline: none; border-color: var(--mid); }
     b.addEventListener('click', function () {
       document.querySelectorAll('#p-status button').forEach(function (x) { x.classList.toggle('on', x === b); });
       statusFilter = b.getAttribute('data-status');
+      renderPeople();
+    });
+  });
+  document.querySelectorAll('#p-order button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('#p-order button').forEach(function (x) { x.classList.toggle('on', x === b); });
+      oldFirst = b.getAttribute('data-order') === 'old';
       renderPeople();
     });
   });

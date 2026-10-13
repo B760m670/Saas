@@ -1668,6 +1668,15 @@ fn the_user_list_and_messages_to_chosen_people() {
     assert!(by_id(2).is_some_and(|row| row.trial_granted_at.is_some() && !row.has_paid));
     assert!(by_id(3).is_some_and(|row| row.has_paid && row.expires_at.is_some()));
 
+    // Порядок — как в панели: её номер по убыванию, без номера — в конце.
+    let _ = store.link_to_panel(1, 7, "https://panel.example.org/api/sub/a");
+    let _ = store.link_to_panel(2, 9, "https://panel.example.org/api/sub/b");
+    let order: Vec<i64> = store
+        .admin_users()
+        .map(|rows| rows.iter().map(|row| row.telegram_id).collect())
+        .unwrap_or_default();
+    assert_eq!(order, vec![2, 1, 3]);
+
     // Незнакомец 99 из списка выпадает.
     assert_eq!(store.admin_known(&[3, 99, 1]).ok(), Some(vec![1, 3]));
 

@@ -317,6 +317,7 @@ fn user_json(
         connections.map(|seen| seen.get(&row.telegram_id).copied().unwrap_or(Some(false)));
     serde_json::json!({
         "id": row.telegram_id,
+        "panelId": row.panel_id,
         "name": row.name,
         "since": day_month_year(row.created_at),
         "sinceTs": row.created_at,
@@ -404,6 +405,7 @@ mod tests {
         const NOW: i64 = 1_760_000_000;
         let row = |expires_at: Option<i64>, has_paid: bool| UserRow {
             telegram_id: 1,
+            panel_id: None,
             name: None,
             created_at: NOW - 86_400,
             invited_by: None,

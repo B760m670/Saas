@@ -89,6 +89,8 @@ pub struct Card {
 pub struct UserRow {
     /// Номер в Telegram.
     pub telegram_id: i64,
+    /// Номер в панели — тот же, что в её списке. `None` — в панель не заведён.
+    pub panel_id: Option<i64>,
     /// Имя, если человек его показал (турнир, кабинет).
     pub name: Option<String>,
     /// Когда пришёл впервые.
@@ -232,11 +234,13 @@ impl Store {
         }))
     }
 
-    /// Список людей, свежие первыми.
+    /// Список людей в порядке панели: её номер по убыванию, как в списке
+    /// Remnawave, — так строки легко сверять. Кто в панель не заведён (не
+    /// брал пробу), идёт в конце, свежие первыми.
     pub fn admin_users(&mut self) -> Result<Vec<UserRow>, Error> {
         self.client
             .query(
-                "SELECT telegram_id, display_name,
+                "SELECT telegram_id, panel_id, display_name,
                         FLOOR(EXTRACT(EPOCH FROM created_at))::bigint,
                         invited_by,
                         FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
@@ -245,7 +249,7 @@ impl Store {
                                  WHERE orders.telegram_id = users.telegram_id
                                    AND orders.status = 'paid')
                    FROM users
-                  ORDER BY created_at DESC, telegram_id DESC
+                  ORDER BY panel_id DESC NULLS LAST, created_at DESC, telegram_id DESC
                   LIMIT $1",
                 &[&USERS_LIMIT],
             )?
@@ -253,12 +257,13 @@ impl Store {
             .map(|row| {
                 Ok(UserRow {
                     telegram_id: row.try_get(0)?,
-                    name: row.try_get(1)?,
-                    created_at: row.try_get(2)?,
-                    invited_by: row.try_get(3)?,
-                    expires_at: row.try_get(4)?,
-                    trial_granted_at: row.try_get(5)?,
-                    has_paid: row.try_get(6)?,
+                    panel_id: row.try_get(1)?,
+                    name: row.try_get(2)?,
+                    created_at: row.try_get(3)?,
+                    invited_by: row.try_get(4)?,
+                    expires_at: row.try_get(5)?,
+                    trial_granted_at: row.try_get(6)?,
+                    has_paid: row.try_get(7)?,
                 })
             })
             .collect()
