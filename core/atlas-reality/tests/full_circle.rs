@@ -182,7 +182,7 @@ fn a_browser_without_a_marker_is_not_served() {
     server.read_tls(&hello).unwrap();
 
     assert!(server.process().is_err());
-    assert!(server.take_output().is_empty());
+    assert_eq!(server.take_output().len(), 0);
 }
 
 #[test]
@@ -208,7 +208,7 @@ fn a_replayed_hello_is_not_served_either() {
     ))));
     first.read_tls(&hello).unwrap();
     first.process().expect("первое соединение обязано пройти");
-    assert!(!first.take_output().is_empty());
+    assert_ne!(first.take_output().len(), 0);
 
     // Второй раз с теми же байтами — нет.
     let mut second = ServerConnection::new(ServerConfig::new(Box::new(SharedCertificates(
@@ -216,7 +216,7 @@ fn a_replayed_hello_is_not_served_either() {
     ))));
     second.read_tls(&hello).unwrap();
     assert!(second.process().is_err(), "повтор обязан быть отвергнут");
-    assert!(second.take_output().is_empty());
+    assert_eq!(second.take_output().len(), 0);
 }
 
 /// Один источник сертификатов на несколько соединений.

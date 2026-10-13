@@ -1,0 +1,120 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "tag": "RU_ENTRY",
+      "port": 443,
+      "listen": "0.0.0.0",
+      "protocol": "vless",
+      "settings": {
+        "clients": [],
+        "decryption": "none"
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "target": "ИМЯ_ПРИКРЫТИЯ_RU:443",
+          "serverNames": [
+            "ИМЯ_ПРИКРЫТИЯ_RU"
+          ],
+          "privateKey": "ЗАКРЫТЫЙ_КЛЮЧ_RU",
+          "shortIds": [
+            "КОРОТКИЙ_ID_RU"
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "TO_NL",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "АДРЕС_NL_УЗЛА",
+            "port": 443,
+            "users": [
+              {
+                "id": "UUID_СЛУЖЕБНОГО_ПОЛЬЗОВАТЕЛЯ",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "ИМЯ_ПРИКРЫТИЯ_NL",
+          "fingerprint": "chrome",
+          "publicKey": "ОТКРЫТЫЙ_КЛЮЧ_NL",
+          "shortId": "КОРОТКИЙ_ID_NL"
+        }
+      }
+    },
+    {
+      "tag": "DIRECT",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "BLOCK",
+      "protocol": "blackhole"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "BLOCK"
+      },
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "BLOCK"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:category-ru",
+          "domain:ru",
+          "domain:su",
+          "domain:xn--p1ai"
+        ],
+        "outboundTag": "DIRECT"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:ru"
+        ],
+        "outboundTag": "DIRECT"
+      },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "outboundTag": "TO_NL"
+      }
+    ]
+  }
+}
