@@ -156,6 +156,27 @@ impl User {
     }
 }
 
+/// Подключался ли человек хоть раз — по данным панели.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Connection {
+    /// Номер в Telegram.
+    pub telegram_id: i64,
+    /// `Some(true)` — подключался, `Some(false)` — ни разу, `None` — сборка
+    /// панели об этом не сообщает.
+    pub connected: Option<bool>,
+}
+
+/// Страница списка пользователей панели.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionPage {
+    /// Люди на этой странице, у которых панель знает номер Telegram.
+    pub connections: Vec<Connection>,
+    /// Сколько всего людей в панели; `None` — панель не сказала.
+    pub total: Option<u64>,
+    /// Сколько записей пришло на странице, считая и тех, кто без номера.
+    pub received: usize,
+}
+
 /// Клиент панели.
 ///
 /// Как и адаптеры платёжных сервисов, он не ходит в сеть: собирает запрос и
@@ -286,6 +307,72 @@ impl Panel {
             url: format!("{}/api/users/by-username/{username}", self.base),
             headers: self.headers(false),
             body: Vec::new(),
+        })
+    }
+
+    /// Страница списка пользователей: `size` записей начиная с `start`.
+    #[must_use]
+    pub fn list_users(&self, start: u32, size: u32) -> Request {
+        Request {
+            method: Method::Get,
+            url: format!("{}/api/users?start={start}&size={size}", self.base),
+            headers: self.headers(false),
+            body: Vec::new(),
+        }
+    }
+
+    /// Разобрать страницу списка: кто подключался хоть раз.
+    ///
+    /// Сборки панели кладут эти сведения по-разному: старые — прямо в
+    /// пользователя (`firstConnectedAt`, `onlineAt`,
+    /// `lifetimeUsedTrafficBytes`), новые — в `userTraffic`. Смотрим оба места.
+    /// Ни того ни другого — `connected: None`: «не знаем» честнее, чем «ни
+    /// разу».
+    pub fn parse_connections(&self, response: &[u8]) -> Result<ConnectionPage, Error> {
+        let envelope: serde_json::Value = serde_json::from_slice(response)
+            .map_err(|error| Error::Unreadable(format!("это не JSON: {error}")))?;
+        let Some(node) = envelope.get("response") else {
+            return Err(match envelope.get("message").and_then(|m| m.as_str()) {
+                Some(message) => Error::Rejected(message.to_owned()),
+                None => Error::Malformed("в ответе нет списка"),
+            });
+        };
+        let (users, total) = match node {
+            serde_json::Value::Array(items) => (items.as_slice(), None),
+            other => (
+                other
+                    .get("users")
+                    .and_then(serde_json::Value::as_array)
+                    .map(Vec::as_slice)
+                    .ok_or(Error::Malformed("в ответе нет списка пользователей"))?,
+                other.get("total").and_then(serde_json::Value::as_u64),
+            ),
+        };
+
+        let connections = users
+            .iter()
+            .filter_map(|user| {
+                let telegram_id = user
+                    .get("telegramId")
+                    .and_then(serde_json::Value::as_i64)
+                    .or_else(|| {
+                        user.get("username")
+                            .and_then(serde_json::Value::as_str)
+                            .and_then(|name| name.strip_prefix("tg_"))
+                            .and_then(|id| id.parse().ok())
+                    })
+                    .filter(|id| *id > 0)?;
+                Some(Connection {
+                    telegram_id,
+                    connected: connected(user),
+                })
+            })
+            .collect();
+
+        Ok(ConnectionPage {
+            connections,
+            total,
+            received: users.len(),
         })
     }
 
@@ -469,6 +556,32 @@ impl Panel {
     }
 }
 
+/// Подключался ли пользователь панели хоть раз. См. [`Panel::parse_connections`].
+fn connected(user: &serde_json::Value) -> Option<bool> {
+    let places = [Some(user), user.get("userTraffic")];
+    let mut known = false;
+    for place in places.into_iter().flatten() {
+        for key in ["firstConnectedAt", "onlineAt"] {
+            match place.get(key) {
+                Some(serde_json::Value::Null) => known = true,
+                Some(_) => return Some(true),
+                None => {}
+            }
+        }
+        if let Some(bytes) = place.get("lifetimeUsedTrafficBytes") {
+            let bytes = bytes
+                .as_u64()
+                .or_else(|| bytes.as_str().and_then(|text| text.parse().ok()));
+            match bytes {
+                Some(0) => known = true,
+                Some(_) => return Some(true),
+                None => {}
+            }
+        }
+    }
+    known.then_some(false)
+}
+
 /// Отряды в виде тела JSON-массива, без скобок.
 ///
 /// Идентификаторы попадают в тело запроса как есть, поэтому набор символов
@@ -521,6 +634,43 @@ mod tests {
                 "subscriptionUrl":"https://panel.example.org/api/sub/rTLwqLBoohWeKVAR"}}}}"#
         )
         .into_bytes()
+    }
+
+    /// Новая сборка кладёт сведения в `userTraffic`, старая — прямо в
+    /// пользователя; без сведений — «не знаем», а не «ни разу».
+    #[test]
+    fn connections_are_read_from_either_place() {
+        let Some(panel) = panel() else { return };
+        let body = br#"{"response":{"total":4,"users":[
+            {"username":"tg_1","telegramId":1,"userTraffic":{"firstConnectedAt":"2026-10-01T10:00:00.000Z","onlineAt":null}},
+            {"username":"tg_2","telegramId":2,"userTraffic":{"firstConnectedAt":null,"onlineAt":null,"lifetimeUsedTrafficBytes":"0"}},
+            {"username":"tg_3","firstConnectedAt":null,"lifetimeUsedTrafficBytes":5120},
+            {"username":"tg_4","telegramId":null},
+            {"username":"admin"}
+        ]}}"#;
+        let page = panel.parse_connections(body);
+        assert!(page.is_ok(), "{page:?}");
+        let Ok(page) = page else { return };
+        assert_eq!(page.total, Some(4));
+        assert_eq!(page.received, 5);
+        let seen: Vec<(i64, Option<bool>)> = page
+            .connections
+            .iter()
+            .map(|c| (c.telegram_id, c.connected))
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                (1, Some(true)),
+                (2, Some(false)),
+                (3, Some(true)),
+                (4, None)
+            ]
+        );
+        assert!(matches!(
+            panel.parse_connections(br#"{"message":"Unauthorized"}"#),
+            Err(Error::Rejected(_))
+        ));
     }
 
     #[test]

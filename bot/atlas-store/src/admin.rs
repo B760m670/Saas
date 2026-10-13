@@ -84,6 +84,29 @@ pub struct Card {
     pub log: Vec<LogEntry>,
 }
 
+/// Строка списка людей в админке.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserRow {
+    /// Номер в Telegram.
+    pub telegram_id: i64,
+    /// Имя, если человек его показал (турнир, кабинет).
+    pub name: Option<String>,
+    /// Когда пришёл впервые.
+    pub created_at: i64,
+    /// Кто привёл.
+    pub invited_by: Option<i64>,
+    /// До какого момента подписка; `None` — срока не было никогда.
+    pub expires_at: Option<i64>,
+    /// Когда выдана проба.
+    pub trial_granted_at: Option<i64>,
+    /// Была ли хоть одна оплата.
+    pub has_paid: bool,
+}
+
+/// Сколько людей показывает список за раз. Больше владельцу на телефоне
+/// всё равно не пролистать, а запрос остаётся быстрым.
+pub const USERS_LIMIT: i64 = 2000;
+
 /// Чем кончилось ручное продление.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Extended {
@@ -207,6 +230,70 @@ impl Store {
             payments: self.payments_where(Some(telegram_id), 20)?,
             log,
         }))
+    }
+
+    /// Список людей, свежие первыми.
+    pub fn admin_users(&mut self) -> Result<Vec<UserRow>, Error> {
+        self.client
+            .query(
+                "SELECT telegram_id, display_name,
+                        FLOOR(EXTRACT(EPOCH FROM created_at))::bigint,
+                        invited_by,
+                        FLOOR(EXTRACT(EPOCH FROM expires_at))::bigint,
+                        FLOOR(EXTRACT(EPOCH FROM trial_granted_at))::bigint,
+                        EXISTS (SELECT 1 FROM orders
+                                 WHERE orders.telegram_id = users.telegram_id
+                                   AND orders.status = 'paid')
+                   FROM users
+                  ORDER BY created_at DESC, telegram_id DESC
+                  LIMIT $1",
+                &[&USERS_LIMIT],
+            )?
+            .iter()
+            .map(|row| {
+                Ok(UserRow {
+                    telegram_id: row.try_get(0)?,
+                    name: row.try_get(1)?,
+                    created_at: row.try_get(2)?,
+                    invited_by: row.try_get(3)?,
+                    expires_at: row.try_get(4)?,
+                    trial_granted_at: row.try_get(5)?,
+                    has_paid: row.try_get(6)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Кто из названных номеров действительно заходил в бота.
+    ///
+    /// Сообщение из админки уходит только им: номер, присланный страницей,
+    /// мог быть и чужим — писать незнакомым людям от имени бота нельзя.
+    pub fn admin_known(&mut self, ids: &[i64]) -> Result<Vec<i64>, Error> {
+        self.client
+            .query(
+                "SELECT telegram_id FROM users WHERE telegram_id = ANY($1)
+                  ORDER BY telegram_id",
+                &[&ids],
+            )?
+            .iter()
+            .map(|row| Ok(row.try_get(0)?))
+            .collect()
+    }
+
+    /// Записать рассылку выбранным людям в журнал.
+    pub fn admin_log_message(
+        &mut self,
+        admin_id: i64,
+        body: &str,
+        recipients: usize,
+    ) -> Result<(), Error> {
+        let recipients = i32::try_from(recipients)
+            .map_err(|_| Error::Inconsistent("слишком много получателей"))?;
+        self.client.execute(
+            "INSERT INTO admin_messages (admin_id, body, recipients) VALUES ($1, $2, $3)",
+            &[&admin_id, &body, &recipients],
+        )?;
+        Ok(())
     }
 
     /// Продлить подписку руками.

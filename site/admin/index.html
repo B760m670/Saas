@@ -93,6 +93,35 @@ textarea {
 textarea:focus { outline: none; border-color: var(--mid); }
 .stack { display: flex; flex-direction: column; gap: 8px; }
 .check { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+
+/* ---- вкладки ---- */
+.tabs { display: flex; gap: 6px; margin: 0 0 6px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 4px; }
+.tabs button { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 9px 10px; }
+.tabs button.on { background: var(--card-2); color: var(--text); }
+
+/* ---- люди ---- */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips button { padding: 7px 11px; border-radius: 999px; font-size: 13px; font-weight: 600; }
+.chips button.on { background: var(--mid); color: #1b0d03; border-color: var(--mid); }
+.pill.paid { background: rgba(79, 191, 139, 0.16); color: var(--ok); }
+.pill.trial_over { background: rgba(229, 84, 75, 0.14); color: var(--bad); }
+.pill.lapsed, .pill.new { background: var(--card-2); color: var(--muted); }
+.people { padding: 4px 0; }
+.person { display: flex; gap: 12px; align-items: flex-start; padding: 11px 14px; border-top: 1px solid var(--line); }
+.person:first-child { border-top: 0; }
+.person input[type=checkbox] { flex: none; width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--mid); }
+.person .who { flex: 1; min-width: 0; }
+.person .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.person .id { font-weight: 650; font-variant-numeric: tabular-nums; cursor: pointer; text-decoration: underline dotted var(--line-2); text-underline-offset: 3px; }
+.person .meta { color: var(--muted); font-size: 13px; margin-top: 3px; }
+.person .warn { color: var(--bad); }
+.bar { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 10px 0 8px; color: var(--muted); font-size: 13px; }
+.bar button { padding: 7px 11px; font-size: 13px; }
+.composer { display: block; position: sticky; bottom: calc(8px + env(safe-area-inset-bottom)); margin-top: 12px;
+            background: #120e0c; border: 1px solid var(--line-2); border-radius: 16px; padding: 12px;
+            box-shadow: 0 -10px 30px rgba(0, 0, 0, 0.5); }
+.composer textarea { min-height: 64px; }
+.composer .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -101,6 +130,44 @@ textarea:focus { outline: none; border-color: var(--mid); }
 
 <main id="app" hidden>
   <h1>⚙️ Админка</h1>
+
+  <nav class="tabs">
+    <button class="on" data-view="main">Обзор</button>
+    <button data-view="people">Пользователи</button>
+  </nav>
+
+  <section id="v-people" hidden>
+    <div class="stack" style="margin-top:12px">
+      <div class="chips" id="p-status">
+        <button class="on" data-status="">Все</button>
+        <button data-status="trial">Проба идёт</button>
+        <button data-status="trial_over">Проба истекла</button>
+        <button data-status="paid">Платят</button>
+        <button data-status="lapsed">Подписка кончилась</button>
+        <button data-status="new">Не брали пробу</button>
+      </div>
+      <label class="check"><input type="checkbox" id="p-never" style="flex:none"> Только ни разу не подключавшиеся</label>
+      <input id="p-search" placeholder="Поиск: номер или имя" autocomplete="off">
+    </div>
+
+    <div class="bar">
+      <span id="p-count">—</span>
+      <span style="display:flex; gap:6px">
+        <button id="p-all">Выбрать показанных</button>
+        <button id="p-none">Снять</button>
+      </span>
+    </div>
+    <div class="card people" id="p-list" style="padding:0"></div>
+    <div class="empty" id="p-panel" style="font-size:13px; margin-top:6px" hidden>Панель не ответила — отметки «не подключался» сейчас нет.</div>
+
+    <form class="composer" id="p-form">
+      <textarea id="p-text" maxlength="3500" placeholder="Сообщение выбранным — придёт от бота"></textarea>
+      <button class="main" type="submit" id="p-send" style="width:100%; margin-top:8px" disabled>Выберите получателей</button>
+      <div class="hint">Уходит как обычный текст, без разметки. Каждая отправка записывается в журнал.</div>
+    </form>
+  </section>
+
+  <div id="v-main">
 
   <h2>Покупатели</h2>
   <div class="grid">
@@ -182,6 +249,7 @@ textarea:focus { outline: none; border-color: var(--mid); }
     <h2>Что делали в админке</h2>
     <div class="card rows" id="user-log"></div>
   </div>
+  </div><!-- /v-main -->
 </main>
 
 <div id="toast"></div>
@@ -452,6 +520,171 @@ textarea:focus { outline: none; border-color: var(--mid); }
       api('POST', 'tournament/cancel').then(function () {
         toast('Турнир выключен');
         loadTournament();
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+  });
+
+  /* ---- Вкладки ---- */
+  function view(name) {
+    document.querySelectorAll('.tabs button').forEach(function (b) {
+      b.classList.toggle('on', b.getAttribute('data-view') === name);
+    });
+    document.getElementById('v-main').hidden = name !== 'main';
+    document.getElementById('v-people').hidden = name !== 'people';
+    if (name === 'people' && !people) loadPeople();
+    window.scrollTo(0, 0);
+  }
+  document.querySelectorAll('.tabs button').forEach(function (b) {
+    b.addEventListener('click', function () { view(b.getAttribute('data-view')); });
+  });
+
+  /* ---- Пользователи ---- */
+  var PEOPLE_STATUS = {
+    trial: 'проба идёт', trial_over: 'проба истекла', paid: 'платит',
+    lapsed: 'подписка кончилась', new: 'не брал пробу'
+  };
+  var people = null;
+  var picked = {};
+  var statusFilter = '';
+
+  function loadPeople() {
+    document.getElementById('p-count').textContent = 'Загружаем…';
+    return api('GET', 'users').then(function (r) {
+      people = r.users || [];
+      document.getElementById('p-panel').hidden = !!r.panel;
+      renderPeople();
+    }).catch(function (e) {
+      document.getElementById('p-count').textContent = 'Не загрузилось: ' + e.message;
+    });
+  }
+
+  function shown() {
+    var never = document.getElementById('p-never').checked;
+    var q = document.getElementById('p-search').value.trim().toLowerCase();
+    return (people || []).filter(function (u) {
+      if (statusFilter && u.status !== statusFilter) return false;
+      if (never && u.connected !== false) return false;
+      if (q && String(u.id).indexOf(q) < 0 && String(u.name || '').toLowerCase().indexOf(q) < 0) return false;
+      return true;
+    });
+  }
+
+  function pickedCount() {
+    return Object.keys(picked).length;
+  }
+
+  function updateSend() {
+    var n = pickedCount();
+    var btn = document.getElementById('p-send');
+    btn.disabled = n === 0;
+    btn.textContent = n ? 'Отправить выбранным: ' + n : 'Выберите получателей';
+  }
+
+  function personRow(u) {
+    var line = document.createElement('div');
+    line.className = 'person';
+
+    var box = document.createElement('input');
+    box.type = 'checkbox';
+    box.checked = !!picked[u.id];
+    box.addEventListener('change', function () {
+      if (box.checked) picked[u.id] = true; else delete picked[u.id];
+      updateSend();
+      countLine();
+    });
+
+    var who = document.createElement('div');
+    who.className = 'who';
+    var top = document.createElement('div');
+    top.className = 'top';
+    var id = document.createElement('span');
+    id.className = 'id';
+    id.textContent = u.name ? u.name + ' · ' + u.id : String(u.id);
+    id.addEventListener('click', function () {
+      view('main');
+      document.getElementById('find-id').value = String(u.id);
+      loadUser(u.id).then(function () {
+        document.getElementById('user').scrollIntoView({ behavior: 'smooth' });
+      }).catch(function (e) { toast('Не вышло: ' + e.message); });
+    });
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + u.status;
+    pill.textContent = PEOPLE_STATUS[u.status] || u.status;
+    top.appendChild(id);
+    top.appendChild(pill);
+
+    var meta = document.createElement('div');
+    meta.className = 'meta';
+    var parts = ['с ' + u.since];
+    if (u.until) parts.push((u.status === 'trial' || u.status === 'paid' ? 'до ' : 'кончилась ') + u.until);
+    if (u.invitedBy) parts.push('пригласил ' + u.invitedBy);
+    meta.textContent = parts.join(' · ');
+    if (u.connected === false) {
+      var warn = document.createElement('span');
+      warn.className = 'warn';
+      warn.textContent = ' · ни разу не подключался';
+      meta.appendChild(warn);
+    }
+
+    who.appendChild(top);
+    who.appendChild(meta);
+    line.appendChild(box);
+    line.appendChild(who);
+    return line;
+  }
+
+  function countLine() {
+    var list = shown();
+    document.getElementById('p-count').textContent =
+      'Показано: ' + list.length + ' · выбрано: ' + pickedCount();
+  }
+
+  function renderPeople() {
+    var list = shown();
+    var box = document.getElementById('p-list');
+    box.textContent = '';
+    if (!list.length) {
+      var empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.style.padding = '14px 16px';
+      empty.textContent = 'Никого под этот фильтр';
+      box.appendChild(empty);
+    }
+    list.forEach(function (u) { box.appendChild(personRow(u)); });
+    countLine();
+    updateSend();
+  }
+
+  document.querySelectorAll('#p-status button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('#p-status button').forEach(function (x) { x.classList.toggle('on', x === b); });
+      statusFilter = b.getAttribute('data-status');
+      renderPeople();
+    });
+  });
+  document.getElementById('p-never').addEventListener('change', renderPeople);
+  document.getElementById('p-search').addEventListener('input', renderPeople);
+  document.getElementById('p-all').addEventListener('click', function () {
+    shown().forEach(function (u) { picked[u.id] = true; });
+    renderPeople();
+  });
+  document.getElementById('p-none').addEventListener('click', function () {
+    picked = {};
+    renderPeople();
+  });
+
+  document.getElementById('p-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var text = document.getElementById('p-text').value.trim();
+    var ids = Object.keys(picked).map(Number);
+    if (!ids.length) return toast('Выберите получателей');
+    if (!text) return toast('Напишите сообщение');
+    confirmThen('Отправить сообщение ' + ids.length + ' ' + (ids.length === 1 ? 'человеку' : 'людям') + '?', function () {
+      api('POST', 'message', { ids: ids, text: text }).then(function (r) {
+        toast('Отправляется: ' + r.sentTo);
+        document.getElementById('p-text').value = '';
+        picked = {};
+        renderPeople();
       }).catch(function (e) { toast('Не вышло: ' + e.message); });
     });
   });

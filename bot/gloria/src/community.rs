@@ -182,15 +182,15 @@ fn send(telegram: &Telegram, chat: i64, text: &str) {
     }
 }
 
-/// Разослать новость в фоне. Telegram ограничивает рассылку примерно 30
+/// Разослать сообщение в фоне. Telegram ограничивает рассылку примерно 30
 /// сообщениями в секунду; держимся с запасом.
-fn broadcast(telegram: Telegram, recipients: Vec<i64>, text: String) {
+pub(crate) fn broadcast(telegram: Telegram, recipients: Vec<i64>, text: String) {
     std::thread::spawn(move || {
         for chat in recipients {
             send(&telegram, chat, &text);
             std::thread::sleep(std::time::Duration::from_millis(60));
         }
-        println!("Рассылка новости закончена");
+        println!("Рассылка закончена");
     });
 }
 

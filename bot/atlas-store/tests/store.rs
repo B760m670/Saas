@@ -96,6 +96,8 @@ fn store() -> Option<(Store, std::sync::MutexGuard<'static, ()>)> {
         include_str!("../../../db/migrations/0016_adblock.sql"),
         "\n",
         include_str!("../../../db/migrations/0017_web_login.sql"),
+        "\n",
+        include_str!("../../../db/migrations/0018_admin_messages.sql"),
     ));
     assert!(
         prepared.is_ok(),
@@ -1641,6 +1643,39 @@ fn the_summary_counts_people_and_money() {
     assert_eq!(summary.payments_month, 1);
     assert_eq!(summary.recent.len(), 1);
     assert_eq!(summary.recent.first().map(|p| p.telegram_id), Some(Some(1)));
+}
+
+/// Список людей: свежие первыми, с оплатой и сроком; сообщение — только
+/// знакомым, и каждая рассылка записана.
+#[test]
+fn the_user_list_and_messages_to_chosen_people() {
+    let Some((mut store, _lock)) = store() else {
+        return;
+    };
+    for id in [1, 2, 3] {
+        subscriber(&mut store, id);
+    }
+    let _ = store.grant_trial(2, 3, NOW);
+    let _ = store.open_order("ord-1", 3, "d30", 30, rub(19_900), NOW);
+    let _ = store.settle("ord-1", "freekassa", "fk-1", rub(19_900), "{}", NOW);
+
+    let users = store.admin_users();
+    assert!(users.is_ok(), "{users:?}");
+    let Ok(users) = users else { return };
+    assert_eq!(users.len(), 3);
+    let by_id = |id: i64| users.iter().find(|row| row.telegram_id == id);
+    assert!(by_id(1).is_some_and(|row| row.expires_at.is_none() && !row.has_paid));
+    assert!(by_id(2).is_some_and(|row| row.trial_granted_at.is_some() && !row.has_paid));
+    assert!(by_id(3).is_some_and(|row| row.has_paid && row.expires_at.is_some()));
+
+    // Незнакомец 99 из списка выпадает.
+    assert_eq!(store.admin_known(&[3, 99, 1]).ok(), Some(vec![1, 3]));
+
+    assert!(store.admin_log_message(555, "Привет", 2).is_ok());
+    assert!(
+        store.admin_log_message(555, "", 2).is_err(),
+        "пустое сообщение записано"
+    );
 }
 
 /// Карточку незнакомца админка не заводит: она смотрит, а не создаёт.
