@@ -90,7 +90,7 @@ pub struct Config {
     pub miniapp_url: Option<String>,
     /// Картинка к ответу на `/start`, адресом в сети.
     ///
-    /// По умолчанию — `brand/chat-banner.png` рядом с кабинетом: выкладка
+    /// По умолчанию — `brand/start.png` рядом с кабинетом: выкладка
     /// кладёт её туда сама. `off` выключает картинку, и ответ уходит
     /// обычным текстом, как раньше.
     pub start_photo: Option<String>,
@@ -550,7 +550,7 @@ fn beside_cabinet(miniapp_url: &str) -> Option<String> {
     if host.is_empty() {
         return None;
     }
-    Some(format!("https://{host}/brand/chat-banner.png"))
+    Some(format!("https://{host}/brand/start.png"))
 }
 
 fn optional(vars: &HashMap<String, String>, name: &str) -> Option<String> {
@@ -620,7 +620,7 @@ mod tests {
                 .ok()
                 .and_then(|c| c.start_photo)
                 .as_deref(),
-            Some("https://panel.example.org/brand/chat-banner.png")
+            Some("https://panel.example.org/brand/start.png")
         );
 
         vars.insert(START_PHOTO.to_owned(), "off".to_owned());

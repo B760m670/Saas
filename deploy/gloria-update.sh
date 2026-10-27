@@ -170,8 +170,10 @@ publish_legal() {
 
 # Картинка к ответу бота на /start. Telegram забирает её по адресу, поэтому
 # она лежит рядом с кабинетом; не окажется на месте — бот ответит текстом.
+# Сменить картинку — значит сменить и имя файла: Telegram запоминает
+# картинку по адресу и по старому адресу ещё долго показывает старую.
 install -d -m 755 "$SITE/brand"
-install -m 644 site/brand/chat-banner.png "$SITE/brand/chat-banner.png"
+install -m 644 site/brand/start.png "$SITE/brand/start.png"
 
 install -d -m 755 "$SITE/legal"
 for f in site/legal/*.html; do
