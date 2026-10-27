@@ -881,17 +881,17 @@ mod tests {
     #[test]
     fn a_real_answer_without_a_user_uuid_is_read() {
         let Some(panel) = panel() else { return };
-        let real = br#"{"response":{"id":6,"shortUuid":"Rqvr67SqyYA_6Mj_",
+        let real = br#"{"response":{"id":6,"shortUuid":"AAAAaaaaBBBBbbbb",
             "username":"tg_999999998","status":"ACTIVE","trafficLimitBytes":0,
             "trafficLimitStrategy":"NO_RESET","expireAt":"2026-09-30T00:00:00.000Z",
             "telegramId":null,"email":null,"description":null,"tag":null,
             "hwidDeviceLimit":null,"externalSquadUuid":null,
-            "trojanPassword":"c594D7ccLx_8ycnzdc1NtTjLm0dmvtWs",
-            "vlessUuid":"7ac95f9f-4428-4fcd-8da3-4a5098b3ee38",
-            "ssPassword":"ZgRHXURXQyvCWVW_eD3xm0AzcsS-KJn0","lastTriggeredThreshold":0,
+            "trojanPassword":"test-trojan-password-not-real-00",
+            "vlessUuid":"00000000-0000-4000-8000-000000000006",
+            "ssPassword":"test-ss-password-not-real-000000","lastTriggeredThreshold":0,
             "subRevokedAt":null,"lastTrafficResetAt":null,
             "createdAt":"2026-08-28T09:08:07.210Z","updatedAt":"2026-08-28T09:08:07.210Z",
-            "subscriptionUrl":"https://panel.example.org/api/sub/Rqvr67SqyYA_6Mj_",
+            "subscriptionUrl":"https://panel.example.org/api/sub/AAAAaaaaBBBBbbbb",
             "activeInternalSquads":[],"userTraffic":{"usedTrafficBytes":0}}}"#;
 
         let parsed = panel.parse_user(real);
@@ -899,7 +899,7 @@ mod tests {
         let Ok(user) = parsed else { return };
 
         assert_eq!(user.id, 6);
-        assert_eq!(user.short_uuid, "Rqvr67SqyYA_6Mj_");
+        assert_eq!(user.short_uuid, "AAAAaaaaBBBBbbbb");
         // Ключ действия — номер, потому что UUID пользователя панель не дала.
         // Подставлять сюда `vlessUuid` нельзя: это ключ протокола, а не
         // пользователя, и запрос ушёл бы в никуда.
