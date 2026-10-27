@@ -64,6 +64,8 @@ pub struct View<'a> {
     /// будет обещать ещё неделю. Ровно та же ложь, что была с датой,
     /// поправленной в панели руками.
     pub trial_left: Option<u64>,
+    /// Имя из профиля Telegram, как есть, — для приветствия.
+    pub name: Option<&'a str>,
     /// Текущий момент.
     pub now: i64,
 }
@@ -167,18 +169,16 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
     }
 
     match command {
-        "/start" if !view.trial_used => (
-            Reply {
-                text: format!(
-                    "{} дня безлимитного доступа уже включены — платить пока не нужно.\n\n\
-                     Нажмите «Подключить», и я покажу, что делать дальше.",
-                    catalog::TRIAL_DAYS
-                ),
-                keyboard: Some(main_menu(view.app_url)),
+        // Новичку проба выдаётся тем же нажатием, приветствие одно на всех.
+        "/start" => (
+            greeting(view),
+            if view.trial_used {
+                Effect::None
+            } else {
+                Effect::GrantTrial
             },
-            Effect::GrantTrial,
         ),
-        "/start" | "/menu" => (subscription_screen(view), Effect::None),
+        "/menu" => (subscription_screen(view), Effect::None),
 
         // Эти двое объявлены в подсказке Telegram (см. `announce` в
         // `gloria`), поэтому обязаны делать ровно то, что там написано.
@@ -194,6 +194,36 @@ pub fn on_message(text: &str, view: &View<'_>) -> (Reply, Effect) {
             Effect::None,
         ),
     }
+}
+
+/// Приветствие на `/start`, с именем из профиля Telegram.
+///
+/// Имя приходит от человека и уходит в HTML, поэтому экранируется: `<` в
+/// имени иначе сломал бы разметку, и Telegram не принял бы сообщение вовсе.
+fn greeting(view: &View<'_>) -> Reply {
+    let name = view
+        .name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map_or_else(String::new, |name| format!(", {}", escape_html(name)));
+
+    Reply {
+        text: format!(
+            "Приветствуем тебя{name}!\n\n\
+             Gloria VPN — это VPN-сервис с быстрыми серверами, который работает у 100% \
+             пользователей в России.\n\n\
+             Настройка происходит в нашем личном кабинете — откройте его кнопкой ниже\n\n\
+             Подключение займет 2 минуты"
+        ),
+        keyboard: Some(main_menu(view.app_url)),
+    }
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Ответ на нажатие кнопки.
@@ -570,6 +600,7 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
+            name: None,
             now: NOW,
         }
     }
@@ -582,6 +613,7 @@ mod tests {
             subscription_url: Some(LINK),
             app_url: None,
             trial_left: None,
+            name: None,
             now: NOW,
         }
     }
@@ -594,6 +626,7 @@ mod tests {
             subscription_url: Some(LINK),
             app_url: None,
             trial_left: None,
+            name: None,
             now: NOW,
         }
     }
@@ -605,8 +638,38 @@ mod tests {
     fn the_first_start_turns_the_trial_on_without_asking() {
         let (reply, effect) = on_message("/start", &newcomer());
         assert_eq!(effect, Effect::GrantTrial);
-        // Проба называется днями и безлимитом: предела по трафику у неё нет.
-        assert!(reply.text.contains("2 дня безлимитного"), "{}", reply.text);
+        assert!(
+            reply.text.starts_with("Приветствуем тебя!"),
+            "{}",
+            reply.text
+        );
+    }
+
+    /// Имя приходит от человека и уходит в HTML: разметка в нём не должна
+    /// ни сработать, ни сломать сообщение.
+    #[test]
+    fn the_greeting_names_the_person_safely() {
+        let view = View {
+            name: Some("Аня <b>&"),
+            ..newcomer()
+        };
+        let (reply, _) = on_message("/start", &view);
+        assert!(
+            reply
+                .text
+                .starts_with("Приветствуем тебя, Аня &lt;b&gt;&amp;!"),
+            "{}",
+            reply.text
+        );
+
+        let blank = View {
+            name: Some("  "),
+            ..newcomer()
+        };
+        assert!(on_message("/start", &blank)
+            .0
+            .text
+            .starts_with("Приветствуем тебя!"));
     }
 
     #[test]
@@ -1049,6 +1112,7 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
+            name: None,
             now: NOW,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -1104,6 +1168,7 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
+            name: None,
             now: granted_at + 10 * 60,
         };
         let (reply, _) = on_action(&Action::Subscription, &view);
@@ -1122,6 +1187,7 @@ mod tests {
             subscription_url: None,
             app_url: None,
             trial_left: None,
+            name: None,
             now: NOW,
         };
         assert!(view.is_active());

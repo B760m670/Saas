@@ -63,6 +63,9 @@ pub enum Incoming {
     Message {
         chat: i64,
         from: i64,
+        /// Имя из профиля Telegram — для приветствия. Есть не всегда:
+        /// у пересланных из каналов и служебных сообщений его нет.
+        name: Option<String>,
         text: String,
         /// Номер сообщения, на которое это ответ. `None` — обычное
         /// сообщение.
@@ -455,6 +458,8 @@ impl Telegram {
         #[derive(Deserialize)]
         struct From {
             id: i64,
+            #[serde(default)]
+            first_name: Option<String>,
         }
 
         let envelope: Envelope = serde_json::from_slice(body)
@@ -490,6 +495,7 @@ impl Telegram {
                     (Some(text), Some(from)) => Some(Incoming::Message {
                         chat: message.chat.id,
                         from: from.id,
+                        name: from.first_name,
                         text,
                         reply_to,
                     }),
@@ -686,6 +692,7 @@ mod tests {
                     incoming: Incoming::Message {
                         chat: 1,
                         from: 1,
+                        name: None,
                         text: "x".to_owned(),
                         reply_to: None,
                     },
@@ -737,6 +744,7 @@ mod tests {
                 incoming: Incoming::Message {
                     chat: 42,
                     from: 42,
+                    name: None,
                     text: "/start".to_owned(),
                     reply_to: None
                 }

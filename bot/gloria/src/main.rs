@@ -868,6 +868,10 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         subscription_url: subscriber.subscription_url.as_deref(),
         app_url: config.miniapp_url.as_deref(),
         trial_left: trial_left(panel, &subscriber),
+        name: match incoming {
+            Incoming::Message { name, .. } => name.as_deref(),
+            Incoming::Button { .. } => None,
+        },
         now,
     };
 
