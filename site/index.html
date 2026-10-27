@@ -452,6 +452,11 @@ a.btn.off { opacity: 0.45; }
 .row .body { flex: 1; min-width: 0; }
 .row .title { display: block; font-size: 15px; font-weight: 600; }
 .row .hint { display: block; font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+/* Подсказка про регион Apple ID: INCY и Happ убрали из российского App
+   Store. На Android она не нужна — там их ставят из Google Play. */
+.region-note { margin-top: 10px; }
+.region-note b { color: var(--text); font-weight: 600; }
+html.android .region-note { display: none; }
 .row .chev { flex: none; color: var(--muted); }
 
 /* Переключатель */
@@ -926,6 +931,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
         <span class="body"><span class="title">INCY</span><span class="hint">Если уже установлен или OneXray не подошёл</span></span>
       </div>
+<p class="note region-note">На iPhone из России: в российском App Store его нет. Смените регион Apple ID на другую страну — <b>Настройки</b> → ваше имя → <b>Контент и покупки</b> → <b>Просмотреть</b> → <b>Страна или регион</b>. Подписки Apple при этом нужно отменить заранее.</p>
       <button class="btn" data-act="install-app" data-app="incy" style="margin-top:12px">Установить приложение</button>
       <button class="btn ghost" data-act="step" data-to="add" data-app="incy">У меня уже есть приложение</button>
     </div>
@@ -935,6 +941,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
         <span class="body"><span class="title">Happ</span><span class="hint">Запасной вариант</span></span>
       </div>
+<p class="note region-note">На iPhone из России: в российском App Store его нет. Смените регион Apple ID на другую страну — <b>Настройки</b> → ваше имя → <b>Контент и покупки</b> → <b>Просмотреть</b> → <b>Страна или регион</b>. Подписки Apple при этом нужно отменить заранее.</p>
       <button class="btn" data-act="install-app" data-app="happ" style="margin-top:12px">Установить приложение</button>
       <button class="btn ghost" data-act="step" data-to="add" data-app="happ">У меня уже есть приложение</button>
     </div>
@@ -1760,6 +1767,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      ведём в поиск Google Play, а не в App Store, где его не поставить. */
   var ANDROID = /android/i.test(navigator.userAgent) ||
     !!(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.platform === 'android');
+  if (ANDROID) document.documentElement.classList.add('android');
   var APPS = {
     happ: { site: 'https://happ.su' },
     onexray: { site: ANDROID

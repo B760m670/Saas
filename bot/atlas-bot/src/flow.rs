@@ -509,12 +509,22 @@ fn device_screen(device: Device, view: &View<'_>) -> Reply {
         None => "\n\n3. Ссылка появится здесь после оплаты или пробного периода.".to_owned(),
     };
 
+    // INCY и Happ убрали из российского App Store: на iPhone их ставят,
+    // сменив регион Apple ID. Остальным устройствам эта строка не нужна.
+    let region = match device {
+        Device::Iphone => {
+            " На iPhone из России их нет в App Store — понадобится сменить \
+             регион Apple ID на другую страну."
+        }
+        _ => "",
+    };
+
     Reply {
         text: format!(
             "1. Установите OneXray (рекомендуем) — он есть в {store}.\n\n\
              2. Откройте приложение: Серверы → Добавить → Подписка.{link}\n\n\
              Дальше приложение само заберёт ключи и будет обновлять их при смене сервера.\n\n\
-             Если OneXray не подошёл, то же самое умеют INCY и Happ (happ.su).",
+             Если OneXray не подошёл, то же самое умеют INCY и Happ (happ.su).{region}",
         ),
         keyboard: Some(connect_menu()),
     }
