@@ -477,6 +477,11 @@ a.btn.off { opacity: 0.45; }
 }
 .copy .ico { flex: none; color: var(--mid); }
 
+/* Пошаговая инструкция для клиента, которого нельзя открыть ссылкой */
+.howto { margin: 16px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; line-height: 1.55; }
+.howto li { margin: 0 0 8px; padding-left: 2px; }
+.howto b { color: var(--text); font-weight: 600; }
+
 /* Числа реферальной статистики */
 .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .stat { text-align: center; padding: 16px 8px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
@@ -901,7 +906,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 
   <div class="step" data-step="app">
     <h1>Какое приложение?</h1>
-    <p class="sub">Достаточно одного — ставить оба не нужно. Рекомендуем INCY</p>
+    <p class="sub">Достаточно одного приложения. Рекомендуем INCY</p>
 
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
@@ -920,6 +925,39 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
       <button class="btn" data-act="install-app" data-app="happ" style="margin-top:12px">Установить приложение</button>
       <button class="btn ghost" data-act="step" data-to="add" data-app="happ">У меня уже есть приложение</button>
     </div>
+
+    <!-- OneXray остался в российском App Store, когда оттуда убрали INCY и
+         Happ. Подписку Remnawave он берёт целиком, вместе с нашими правилами
+         маршрутизации. Схемы для добавления по ссылке у него нет, поэтому
+         ведёт он не на «Ваш ключ», а на свой шаг с копированием и
+         инструкцией. -->
+    <div class="card">
+      <div class="row" style="background:transparent;padding:0;border:0">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8M16 8l-8 8"/></svg>
+        <span class="body"><span class="title">OneXray</span><span class="hint">Есть в российском App Store — если INCY и Happ там не найти</span></span>
+      </div>
+      <button class="btn" data-act="install-app" data-app="onexray" style="margin-top:12px">Установить приложение</button>
+      <button class="btn ghost" data-act="step" data-to="onexray">У меня уже есть приложение</button>
+    </div>
+  </div>
+
+  <div class="step" data-step="onexray">
+    <h1>Ключ для OneXray</h1>
+    <p class="sub">Скопируйте ключ и добавьте его в приложении</p>
+
+    <div class="copy" data-act="copy-sub">
+      <code data-sub>—</code>
+      <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+    </div>
+
+    <ol class="howto">
+      <li>Нажмите на ключ выше — он скопируется.</li>
+      <li>В OneXray откройте <b>Серверы</b> → <b>Добавить</b> → <b>Подписка</b> и вставьте ключ.</li>
+      <li>Панель — <b>Remnawave</b>, режим — <b>полная конфигурация провайдера</b>. Так российские сайты и банки будут работать без VPN, как и должны.</li>
+      <li>Выберите сервер и нажмите «Подключить».</li>
+    </ol>
+
+    <button class="btn primary" data-act="home" style="margin-top:18px">Готово</button>
   </div>
 
   <div class="step" data-step="add">
@@ -947,6 +985,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     <h2>Где взять приложение</h2>
     <button class="btn primary" data-act="install-app" data-app="incy">INCY — рекомендуем</button>
     <button class="btn" data-act="install-app" data-app="happ">Happ</button>
+    <button class="btn" data-act="install-app" data-app="onexray">OneXray — есть в российском App Store</button>
   </div>
 </section>
 
@@ -1736,6 +1775,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     !!(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.platform === 'android');
   var APPS = {
     happ: { site: 'https://happ.su' },
+    onexray: { site: ANDROID ? 'https://onexray.com' : 'https://apps.apple.com/app/id6745748773' },
     incy: { site: ANDROID
       ? 'https://play.google.com/store/search?q=INCY&c=apps'
       : 'https://apps.apple.com/app/id6756943388' }

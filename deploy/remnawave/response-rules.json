@@ -52,6 +52,21 @@
       }
     },
     {
+      "name": "OneXray",
+      "description": "Клиент из российского App Store. Берёт подписку Remnawave целиком, с правилами шаблона.",
+      "enabled": true,
+      "operator": "AND",
+      "conditions": [
+        {
+          "headerName": "user-agent",
+          "operator": "CONTAINS",
+          "value": "onexray",
+          "caseSensitive": false
+        }
+      ],
+      "responseType": "XRAY_JSON"
+    },
+    {
       "name": "Fallback Base64",
       "description": "Не наш клиент — не наши адреса. Правило остаётся последним и включённым.",
       "enabled": true,
