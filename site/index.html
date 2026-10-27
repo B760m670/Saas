@@ -1890,23 +1890,21 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      серверы. Новый сервер — строка с `server: true`. */
   var RN_LAND = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAfAP8HAAAAAAAAAAAAAAAAAAAAAADo//z//wcAAAAAAAACAAAAAAAAAAAAhvvw//8PAPABAAAAwAMAAAAAAAAAwADkw////wEABAAAAABgAAAAAAAAAADAUT8A/v8PAAAAAAwA/j8AuAEAAAAAcBHtDcD/fwAAAAAwAPz/fwMAABCAAQD5w/wD8P8FAAAcAIL7//9//xOAAP/ff0668QD/HwAA+A8At///////v3/w/////x8++B8AAOD/1//7////////jP////+/+AE/gAcAn9f//////////w/w/////wEs4AEAAHz+////////////gL////8HeAAcAADg5///////////9ADgAf7/f4AnAAAAAH78////////H0QAAAiA//8f8AcAAIBB4////////38ADwAQAOD//5//AQAAHAT/////////A3AAAAAA/v//+T8AAGDz//////////8DAQAAAMD/////AwAAsP//////////LwAAAAAA6P///2IAAAD+//////////8CAAAAAAD///8/CAAA4P//////////JwAAAAAA8P///wYAAAD+/unz/////z8AAAAAAAD///8HAAAA/pgPPP//////MQAAAAAA8P//PwAAAMBD9v7n/////wcBAAAAAAD///8AAAAAPkD7f/7///8hEAAAAAAA4P//DwAAAIDhAv/n////f8YAAAAAAAD8//8AAAAA+AdE//////8jDwAAAAAAgP//AwAAAMD/APD/////PxgAAAAAAADw/x8AAAAA/n/v//////8HAAAAAAAAAPwDAgAAAOD////7////fwAAAAAAAACgHyAAAACA//9/f/7///8DAAAAAAAAAPQBAAAAAPj//+cv+P//PwAAAAAAAAAAHjAAAADA/////g/+//8EAAAAAAAAAOBhCAAAAP7//99/4D//AAAAAAAAAAAAPAMEAADA////+Qf84BcAAAAAAAAAAAA/AAAAAPz//58fgAf+QAAAAAAAAAAAAA8AAADg////ewA4gA8EAAAAAAAAAADAAAAAAPz//38BgAP4QQAAAAAAAAAAAAgPAADA////zwAwgAwQAAAAAAAAAAAA9Q8AAPj///8HAAVIAAAAAAAAAAAAAID/AQAA////fwBAAAAQAAAAAAAAAAAA+P8AAGDh//8DAAA0GAAAAAAAAAAAAID/HwAAAPj/HwAAgMIBAAAAAAAAAAAA/P8BAACA//8AAAAYXgAAAAAAAAAAAMD/fwAAAPz/BwAAAOOBAQAAAAAAAAAA/P8/AACA/z8AAABgbtQBAAAAAAAAAOD//w8AAPD/AwAAAAQIeAAAAAAAAAAA/P//AQAA/z8AAACAA4APAQAAAAAAAID//w8AAPD/AwAAAAARsEAAAAAAAAAA+P9/AAAA/j8AAAAAAAAAAAAAAAAAAAD//wcAAPD/QwAAAACAIwAAAAAAAAAA8P9/AAAA/z8EAAAAAD8GIAAAAAAAAAD8/wMAAPD/cQAAAAD4ZwAAAAAAAAAAgP8/AAAA/w8HAAAAgP8HAAAAAAAAAAD4/wMAAOD/MAAAAAD//wEBAAAAAAAAgP8PAAAA/g8DAAAA+P8fAAAAAAAAAAD4PwAAAOB/EAAAAID//wMAAAAAAAAAgP8DAAAA/AMAAAAA+P9/AAAAAAAAAAD8HwAAAMA/AAAAAID//wcAAAAAAAAAwP8BAAAA+AEAAAAA8P9/AAAAAAAAAAD8DwAAAIAPAAAAAAAP/gMAAAAAAAAAwB8AAAAAAAAAAAAAEIAfAAEAAAAAAAD+AwAAAAAAAAAAAAAA8AEgAAAAAAAA4AcAAAAAAAAAAAAAAAAAAAYAAAAAAABeAAAAAAAAAAAAAAAAwAAwAAAAAAAAwAMAAAAAAAAAAAAAAAAIgAEAAAAAAAAeAAAAAAAAAAAAAAAAAAAMAAAAAAAA4AEAAAAAAAAAAAAAAAAAAAAAAAAAAAAPAAAAAAAAAAABAAAAAAAAAAAAAAAAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAAB4AEDwn/8HAAAAAAAAAAAwAAAAAACA/P/h/////w8AAAAAAAAAwAcAAAD4////z///////PwAAAAAAHALwAACA//////////////8HAADw/y///wMAAP7/////////////HwAA+P///38AAID///////////////8AAPL/////BwAO////////////////DwAA8P////8HEPD//////////////z8AAOD/////////////////////////H/AfwP//////////////////////////////////////////////////////////////////////////////////////';
   var RN_POINTS = [
-    { name: 'Финляндия', lat: 60.17, lon: 24.94, color: '255,214,140', server: true },
-    { lat: 52.23, lon: 21.01, color: '111,224,168' },   /* Варшава */
-    { lat: 52.52, lon: 13.40, color: '255,143,177' },   /* Берлин */
-    { lat: 48.86, lon: 2.35, color: '201,184,255' },    /* Париж */
-    { lat: 41.01, lon: 28.97, color: '255,184,107' },   /* Стамбул */
-    { lat: 25.20, lon: 55.27, color: '127,211,255' },   /* Дубай */
-    { lat: 43.24, lon: 76.89, color: '111,224,168' },   /* Алматы */
-    { lat: 35.68, lon: 139.69, color: '255,143,177' },  /* Токио */
-    { lat: 37.77, lon: -122.42, color: '127,211,255' }, /* Сан-Франциско */
-    { lat: 40.71, lon: -74.01, color: '201,184,255' },  /* Нью-Йорк */
-    { lat: 51.51, lon: -0.13, color: '255,214,140' }    /* Лондон */
+    { name: 'Финляндия', lat: 60.17, lon: 24.94, color: '255,214,10', server: true },
+    { lat: 52.23, lon: 21.01, color: '255,59,48' },     /* Варшава — красный */
+    { lat: 52.52, lon: 13.40, color: '52,199,89' },     /* Берлин — зелёный */
+    { lat: 48.86, lon: 2.35, color: '10,132,255' },     /* Париж — синий */
+    { lat: 41.01, lon: 28.97, color: '255,149,0' },     /* Стамбул — оранжевый */
+    { lat: 25.20, lon: 55.27, color: '50,173,230' },    /* Дубай — голубой */
+    { lat: 43.24, lon: 76.89, color: '255,55,95' },     /* Алматы — розовый */
+    { lat: 35.68, lon: 139.69, color: '255,59,48' },    /* Токио — красный */
+    { lat: 37.77, lon: -122.42, color: '0,199,190' },   /* Сан-Франциско — бирюзовый */
+    { lat: 40.71, lon: -74.01, color: '255,214,10' },   /* Нью-Йорк — жёлтый */
+    { lat: 51.51, lon: -0.13, color: '52,199,89' }      /* Лондон — зелёный */
   ];
-  /* Откуда подключаются. Точного места человека мы не знаем и не
-     спрашиваем; почти все наши пользователи в России, поэтому — Москва. */
-  var RN_YOU = { name: 'Вы', lat: 55.75, lon: 37.62, color: '186,160,255', you: true };
+  var RN_YOU = { name: 'Вы', lat: 55.75, lon: 37.62, color: '191,90,242', you: true };
 
-  var rn = { open: false, raf: 0, paid: 0, dots: null, stars: null, last: 0 };
+  var rn = { open: false, raf: 0, paid: 0, dots: null, stars: null, last: 0, t0: 0 };
   var REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   function rnVec(lat, lon) {
@@ -1947,26 +1945,42 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     return { x: x, w: w, h: h };
   }
 
-  /* Столб энергии: по радиусу планеты вверх, с ярким ядром, мягким
-     ореолом и вспышкой у основания. `k` — фаза 0…1: рост, держится, гаснет. */
-  function rnBeam(x, base, top, color, k) {
-    var rise = Math.min(1, k / 0.25), fade = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
-    var a = fade;
-    if (a <= 0) return;
+  /* Столб энергии. Вырастает за полсекунды и дальше не гаснет: по нему
+     всё время бегут вверх сгустки энергии. `age` — сколько миллисекунд
+     точка уже горит. */
+  function rnBeam(x, base, top, color, age, t) {
+    var rise = Math.min(1, age / 600);
     var tx = base.x + (top.x - base.x) * rise, ty = base.y + (top.y - base.y) * rise;
     var g = x.createLinearGradient(base.x, base.y, tx, ty);
-    g.addColorStop(0, 'rgba(' + color + ',' + (0.95 * a) + ')');
-    g.addColorStop(0.6, 'rgba(' + color + ',' + (0.45 * a) + ')');
+    g.addColorStop(0, 'rgba(' + color + ',1)');
+    g.addColorStop(0.55, 'rgba(' + color + ',0.55)');
     g.addColorStop(1, 'rgba(' + color + ',0)');
-    x.lineCap = 'round';
-    x.strokeStyle = g; x.lineWidth = 14; x.globalAlpha = 0.28;
+    x.lineCap = 'round'; x.strokeStyle = g;
+    x.lineWidth = 16; x.globalAlpha = 0.22;
     x.beginPath(); x.moveTo(base.x, base.y); x.lineTo(tx, ty); x.stroke();
-    x.globalAlpha = 1; x.lineWidth = 3.2;
+    x.globalAlpha = 1; x.lineWidth = 3.4;
     x.beginPath(); x.moveTo(base.x, base.y); x.lineTo(tx, ty); x.stroke();
-    var flare = x.createRadialGradient(base.x, base.y, 0, base.x, base.y, 26);
-    flare.addColorStop(0, 'rgba(' + color + ',' + (0.85 * a) + ')');
+    /* Белое ядро у основания — там энергия плотнее всего. */
+    var core = x.createLinearGradient(base.x, base.y, base.x + (tx - base.x) * 0.35, base.y + (ty - base.y) * 0.35);
+    core.addColorStop(0, 'rgba(255,255,255,0.9)'); core.addColorStop(1, 'rgba(255,255,255,0)');
+    x.strokeStyle = core; x.lineWidth = 1.4;
+    x.beginPath(); x.moveTo(base.x, base.y); x.lineTo(base.x + (tx - base.x) * 0.35, base.y + (ty - base.y) * 0.35); x.stroke();
+    /* Сгустки бегут снизу вверх и тают к вершине. */
+    if (!REDUCED) {
+      for (var k = 0; k < 3; k++) {
+        var f = ((t * 0.00055 + k / 3 + base.x * 0.001) % 1) * rise;
+        var px = base.x + (top.x - base.x) * f, py = base.y + (top.y - base.y) * f;
+        x.fillStyle = 'rgba(255,255,255,' + (0.9 * (1 - f)) + ')';
+        x.shadowColor = 'rgba(' + color + ',1)'; x.shadowBlur = 14;
+        x.beginPath(); x.arc(px, py, 2.6 * (1 - f * 0.5), 0, Math.PI * 2); x.fill();
+      }
+      x.shadowBlur = 0;
+    }
+    var pulse = REDUCED ? 1 : 0.85 + 0.15 * Math.sin(t * 0.004 + base.x);
+    var flare = x.createRadialGradient(base.x, base.y, 0, base.x, base.y, 28);
+    flare.addColorStop(0, 'rgba(' + color + ',' + (0.9 * pulse) + ')');
     flare.addColorStop(1, 'rgba(' + color + ',0)');
-    x.fillStyle = flare; x.beginPath(); x.ellipse(base.x, base.y, 26, 11, 0, 0, Math.PI * 2); x.fill();
+    x.fillStyle = flare; x.beginPath(); x.ellipse(base.x, base.y, 28, 11, 0, 0, Math.PI * 2); x.fill();
   }
 
   function rnFrame(t) {
@@ -2042,23 +2056,23 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     }
     x.restore();
 
-    /* Энергия. Все точки по очереди, «Вы» — в той же очереди. Каждая
-       вспыхивает раз в цикл; невидимые (за горизонтом) пропускают ход. */
-    var pts = RN_POINTS.concat([RN_YOU]), slot = 900, cycle = slot * pts.length, labels = [];
+    /* Энергия. Точки загораются по очереди — «Вы» первыми — и дальше
+       горят не переставая. До своей очереди точки не видно вовсе. */
+    var pts = [RN_YOU].concat(RN_POINTS), slot = 1100, labels = [];
+    var since = REDUCED ? 1e9 : t - rn.t0;
     for (var j = 0; j < pts.length; j++) {
+      var age = since - j * slot;
+      if (age < 0) continue;
       var q = pts[j], v = rnVec(q.lat, q.lon), base = proj(v);
       if (base.z <= 0.04 || base.y > H * 0.94) continue;
-      var phase = REDUCED ? (q.you || q.server ? 0.4 : -1) : ((t + cycle - j * slot) % cycle) / (slot * 2.2);
-      if (phase >= 0 && phase <= 1) {
-        /* Мощность у всех одна: длина столба одинаковая, направление —
-           вверх, с наклоном по радиусу планеты, чтобы на изгибе он
-           расходился веером, как настоящий. */
-        var rad = proj(v, 1.1), dx = rad.x - base.x, dy = rad.y - base.y, dl = Math.hypot(dx, dy) || 1;
-        var ux = dx / dl * 0.45, uy = dy / dl * 0.45 - 0.55, ul = Math.hypot(ux, uy) || 1, len = H * 0.3;
-        rnBeam(x, base, { x: base.x + ux / ul * len, y: base.y + uy / ul * len }, q.color, phase);
-      }
-      x.fillStyle = 'rgba(' + q.color + ',0.95)'; x.shadowColor = 'rgba(' + q.color + ',1)'; x.shadowBlur = 10;
-      x.beginPath(); x.arc(base.x, base.y, q.you || q.server ? 4.5 : 2.6, 0, Math.PI * 2); x.fill();
+      /* Мощность у всех одна: длина столба одинаковая, направление —
+         вверх, с наклоном по радиусу планеты, чтобы на изгибе столбы
+         расходились веером, как настоящие. */
+      var rad = proj(v, 1.1), dx = rad.x - base.x, dy = rad.y - base.y, dl = Math.hypot(dx, dy) || 1;
+      var ux = dx / dl * 0.45, uy = dy / dl * 0.45 - 0.55, ul = Math.hypot(ux, uy) || 1, len = H * 0.3;
+      rnBeam(x, base, { x: base.x + ux / ul * len, y: base.y + uy / ul * len }, q.color, age, t);
+      x.fillStyle = 'rgb(' + q.color + ')'; x.shadowColor = 'rgba(' + q.color + ',1)'; x.shadowBlur = 12;
+      x.beginPath(); x.arc(base.x, base.y, q.you || q.server ? 4.5 : 3, 0, Math.PI * 2); x.fill();
       x.shadowBlur = 0;
       if (q.server || q.you) labels.push({ q: q, b: base });
     }
@@ -2083,7 +2097,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
   }
 
   function rnStart() {
-    rn.open = true; rn.last = 0;
+    rn.open = true; rn.last = 0; rn.t0 = performance.now();
     cancelAnimationFrame(rn.raf);
     rn.raf = requestAnimationFrame(rnFrame);
   }
