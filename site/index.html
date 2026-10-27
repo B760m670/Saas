@@ -634,48 +634,34 @@ html.android .region-note { display: none; }
   backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
 .rn-step { font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: rgba(255, 246, 230, 0.7); }
-.rn-dial { position: relative; width: min(300px, 78vw, 42vh); aspect-ratio: 1; margin: 18px auto 0; }
-.rn-dial svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.rn-dial line { transition: stroke 0.4s, opacity 0.4s; }
-.rn-mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.rn-dial { position: relative; width: min(360px, 92vw); aspect-ratio: 1.75; margin: 10px auto 0; }
+.rn-dial canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rn-mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding-bottom: 2%; }
 .rn-k { font-size: 11px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase; color: rgba(255, 246, 230, 0.6); }
 .rn-d {
-  font-size: clamp(40px, 13vw, 54px); font-weight: 800; letter-spacing: -2px; line-height: 1.05; margin-top: 4px;
+  font-size: clamp(40px, 12vw, 52px); font-weight: 800; letter-spacing: -2px; line-height: 1.05; margin-top: 4px;
   background: linear-gradient(150deg, #ffecbe, #ee982e); -webkit-background-clip: text; background-clip: text; color: transparent;
+  text-shadow: 0 0 40px rgba(238, 152, 46, 0.25);
 }
-.rn-u { font-size: 14px; color: rgba(255, 246, 230, 0.7); }
-.rn-plus { margin-top: 10px; padding: 5px 12px; border-radius: 999px; background: rgba(79, 191, 139, 0.14); color: #6fe0a8; font-size: 13px; font-weight: 800; }
-.rn-legend { display: flex; justify-content: center; gap: 18px; margin-top: 8px; font-size: 12.5px; color: rgba(255, 246, 230, 0.7); }
+.rn-legend { display: flex; justify-content: center; gap: 18px; margin-top: 4px; font-size: 12.5px; color: rgba(255, 246, 230, 0.7); }
 .rn-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
-.rn-route { position: relative; height: 112px; margin-top: 22px; }
-.rn-pt b + span { display: block; margin-top: 2px; }
-.rn-route svg { position: absolute; left: 0; top: 20px; width: 100%; height: 70px; }
-.rn-pulse {
-  position: absolute; left: 50%; top: 23px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
-  background: #ffecbe; box-shadow: 0 0 10px #ee982e; animation: rn-pulse 2.4s ease-in-out infinite;
+.rn-globe { position: relative; flex: 1 1 auto; min-height: 230px; margin: 4px -22px 0; overflow: hidden; }
+.rn-globe canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+.rn-where {
+  position: absolute; left: 0; right: 0; bottom: 10px; display: flex; justify-content: center; flex-wrap: wrap; gap: 6px;
+  font-size: 12.5px; font-weight: 700;
 }
-@keyframes rn-pulse { 0%, 100% { opacity: 0.35; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.25); } }
-.rn-chip {
-  position: absolute; left: 50%; top: 0; transform: translateX(-50%); white-space: nowrap;
-  padding: 5px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 800; color: #6fe0a8;
-  background: rgba(6, 5, 7, 0.6); border: 1px solid rgba(255, 236, 190, 0.18);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+.rn-where span {
+  padding: 6px 12px; border-radius: 999px; background: rgba(6, 5, 7, 0.55); border: 1px solid rgba(255, 236, 190, 0.16);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: #f3ece1;
 }
-.rn-pt { position: absolute; top: 46px; width: 120px; text-align: center; }
-.rn-pt b { display: block; font-size: 15px; font-weight: 800; }
-.rn-pt > span:last-child { font-size: 12px; color: rgba(255, 246, 230, 0.6); }
-.rn-node {
-  display: block; width: 14px; height: 14px; margin: 0 auto 10px; border-radius: 50%;
-  background: #fff6e6; box-shadow: 0 0 0 6px rgba(255, 236, 190, 0.12), 0 0 18px #ee982e;
-}
-.rn-node.you { background: #c9b8ff; box-shadow: 0 0 0 6px rgba(124, 77, 255, 0.18), 0 0 18px #7c4dff; }
-.rn-foot { margin-top: auto; padding-top: 22px; }
+.rn-where span em { font-style: normal; color: #6fe0a8; margin-left: 6px; }
+.rn-foot { padding-top: 14px; }
 .rn-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; }
 .rn-line span { font-size: 14px; color: rgba(255, 246, 230, 0.7); }
 .rn-line b { font-size: 32px; font-weight: 800; letter-spacing: -1px; white-space: nowrap; }
 .rn-cta { margin-top: 0; }
 .rn-fine { text-align: center; font-size: 12px; color: rgba(255, 246, 230, 0.5); margin: 10px 0 0; }
-@media (prefers-reduced-motion: reduce) { .rn-pulse { animation: none; } }
 
 .chip[hidden], .row[hidden] { display: none; }
 
@@ -1218,32 +1204,25 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     </div>
 
     <div class="rn-dial">
-      <svg viewBox="0 0 300 300" aria-hidden="true">
-        <defs><linearGradient id="rn-tk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6fe0a8"/><stop offset="1" stop-color="#ffecbe"/></linearGradient></defs>
-        <circle cx="150" cy="150" r="100" fill="rgba(6,5,7,.35)" stroke="rgba(255,236,190,.08)"/>
-        <g id="rn-ticks"></g>
-      </svg>
+      <!-- Два холста: задняя половина кольца рисуется за датой, передняя —
+           перед ней. Так кольцо обнимает дату, а не лежит на ней. -->
+      <canvas id="rn-orbit" aria-hidden="true"></canvas>
       <div class="rn-mid">
         <span class="rn-k">Действует до</span>
         <span class="rn-d" id="rn-date">—</span>
-        <span class="rn-u">после оплаты</span>
-        <span class="rn-plus">+30 дней</span>
       </div>
+      <canvas id="rn-orbit-front" aria-hidden="true"></canvas>
     </div>
     <div class="rn-legend">
       <span id="rn-left"><i style="background:#f5bb6c"></i>осталось 0</span>
-      <span><i style="background:#6fe0a8"></i>добавится 30</span>
+      <span><i style="background:#6fe0a8"></i>+30 дней после оплаты</span>
     </div>
 
-    <div class="rn-route" aria-hidden="true">
-      <svg viewBox="0 0 386 70" preserveAspectRatio="none">
-        <defs><linearGradient id="rn-rt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7c4dff"/><stop offset="1" stop-color="#ee982e"/></linearGradient></defs>
-        <path d="M 60 33 Q 193 -20 326 33" fill="none" stroke="url(#rn-rt)" stroke-width="2.5" stroke-dasharray="2 7" stroke-linecap="round"/>
-      </svg>
-      <span class="rn-pulse"></span>
-      <span class="rn-chip">зашифровано</span>
-      <span class="rn-pt" style="left:0"><span class="rn-node you"></span><b>Вы</b><span>ваше устройство</span></span>
-      <span class="rn-pt" style="right:0"><span class="rn-node"></span><b>Финляндия</b><span>сервер Gloria</span></span>
+    <!-- Глобус: материки точками, наши серверы и путь до них. Список
+         серверов — RN_SERVERS в скрипте; новая страна добавляется строкой. -->
+    <div class="rn-globe">
+      <canvas id="rn-globe" aria-hidden="true"></canvas>
+      <div class="rn-where" id="rn-where"></div>
     </div>
 
     <div class="rn-foot">
@@ -1922,40 +1901,222 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     if (open) buyDates();
     document.getElementById('sheet').classList.toggle('on', open);
     document.getElementById('sheet-bg').classList.toggle('on', open);
+    if (open) rnStart(); else rnStop();
   }
 
-  /* Экран продления: шкала из 60 делений и дата после оплаты.
+  /* ----------------------- графика экрана продления ----------------------
 
-     Деление — день, пока остаток с добавкой помещается в 60; дальше шкала
-     сжимается, чтобы и у того, у кого впереди полгода, оплата была видна
-     как кусок круга, а не как одно деление. Остаток считается от
-     `daysLeft`; у истёкшей подписки 30 дней прибавляются к сегодняшнему. */
+     Две сцены на Canvas, без библиотек: страница мини-приложения должна
+     открываться быстро и на слабом телефоне.
+
+     Орбита — срок. Наклонное кольцо из 60 «дней» в перспективе: оплаченные
+     горят янтарём, те 30, что добавит оплата, — зелёным, и по ним бежит
+     свет. Дальняя сторона кольца мельче и тусклее — так оно читается как
+     объём, а не как круг.
+
+     Глобус — где серверы. Материки — точки по маске суши (Natural Earth,
+     180×90), сфера медленно вращается, на ней серверы и дуги от вас к ним
+     с бегущим огоньком. Список серверов — RN_SERVERS. */
+  var RN_LAND = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAfAP8HAAAAAAAAAAAAAAAAAAAAAADo//z//wcAAAAAAAACAAAAAAAAAAAAhvvw//8PAPABAAAAwAMAAAAAAAAAwADkw////wEABAAAAABgAAAAAAAAAADAUT8A/v8PAAAAAAwA/j8AuAEAAAAAcBHtDcD/fwAAAAAwAPz/fwMAABCAAQD5w/wD8P8FAAAcAIL7//9//xOAAP/ff0668QD/HwAA+A8At///////v3/w/////x8++B8AAOD/1//7////////jP////+/+AE/gAcAn9f//////////w/w/////wEs4AEAAHz+////////////gL////8HeAAcAADg5///////////9ADgAf7/f4AnAAAAAH78////////H0QAAAiA//8f8AcAAIBB4////////38ADwAQAOD//5//AQAAHAT/////////A3AAAAAA/v//+T8AAGDz//////////8DAQAAAMD/////AwAAsP//////////LwAAAAAA6P///2IAAAD+//////////8CAAAAAAD///8/CAAA4P//////////JwAAAAAA8P///wYAAAD+/unz/////z8AAAAAAAD///8HAAAA/pgPPP//////MQAAAAAA8P//PwAAAMBD9v7n/////wcBAAAAAAD///8AAAAAPkD7f/7///8hEAAAAAAA4P//DwAAAIDhAv/n////f8YAAAAAAAD8//8AAAAA+AdE//////8jDwAAAAAAgP//AwAAAMD/APD/////PxgAAAAAAADw/x8AAAAA/n/v//////8HAAAAAAAAAPwDAgAAAOD////7////fwAAAAAAAACgHyAAAACA//9/f/7///8DAAAAAAAAAPQBAAAAAPj//+cv+P//PwAAAAAAAAAAHjAAAADA/////g/+//8EAAAAAAAAAOBhCAAAAP7//99/4D//AAAAAAAAAAAAPAMEAADA////+Qf84BcAAAAAAAAAAAA/AAAAAPz//58fgAf+QAAAAAAAAAAAAA8AAADg////ewA4gA8EAAAAAAAAAADAAAAAAPz//38BgAP4QQAAAAAAAAAAAAgPAADA////zwAwgAwQAAAAAAAAAAAA9Q8AAPj///8HAAVIAAAAAAAAAAAAAID/AQAA////fwBAAAAQAAAAAAAAAAAA+P8AAGDh//8DAAA0GAAAAAAAAAAAAID/HwAAAPj/HwAAgMIBAAAAAAAAAAAA/P8BAACA//8AAAAYXgAAAAAAAAAAAMD/fwAAAPz/BwAAAOOBAQAAAAAAAAAA/P8/AACA/z8AAABgbtQBAAAAAAAAAOD//w8AAPD/AwAAAAQIeAAAAAAAAAAA/P//AQAA/z8AAACAA4APAQAAAAAAAID//w8AAPD/AwAAAAARsEAAAAAAAAAA+P9/AAAA/j8AAAAAAAAAAAAAAAAAAAD//wcAAPD/QwAAAACAIwAAAAAAAAAA8P9/AAAA/z8EAAAAAD8GIAAAAAAAAAD8/wMAAPD/cQAAAAD4ZwAAAAAAAAAAgP8/AAAA/w8HAAAAgP8HAAAAAAAAAAD4/wMAAOD/MAAAAAD//wEBAAAAAAAAgP8PAAAA/g8DAAAA+P8fAAAAAAAAAAD4PwAAAOB/EAAAAID//wMAAAAAAAAAgP8DAAAA/AMAAAAA+P9/AAAAAAAAAAD8HwAAAMA/AAAAAID//wcAAAAAAAAAwP8BAAAA+AEAAAAA8P9/AAAAAAAAAAD8DwAAAIAPAAAAAAAP/gMAAAAAAAAAwB8AAAAAAAAAAAAAEIAfAAEAAAAAAAD+AwAAAAAAAAAAAAAA8AEgAAAAAAAA4AcAAAAAAAAAAAAAAAAAAAYAAAAAAABeAAAAAAAAAAAAAAAAwAAwAAAAAAAAwAMAAAAAAAAAAAAAAAAIgAEAAAAAAAAeAAAAAAAAAAAAAAAAAAAMAAAAAAAA4AEAAAAAAAAAAAAAAAAAAAAAAAAAAAAPAAAAAAAAAAABAAAAAAAAAAAAAAAAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAAB4AEDwn/8HAAAAAAAAAAAwAAAAAACA/P/h/////w8AAAAAAAAAwAcAAAD4////z///////PwAAAAAAHALwAACA//////////////8HAADw/y///wMAAP7/////////////HwAA+P///38AAID///////////////8AAPL/////BwAO////////////////DwAA8P////8HEPD//////////////z8AAOD/////////////////////////H/AfwP//////////////////////////////////////////////////////////////////////////////////////';
+  var RN_SERVERS = [
+    { name: 'Финляндия', lat: 60.17, lon: 24.94 }
+  ];
+  /* Откуда тянутся дуги. Точного места человека мы не знаем и не
+     спрашиваем; почти все наши пользователи в России, поэтому — Москва. */
+  var RN_YOU = { lat: 55.75, lon: 37.62 };
+
+  var rn = { open: false, raf: 0, paid: 0, t0: 0, dots: null };
+  var REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function rnLandDots() {
+    if (rn.dots) return rn.dots;
+    var raw = atob(RN_LAND), W = 180, H = 90, out = [];
+    var land = function (lat, lon) {
+      var r = Math.min(H - 1, Math.floor((90 - lat) / 2)), c = Math.min(W - 1, Math.floor((lon + 180) / 2));
+      var k = r * W + c;
+      return (raw.charCodeAt(k >> 3) >> (k & 7)) & 1;
+    };
+    /* Равномерная сетка на сфере (спираль Фибоначчи): точки не сгущаются
+       к полюсам, как сгустились бы на сетке широт и долгот. */
+    var n = 24000, ga = Math.PI * (3 - Math.sqrt(5));
+    for (var i = 0; i < n; i++) {
+      var y = 1 - (i + 0.5) * 2 / n, rr = Math.sqrt(1 - y * y), th = ga * i;
+      var lat = Math.asin(y) * 180 / Math.PI;
+      var lon = ((Math.atan2(Math.sin(th) * rr, Math.cos(th) * rr) * 180 / Math.PI) + 540) % 360 - 180;
+      if (lat > -60 && land(lat, lon)) out.push(rnVec(lat, lon));
+    }
+    return (rn.dots = out);
+  }
+
+  function rnVec(lat, lon) {
+    var a = lat * Math.PI / 180, b = lon * Math.PI / 180;
+    return [Math.cos(a) * Math.cos(b), Math.sin(a), Math.cos(a) * Math.sin(b)];
+  }
+
+  function rnCanvas(id) {
+    var c = document.getElementById(id);
+    if (!c) return null;
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    var w = c.clientWidth, h = c.clientHeight;
+    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    }
+    var x = c.getContext('2d');
+    x.setTransform(dpr, 0, 0, dpr, 0, 0);
+    x.clearRect(0, 0, w, h);
+    return { x: x, w: w, h: h };
+  }
+
+  /* Орбита: кольцо в плоскости, наклонённой к зрителю. Задняя половина
+     (дальше от нас) — на холсте под датой, передняя — на холсте над ней. */
+  function rnOrbit(t) {
+    var back = rnCanvas('rn-orbit'), front = rnCanvas('rn-orbit-front');
+    if (!back || !front) return;
+    var cx = back.w / 2, cy = back.h / 2, R = back.w * 0.44, tilt = 0.36;
+    var n = 64, per = Math.max(1, (rn.paid + 30) / n);
+    var lit = Math.round(rn.paid / per), add = Math.max(1, Math.round(30 / per));
+    var spin = REDUCED ? 0.6 : 0.6 + t * 0.00010;
+    var head = REDUCED ? add : (t * 0.014) % (add + 16);
+
+    var halo = back.x.createRadialGradient(cx, cy, 0, cx, cy, R);
+    halo.addColorStop(0, 'rgba(238,152,46,0.20)'); halo.addColorStop(1, 'rgba(238,152,46,0)');
+    back.x.fillStyle = halo; back.x.fillRect(0, 0, back.w, back.h);
+    back.x.beginPath(); back.x.strokeStyle = 'rgba(255,236,190,0.08)'; back.x.lineWidth = 1;
+    back.x.ellipse(cx, cy, R, R * tilt, 0, Math.PI, Math.PI * 2); back.x.stroke();
+    front.x.beginPath(); front.x.strokeStyle = 'rgba(255,236,190,0.10)'; front.x.lineWidth = 1;
+    front.x.ellipse(cx, cy, R, R * tilt, 0, 0, Math.PI); front.x.stroke();
+
+    var beads = [];
+    for (var i = 0; i < n; i++) {
+      var a = -Math.PI / 2 + i * 2 * Math.PI / n + spin;
+      var pz = Math.sin(a);
+      beads.push({ i: i, x: cx + Math.cos(a) * R, y: cy + pz * R * tilt, d: (pz + 1) / 2 });
+    }
+    beads.sort(function (p, q) { return p.d - q.d; });
+    for (var j = 0; j < beads.length; j++) {
+      var bd = beads[j], k = bd.i, x = bd.d < 0.5 ? back.x : front.x;
+      var size = 1.8 + bd.d * 4.2, alpha = 0.3 + bd.d * 0.7, color;
+      if (k < lit) color = 'rgba(245,187,108,' + alpha + ')';
+      else if (k < lit + add) {
+        var glow = Math.max(0, 1 - Math.abs(k - lit - head) / 6);
+        color = 'rgba(' + Math.round(111 + 144 * glow) + ',' + Math.round(224 + 12 * glow) + ',' +
+          Math.round(168 + 22 * glow) + ',' + Math.min(1, alpha + glow * 0.4) + ')';
+        if (glow > 0.15) {
+          x.beginPath(); x.fillStyle = 'rgba(111,224,168,' + (0.20 * glow) + ')';
+          x.arc(bd.x, bd.y, size * 3.4, 0, Math.PI * 2); x.fill();
+        }
+      } else color = 'rgba(255,236,190,' + (0.07 + bd.d * 0.1) + ')';
+      x.beginPath(); x.fillStyle = color;
+      x.ellipse(bd.x, bd.y, size, size * (0.6 + bd.d * 0.4), 0, 0, Math.PI * 2); x.fill();
+    }
+  }
+
+  /* Глобус: ортографическая проекция, ось чуть наклонена к зрителю. */
+  function rnGlobe(t) {
+    var cv = rnCanvas('rn-globe');
+    if (!cv) return;
+    /* Планета целиком: материки узнаются по очертаниям, а не по точкам. */
+    var x = cv.x, R = Math.min(cv.w * 0.44, cv.h * 0.47), cx = cv.w / 2, cy = cv.h * 0.5;
+    /* Лицом к Европе и России, с медленным покачиванием, а не полным
+       оборотом: иначе наши серверы половину времени были бы за горизонтом. */
+    var rot = 1.05 + (REDUCED ? 0 : 0.45 * Math.sin(t * 0.00016));
+    var tiltX = 0.55;
+    var cr = Math.cos(rot), sr = Math.sin(rot), ct = Math.cos(tiltX), st = Math.sin(tiltX);
+    var proj = function (v) {
+      var X = v[0] * cr - v[2] * sr, Z = v[0] * sr + v[2] * cr, Y = v[1];
+      var Y2 = Y * ct - Z * st, Z2 = Y * st + Z * ct;
+      /* Минус по горизонтали: без него глобус виден «изнутри» — зеркально,
+         и Финляндия оказывается восточнее Москвы. */
+      return { x: cx - X * R, y: cy - Y2 * R, z: Z2 };
+    };
+    /* Атмосфера и тело планеты. */
+    var atm = x.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 1.16);
+    atm.addColorStop(0, 'rgba(238,152,46,0.22)'); atm.addColorStop(1, 'rgba(238,152,46,0)');
+    x.fillStyle = atm; x.beginPath(); x.arc(cx, cy, R * 1.16, 0, Math.PI * 2); x.fill();
+    var body = x.createRadialGradient(cx - R * 0.35, cy - R * 0.45, R * 0.1, cx, cy, R);
+    body.addColorStop(0, '#2a1a24'); body.addColorStop(1, '#0b0810');
+    x.fillStyle = body; x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.fill();
+    x.strokeStyle = 'rgba(255,236,190,0.10)'; x.lineWidth = 1; x.stroke();
+
+    var dots = rnLandDots();
+    for (var i = 0; i < dots.length; i++) {
+      var p = proj(dots[i]);
+      if (p.z <= 0) continue;
+      var a = 0.15 + p.z * 0.75;
+      x.fillStyle = 'rgba(255,224,170,' + a + ')';
+      x.fillRect(p.x - 0.65, p.y - 0.65, 1.3, 1.3);
+    }
+
+    var you = rnVec(RN_YOU.lat, RN_YOU.lon), py = proj(you);
+    for (var s = 0; s < RN_SERVERS.length; s++) {
+      var srv = RN_SERVERS[s], v = rnVec(srv.lat, srv.lon), ps = proj(v);
+      /* Дуга по большому кругу, приподнятая над поверхностью. */
+      var steps = 40, pts = [];
+      for (var k = 0; k <= steps; k++) {
+        var f = k / steps, lift = 1 + 0.22 * Math.sin(Math.PI * f);
+        var m = [you[0] + (v[0] - you[0]) * f, you[1] + (v[1] - you[1]) * f, you[2] + (v[2] - you[2]) * f];
+        var l = Math.hypot(m[0], m[1], m[2]) || 1;
+        pts.push(proj([m[0] / l * lift, m[1] / l * lift, m[2] / l * lift]));
+      }
+      var grad = x.createLinearGradient(py.x, py.y, ps.x, ps.y);
+      grad.addColorStop(0, 'rgba(160,130,255,0.9)'); grad.addColorStop(1, 'rgba(255,200,120,0.95)');
+      x.strokeStyle = grad; x.lineWidth = 2; x.beginPath();
+      for (k = 0; k < pts.length; k++) k ? x.lineTo(pts[k].x, pts[k].y) : x.moveTo(pts[k].x, pts[k].y);
+      x.stroke();
+      if (!REDUCED) {
+        var q = pts[Math.floor(((t * 0.0006 + s * 0.37) % 1) * steps)];
+        x.fillStyle = 'rgba(255,246,230,0.95)'; x.shadowColor = '#ee982e'; x.shadowBlur = 12;
+        x.beginPath(); x.arc(q.x, q.y, 2.6, 0, Math.PI * 2); x.fill(); x.shadowBlur = 0;
+      }
+      if (ps.z > 0) rnPin(x, ps, '#fff6e6', '#ee982e', t, srv.name, -14);
+    }
+    if (py.z > 0) rnPin(x, py, '#c9b8ff', '#7c4dff', t, 'Вы', 22);
+  }
+
+  function rnPin(x, p, core, glow, t, label, dy) {
+    var pulse = REDUCED ? 0.5 : (t * 0.0012) % 1;
+    x.strokeStyle = glow; x.globalAlpha = 1 - pulse; x.lineWidth = 1.5;
+    x.beginPath(); x.arc(p.x, p.y, 5 + pulse * 14, 0, Math.PI * 2); x.stroke(); x.globalAlpha = 1;
+    x.fillStyle = core; x.shadowColor = glow; x.shadowBlur = 14;
+    x.beginPath(); x.arc(p.x, p.y, 4.5, 0, Math.PI * 2); x.fill(); x.shadowBlur = 0;
+    x.font = '700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+    x.fillStyle = 'rgba(255,246,230,0.92)'; x.textAlign = 'center';
+    x.fillText(label, p.x, p.y + dy);
+  }
+
+  function rnFrame(t) {
+    rnOrbit(t);
+    rnGlobe(t);
+    if (rn.open && !REDUCED) rn.raf = requestAnimationFrame(rnFrame);
+  }
+
+  function rnStart() {
+    rn.open = true;
+    cancelAnimationFrame(rn.raf);
+    rn.raf = requestAnimationFrame(rnFrame);
+  }
+  function rnStop() {
+    rn.open = false;
+    cancelAnimationFrame(rn.raf);
+  }
+
+  /* Даты и списки — при каждом открытии: остаток мог измениться. */
   function buyDates() {
     var s = state || {};
     var left = s.status && s.status !== 'expired' ? Math.max(0, Number(s.daysLeft) || 0) : 0;
+    rn.paid = left;
     var then = new Date(Date.now() + (left + 30) * 86400000);
-    var date = document.getElementById('rn-date');
-    /* Свои сокращения: браузер пишет «нояб.» и «сент.», а в круг влезает
+    /* Свои сокращения: браузер пишет «нояб.» и «сент.», а в центр влезает
        только три буквы. */
     var MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    var date = document.getElementById('rn-date');
     if (date) date.textContent = then.getDate() + ' ' + MONTHS[then.getMonth()];
     var leg = document.getElementById('rn-left');
     if (leg) leg.lastChild.textContent = left > 0 ? 'осталось ' + left : 'сейчас не активна';
-
-    var g = document.getElementById('rn-ticks');
-    if (!g) return;
-    var n = 60, per = Math.max(1, (left + 30) / n);
-    var lit = Math.round(left / per), add = Math.max(1, Math.round(30 / per));
-    var out = '';
-    for (var i = 0; i < n; i++) {
-      var a = -Math.PI / 2 + i * 2 * Math.PI / n;
-      var x1 = 150 + 118 * Math.cos(a), y1 = 150 + 118 * Math.sin(a);
-      var x2 = 150 + 138 * Math.cos(a), y2 = 150 + 138 * Math.sin(a);
-      var c = i < lit ? '#f5bb6c' : i < lit + add ? 'url(#rn-tk)' : 'rgba(255,236,190,.12)';
-      out += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) +
-        '" y2="' + y2.toFixed(1) + '" stroke="' + c + '" stroke-width="5" stroke-linecap="round"/>';
-    }
-    g.innerHTML = out;
+    var where = document.getElementById('rn-where');
+    if (where) where.innerHTML = RN_SERVERS.map(function (s) {
+      return '<span>' + s.name + '<em>зашифровано</em></span>';
+    }).join('');
   }
 
   document.addEventListener('click', function (event) {
