@@ -906,37 +906,37 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 
   <div class="step" data-step="app">
     <h1>Какое приложение?</h1>
-    <p class="sub">Достаточно одного приложения. Рекомендуем INCY</p>
+    <p class="sub">Достаточно одного приложения. Рекомендуем OneXray</p>
+
+    <!-- OneXray — первым и рекомендуемым: он есть в российском App Store, когда
+         INCY и Happ оттуда убрали, и подписку берёт целиком, вместе с нашими
+         правилами маршрутизации. Ссылка `onexray://…/sub/add` сразу говорит
+         ему, что конфигурацию надо брать целиком. -->
+    <div class="card">
+      <div class="row" style="background:transparent;padding:0;border:0">
+        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8M16 8l-8 8"/></svg>
+        <span class="body"><span class="title">OneXray <span class="badge ok" style="margin-left:6px;vertical-align:2px">Рекомендуем</span></span><span class="hint">Есть в российском App Store и для Android, Windows, macOS и Linux</span></span>
+      </div>
+      <button class="btn primary" data-act="install-app" data-app="onexray" style="margin-top:12px">Установить приложение</button>
+      <button class="btn ghost" data-act="step" data-to="add" data-app="onexray">У меня уже есть приложение</button>
+    </div>
 
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
-        <span class="body"><span class="title">INCY <span class="badge ok" style="margin-left:6px;vertical-align:2px">Рекомендуем</span></span><span class="hint">Есть для iPhone, Android, Windows, macOS и Linux</span></span>
+        <span class="body"><span class="title">INCY</span><span class="hint">Если уже установлен или OneXray не подошёл</span></span>
       </div>
-      <button class="btn primary" data-act="install-app" data-app="incy" style="margin-top:12px">Установить приложение</button>
+      <button class="btn" data-act="install-app" data-app="incy" style="margin-top:12px">Установить приложение</button>
       <button class="btn ghost" data-act="step" data-to="add" data-app="incy">У меня уже есть приложение</button>
     </div>
 
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
-        <span class="body"><span class="title">Happ</span><span class="hint">Запасной вариант, если INCY не подошёл</span></span>
+        <span class="body"><span class="title">Happ</span><span class="hint">Запасной вариант</span></span>
       </div>
       <button class="btn" data-act="install-app" data-app="happ" style="margin-top:12px">Установить приложение</button>
       <button class="btn ghost" data-act="step" data-to="add" data-app="happ">У меня уже есть приложение</button>
-    </div>
-
-    <!-- OneXray остался в российском App Store, когда оттуда убрали INCY и
-         Happ. Подписку Remnawave он берёт целиком, вместе с нашими правилами
-         маршрутизации. Ссылка `onexray://…/sub/add` сразу говорит ему,
-         что конфигурацию надо брать целиком. -->
-    <div class="card">
-      <div class="row" style="background:transparent;padding:0;border:0">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8M16 8l-8 8"/></svg>
-        <span class="body"><span class="title">OneXray</span><span class="hint">Есть в российском App Store — если INCY и Happ там не найти</span></span>
-      </div>
-      <button class="btn" data-act="install-app" data-app="onexray" style="margin-top:12px">Установить приложение</button>
-      <button class="btn ghost" data-act="step" data-to="add" data-app="onexray">У меня уже есть приложение</button>
     </div>
   </div>
 
@@ -970,9 +970,9 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     </div>
 
     <h2>Где взять приложение</h2>
-    <button class="btn primary" data-act="install-app" data-app="incy">INCY — рекомендуем</button>
+    <button class="btn primary" data-act="install-app" data-app="onexray">OneXray — рекомендуем</button>
+    <button class="btn" data-act="install-app" data-app="incy">INCY</button>
     <button class="btn" data-act="install-app" data-app="happ">Happ</button>
-    <button class="btn" data-act="install-app" data-app="onexray">OneXray — есть в российском App Store</button>
   </div>
 </section>
 
@@ -1762,7 +1762,9 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     !!(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.platform === 'android');
   var APPS = {
     happ: { site: 'https://happ.su' },
-    onexray: { site: ANDROID ? 'https://onexray.com' : 'https://apps.apple.com/app/id6745748773' },
+    onexray: { site: ANDROID
+      ? 'https://play.google.com/store/apps/details?id=net.yuandev.onexray'
+      : 'https://apps.apple.com/app/id6745748773' },
     incy: { site: ANDROID
       ? 'https://play.google.com/store/search?q=INCY&c=apps'
       : 'https://apps.apple.com/app/id6756943388' }
