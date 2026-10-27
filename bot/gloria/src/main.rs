@@ -905,7 +905,10 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
     if let (true, Some(photo)) = (start, config.start_photo.as_deref()) {
         match telegram.send_photo(incoming.chat(), photo, &text, keyboard.as_ref()) {
             Ok(request) => match http::send(&request) {
-                Ok(response) if response.is_ok() => return Ok(()),
+                Ok(response) if response.is_ok() => {
+                    forget_start(telegram, incoming);
+                    return Ok(());
+                }
                 Ok(response) => eprintln!(
                     "Картинка /start отвергнута, код {}: {}",
                     response.status,
@@ -929,7 +932,30 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
             String::from_utf8_lossy(&response.body)
         ));
     }
+    if start {
+        forget_start(telegram, incoming);
+    }
     Ok(())
+}
+
+/// Убрать из чата присланный `/start`, когда ответ на него уже ушёл.
+///
+/// Только после ответа: удалить раньше и не ответить — значит оставить
+/// человека перед пустым чатом. Не вышло (сообщению больше 48 часов, нет
+/// номера, сбой связи) — не беда: команда просто останется в переписке.
+fn forget_start(telegram: &Telegram, incoming: &Incoming) {
+    let Incoming::Message { id: Some(id), .. } = incoming else {
+        return;
+    };
+    match http::send(&telegram.delete_message(incoming.chat(), *id)) {
+        Ok(response) if response.is_ok() => {}
+        Ok(response) => eprintln!(
+            "/start не удалён, код {}: {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        ),
+        Err(error) => eprintln!("/start не удалён: {error}"),
+    }
 }
 
 /// Открыть страницу оплаты и вернуть её адрес.

@@ -63,6 +63,9 @@ pub enum Incoming {
     Message {
         chat: i64,
         from: i64,
+        /// Номер этого сообщения. Нужен, чтобы убрать `/start` из чата после
+        /// ответа. `None` — Telegram его не прислал.
+        id: Option<i64>,
         /// Имя из профиля Telegram — для приветствия. Есть не всегда:
         /// у пересланных из каналов и служебных сообщений его нет.
         name: Option<String>,
@@ -247,6 +250,16 @@ impl Telegram {
                 json_string(text)
             ),
         ))
+    }
+
+    /// Удалить сообщение. В личной переписке бот может удалять и входящие —
+    /// так из чата убирается присланная команда.
+    #[must_use]
+    pub fn delete_message(&self, chat: i64, message_id: i64) -> Request {
+        self.post(
+            "deleteMessage",
+            format!(r#"{{"chat_id":{chat},"message_id":{message_id}}}"#),
+        )
     }
 
     /// Отправить картинку с подписью и кнопками.
@@ -493,6 +506,7 @@ impl Telegram {
                 let reply_to = message.reply_to.as_ref().and_then(|m| m.id);
                 match (message.text, message.from) {
                     (Some(text), Some(from)) => Some(Incoming::Message {
+                        id: message.id,
                         chat: message.chat.id,
                         from: from.id,
                         name: from.first_name,
@@ -692,6 +706,7 @@ mod tests {
                     incoming: Incoming::Message {
                         chat: 1,
                         from: 1,
+                        id: None,
                         name: None,
                         text: "x".to_owned(),
                         reply_to: None,
@@ -744,6 +759,7 @@ mod tests {
                 incoming: Incoming::Message {
                     chat: 42,
                     from: 42,
+                    id: Some(1),
                     name: None,
                     text: "/start".to_owned(),
                     reply_to: None
@@ -857,6 +873,17 @@ mod tests {
         assert!(body.contains(r#""photo":"https://example.org/brand/chat-banner.png""#));
         assert!(body.contains(r#""caption":"Подписка \"год\"""#), "{body}");
         assert!(body.contains("inline_keyboard"), "{body}");
+    }
+
+    #[test]
+    fn a_message_is_deleted_by_its_number() {
+        let Some(telegram) = telegram() else { return };
+        let request = telegram.delete_message(42, 7);
+        assert!(request.url.ends_with("/deleteMessage"), "{}", request.url);
+        assert_eq!(
+            String::from_utf8_lossy(&request.body),
+            r#"{"chat_id":42,"message_id":7}"#
+        );
     }
 
     /// Подпись к картинке в четыре раза короче сообщения.
