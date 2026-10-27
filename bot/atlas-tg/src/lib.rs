@@ -27,6 +27,10 @@ use serde::Deserialize;
 /// коде, а по тому, что покупатель не получил ответа.
 pub const MESSAGE_LIMIT: usize = 4096;
 
+/// Наибольшая длина подписи к картинке. В четыре раза меньше, чем у
+/// сообщения: длинный текст с картинкой Telegram не примет вовсе.
+pub const CAPTION_LIMIT: usize = 1024;
+
 /// Отказ транспорта.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -238,6 +242,37 @@ impl Telegram {
             format!(
                 r#"{{"chat_id":{chat},"text":"{}","parse_mode":"HTML"{markup}}}"#,
                 json_string(text)
+            ),
+        ))
+    }
+
+    /// Отправить картинку с подписью и кнопками.
+    ///
+    /// Картинка — адресом в сети: Telegram забирает её сам, нам не нужно
+    /// собирать загрузку файла. Подпись ограничена [`CAPTION_LIMIT`].
+    pub fn send_photo(
+        &self,
+        chat: i64,
+        photo_url: &str,
+        caption: &str,
+        keyboard: Option<&Keyboard>,
+    ) -> Result<Request, Error> {
+        let chars = caption.chars().count();
+        if chars > CAPTION_LIMIT {
+            return Err(Error::TooLong { chars });
+        }
+
+        let markup = match keyboard {
+            Some(keyboard) => format!(r#","reply_markup":{}"#, inline_markup(keyboard)),
+            None => String::new(),
+        };
+
+        Ok(self.post(
+            "sendPhoto",
+            format!(
+                r#"{{"chat_id":{chat},"photo":"{}","caption":"{}","parse_mode":"HTML"{markup}}}"#,
+                json_string(photo_url),
+                json_string(caption)
             ),
         ))
     }
@@ -627,7 +662,8 @@ pub fn escape_html(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        escape_html, next_offset, Batch, Error, Incoming, Telegram, Update, MESSAGE_LIMIT,
+        escape_html, next_offset, Batch, Error, Incoming, Telegram, Update, CAPTION_LIMIT,
+        MESSAGE_LIMIT,
     };
     use atlas_bot::{main_menu, Action};
 
@@ -795,6 +831,37 @@ mod tests {
         assert!(body.contains("inline_keyboard"), "{body}");
         assert!(body.contains(r#""callback_data":"sub""#), "{body}");
         assert!(body.contains("Моя подписка"));
+    }
+
+    #[test]
+    fn a_photo_carries_its_caption_and_keyboard() {
+        let Some(telegram) = telegram() else { return };
+        let Ok(request) = telegram.send_photo(
+            42,
+            "https://example.org/brand/chat-banner.png",
+            "Подписка \"год\"",
+            Some(&main_menu(None)),
+        ) else {
+            return;
+        };
+        assert!(request.url.ends_with("/sendPhoto"), "{}", request.url);
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(body.contains(r#""photo":"https://example.org/brand/chat-banner.png""#));
+        assert!(body.contains(r#""caption":"Подписка \"год\"""#), "{body}");
+        assert!(body.contains("inline_keyboard"), "{body}");
+    }
+
+    /// Подпись к картинке в четыре раза короче сообщения.
+    #[test]
+    fn an_overlong_caption_is_refused_before_sending() {
+        let Some(telegram) = telegram() else { return };
+        let long = "я".repeat(CAPTION_LIMIT + 1);
+        assert_eq!(
+            telegram.send_photo(42, "https://example.org/a.png", &long, None),
+            Err(Error::TooLong {
+                chars: CAPTION_LIMIT + 1
+            })
+        );
     }
 
     /// Более длинное сообщение Telegram не отправляет вовсе, и заметно это

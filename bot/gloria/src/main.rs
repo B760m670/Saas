@@ -893,6 +893,26 @@ fn handle(deps: &Deps<'_>, store: &mut Store, incoming: &Incoming) -> Result<(),
         None => (reply.text, reply.keyboard),
     };
 
+    // На `/start` — с картинкой: это первое, что человек видит от бота.
+    // Не вышло (картинка недоступна, подпись длиннее предела) — тот же
+    // ответ уходит текстом. Без картинки обойтись можно, без ответа — нет.
+    let start = matches!(incoming, Incoming::Message { text, .. }
+        if text.split_whitespace().next().is_some_and(|c| c.split('@').next() == Some("/start")));
+    if let (true, Some(photo)) = (start, config.start_photo.as_deref()) {
+        match telegram.send_photo(incoming.chat(), photo, &text, keyboard.as_ref()) {
+            Ok(request) => match http::send(&request) {
+                Ok(response) if response.is_ok() => return Ok(()),
+                Ok(response) => eprintln!(
+                    "Картинка /start отвергнута, код {}: {}",
+                    response.status,
+                    String::from_utf8_lossy(&response.body)
+                ),
+                Err(error) => eprintln!("Картинка /start: {error}"),
+            },
+            Err(error) => eprintln!("Картинка /start: {error}"),
+        }
+    }
+
     let request = telegram
         .send_message(incoming.chat(), &text, keyboard.as_ref())
         .map_err(|error| format!("сообщение: {error}"))?;

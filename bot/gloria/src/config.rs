@@ -88,6 +88,12 @@ pub struct Config {
     pub freekassa_fee_bp: u32,
     /// Адрес мини-приложения. Из него делается кнопка «Меню» у поля ввода.
     pub miniapp_url: Option<String>,
+    /// Картинка к ответу на `/start`, адресом в сети.
+    ///
+    /// По умолчанию — `brand/chat-banner.png` рядом с кабинетом: выкладка
+    /// кладёт её туда сама. `off` выключает картинку, и ответ уходит
+    /// обычным текстом, как раньше.
+    pub start_photo: Option<String>,
     /// Токен бота поддержки. Свой, отдельный от основного.
     ///
     /// Нет — поддержка не поднимается, и всё остальное работает как
@@ -144,6 +150,7 @@ pub const FREEKASSA_FEE: &str = "GLORIA_FREEKASSA_FEE";
 /// (199 ₽ превратились у покупателя в 210,94 ₽).
 pub const DEFAULT_FREEKASSA_FEE_BP: u32 = 600;
 pub const MINIAPP_URL: &str = "GLORIA_MINIAPP_URL";
+pub const START_PHOTO: &str = "GLORIA_START_PHOTO";
 const SUPPORT_TOKEN: &str = "GLORIA_SUPPORT_TOKEN";
 
 /// Куда встаёт мини-приложение, если адрес не задан.
@@ -311,6 +318,18 @@ impl Config {
             )
         });
 
+        let start_photo = match optional(vars, START_PHOTO).as_deref() {
+            Some("off") => None,
+            Some(url) if url.starts_with("https://") => Some(url.to_owned()),
+            Some(_) => {
+                return Err(Error::Invalid {
+                    name: START_PHOTO,
+                    why: "адрес картинки по https или off",
+                })
+            }
+            None => miniapp_url.as_deref().and_then(beside_cabinet),
+        };
+
         Ok(Self {
             bot_token: get(BOT_TOKEN)?,
             panel_url,
@@ -335,6 +354,7 @@ impl Config {
             freekassa_api_key,
             server_ip,
             freekassa_fee_bp,
+            start_photo,
             miniapp_url,
             support_token: optional(vars, SUPPORT_TOKEN),
         })
@@ -520,6 +540,19 @@ fn parse_percent(value: &str) -> Option<u32> {
     (total <= 5_000).then_some(total)
 }
 
+/// Картинка `/start` рядом с кабинетом: тот же хост, путь `brand/…`.
+///
+/// Берётся только начало адреса, до первой косой черты после хоста, — у
+/// кабинета в адресе бывают путь и параметры, а картинка лежит в корне.
+fn beside_cabinet(miniapp_url: &str) -> Option<String> {
+    let rest = miniapp_url.strip_prefix("https://")?;
+    let host = rest.split(['/', '?', '#']).next()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/brand/chat-banner.png"))
+}
+
 fn optional(vars: &HashMap<String, String>, name: &str) -> Option<String> {
     vars.get(name)
         .map(|value| value.trim())
@@ -545,8 +578,8 @@ fn list(vars: &HashMap<String, String>, name: &str) -> Vec<String> {
 mod tests {
     use super::{
         Config, Error, ADMINS, BOT_TOKEN, DATABASE_URL, FREEKASSA_API_KEY, FREEKASSA_FORM_SECRET,
-        FREEKASSA_MERCHANT, FREEKASSA_NOTICE_SECRET, FREE_SQUADS, MANUAL_TRANSFER, PANEL_TOKEN,
-        PANEL_URL, PAY_LINK, SERVER_IP, SQUADS,
+        FREEKASSA_MERCHANT, FREEKASSA_NOTICE_SECRET, FREE_SQUADS, MANUAL_TRANSFER, MINIAPP_URL,
+        PANEL_TOKEN, PANEL_URL, PAY_LINK, SERVER_IP, SQUADS, START_PHOTO,
     };
     use std::collections::HashMap;
 
@@ -573,6 +606,34 @@ mod tests {
         assert!(config.is_admin(42));
         assert!(config.is_admin(43));
         assert!(!config.is_admin(44));
+    }
+
+    #[test]
+    fn the_start_photo_lies_beside_the_cabinet() {
+        let mut vars = full();
+        vars.insert(
+            MINIAPP_URL.to_owned(),
+            "https://panel.example.org/app?x=1".to_owned(),
+        );
+        assert_eq!(
+            Config::from_map(&vars)
+                .ok()
+                .and_then(|c| c.start_photo)
+                .as_deref(),
+            Some("https://panel.example.org/brand/chat-banner.png")
+        );
+
+        vars.insert(START_PHOTO.to_owned(), "off".to_owned());
+        assert!(Config::from_map(&vars).is_ok_and(|c| c.start_photo.is_none()));
+
+        vars.insert(
+            START_PHOTO.to_owned(),
+            "http://plain.example.org/a.png".to_owned(),
+        );
+        assert!(Config::from_map(&vars).is_err());
+
+        // Без кабинета — без картинки: брать её неоткуда.
+        assert!(Config::from_map(&full()).is_ok_and(|c| c.start_photo.is_none()));
     }
 
     /// Каждая недостающая переменная называется по имени. «Что-то не

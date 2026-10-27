@@ -168,6 +168,11 @@ publish_legal() {
     install -m 644 "$1" "$2"
 }
 
+# Картинка к ответу бота на /start. Telegram забирает её по адресу, поэтому
+# она лежит рядом с кабинетом; не окажется на месте — бот ответит текстом.
+install -d -m 755 "$SITE/brand"
+install -m 644 site/brand/chat-banner.png "$SITE/brand/chat-banner.png"
+
 install -d -m 755 "$SITE/legal"
 for f in site/legal/*.html; do
     publish_legal "$f" "$SITE/legal/$(basename "$f")"
