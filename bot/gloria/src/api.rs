@@ -1270,13 +1270,15 @@ mod tests {
     fn app_links() {
         let url = "https://panel.example.org/api/sub/Ab_c-1";
         assert_eq!(
-            super::app_link("happ", url).unwrap(),
-            "happ://add/https://panel.example.org/api/sub/Ab_c-1"
+            super::app_link("happ", url).as_deref(),
+            Some("happ://add/https://panel.example.org/api/sub/Ab_c-1")
         );
         assert_eq!(
-            super::app_link("onexray", url).unwrap(),
-            "onexray://onexray.com/sub/add?url=https%3A%2F%2Fpanel.example.org%2Fapi%2Fsub%2FAb_c-1\
-             &panel=remnawave&mode=providerManaged#Gloria%20VPN"
+            super::app_link("onexray", url).as_deref(),
+            Some(
+                "onexray://onexray.com/sub/add?url=https%3A%2F%2Fpanel.example.org%2Fapi%2Fsub%2FAb_c-1\
+                 &panel=remnawave&mode=providerManaged#Gloria%20VPN"
+            )
         );
         assert!(super::app_link("other", url).is_none());
     }
