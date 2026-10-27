@@ -610,45 +610,72 @@ html.android .region-note { display: none; }
 .plan .price { font-size: 17px; font-weight: 700; white-space: nowrap; }
 .plan .off { font-size: 11.5px; font-weight: 700; color: var(--mid); }
 
-/* Карточка покупки. Тёмная в обеих темах, как плитка подписки: это
-   главное на листе, и свет на ней тот же — сверху справа. */
-.buy {
-  position: relative; overflow: hidden; border-radius: 20px; padding: 22px 20px 18px;
-  background: var(--hero); color: var(--hero-text);
-  box-shadow: var(--rim-top), 0 14px 34px rgba(0, 0, 0, 0.35);
+/* ------------------------------ продление -------------------------------- */
+.renew {
+  position: fixed; inset: 0; z-index: 25; overflow: hidden auto;
+  background: #060507; color: #f3ece1;
+  transform: translateY(100%); visibility: hidden;
+  transition: transform 0.42s var(--ease), visibility 0s linear 0.42s;
 }
-.buy::before {
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: radial-gradient(70% 90% at 95% 0%, rgba(238, 152, 46, 0.35), transparent 70%),
-              radial-gradient(60% 80% at 0% 100%, rgba(124, 77, 255, 0.18), transparent 70%);
+.renew.on { transform: none; visibility: visible; transition: transform 0.42s var(--ease); }
+.rn-blob { position: absolute; border-radius: 50%; filter: blur(80px); pointer-events: none; }
+.rn-b1 { width: 420px; height: 380px; left: -180px; top: 120px; background: #5b35d6; opacity: 0.45; }
+.rn-b2 { width: 420px; height: 380px; right: -200px; top: -120px; background: #ee982e; opacity: 0.45; }
+.rn-b3 { width: 300px; height: 260px; left: 20%; top: 300px; background: #ff6a3d; opacity: 0.18; }
+.rn-in {
+  position: relative; max-width: 460px; min-height: 100%; margin: 0 auto;
+  display: flex; flex-direction: column;
+  padding: calc(16px + env(safe-area-inset-top)) 22px calc(22px + env(safe-area-inset-bottom));
 }
-.buy > * { position: relative; }
-.buy-ring { position: absolute; top: -38px; right: -34px; width: 150px; height: 150px; opacity: 0.55; }
-.buy-k { font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: var(--hero-muted); }
-.buy-price { margin-top: 8px; display: flex; align-items: baseline; gap: 8px; }
-.buy-price .sum {
-  font-size: 44px; font-weight: 800; letter-spacing: -1.5px; line-height: 1;
-  background: linear-gradient(150deg, #ffecbe, #ee982e);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
+.rn-top { display: flex; align-items: center; justify-content: space-between; }
+.rn-x {
+  width: 40px; height: 40px; border-radius: 50%; border: 0; display: grid; place-items: center;
+  background: rgba(255, 236, 190, 0.08); color: #cfc4b4; cursor: pointer;
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
 }
-.buy-price .per { font-size: 15px; color: var(--hero-muted); }
-.buy-dates {
-  margin-top: 18px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  padding: 12px 14px; border-radius: 14px;
-  background: rgba(255, 236, 190, 0.06); border: 1px solid rgba(255, 236, 190, 0.12);
+.rn-step { font-size: 12px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: rgba(255, 246, 230, 0.7); }
+.rn-dial { position: relative; width: min(300px, 78vw, 42vh); aspect-ratio: 1; margin: 18px auto 0; }
+.rn-dial svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.rn-dial line { transition: stroke 0.4s, opacity 0.4s; }
+.rn-mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.rn-k { font-size: 11px; letter-spacing: 2px; font-weight: 700; text-transform: uppercase; color: rgba(255, 246, 230, 0.6); }
+.rn-d {
+  font-size: clamp(40px, 13vw, 54px); font-weight: 800; letter-spacing: -2px; line-height: 1.05; margin-top: 4px;
+  background: linear-gradient(150deg, #ffecbe, #ee982e); -webkit-background-clip: text; background-clip: text; color: transparent;
 }
-.buy-dates > svg { flex: none; color: var(--hero-muted); }
-.buy-dates .k { display: block; font-size: 11.5px; color: var(--hero-muted); }
-.buy-dates .v { display: block; font-size: 16px; font-weight: 700; margin-top: 1px; }
-.buy-dates div:last-child { text-align: right; }
-.buy-dates .hot { color: #f5bb6c; }
-.buy-list { list-style: none; margin: 16px 2px 0; padding: 0; }
-.buy-list li { position: relative; padding: 7px 0 7px 30px; font-size: 15px; }
-.buy-list li::before {
-  content: ""; position: absolute; left: 0; top: 8px; width: 20px; height: 20px; border-radius: 50%;
-  background: rgba(79, 191, 139, 0.16) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234fbf8b' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 12.5l4 4 8-9'/%3E%3C/svg%3E") center / 12px no-repeat;
+.rn-u { font-size: 14px; color: rgba(255, 246, 230, 0.7); }
+.rn-plus { margin-top: 10px; padding: 5px 12px; border-radius: 999px; background: rgba(79, 191, 139, 0.14); color: #6fe0a8; font-size: 13px; font-weight: 800; }
+.rn-legend { display: flex; justify-content: center; gap: 18px; margin-top: 8px; font-size: 12.5px; color: rgba(255, 246, 230, 0.7); }
+.rn-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.rn-route { position: relative; height: 112px; margin-top: 22px; }
+.rn-pt b + span { display: block; margin-top: 2px; }
+.rn-route svg { position: absolute; left: 0; top: 20px; width: 100%; height: 70px; }
+.rn-pulse {
+  position: absolute; left: 50%; top: 23px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%;
+  background: #ffecbe; box-shadow: 0 0 10px #ee982e; animation: rn-pulse 2.4s ease-in-out infinite;
 }
-.buy-pay { text-align: center; font-size: 12.5px; color: var(--muted); margin: 10px 0 2px; }
+@keyframes rn-pulse { 0%, 100% { opacity: 0.35; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.25); } }
+.rn-chip {
+  position: absolute; left: 50%; top: 0; transform: translateX(-50%); white-space: nowrap;
+  padding: 5px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 800; color: #6fe0a8;
+  background: rgba(6, 5, 7, 0.6); border: 1px solid rgba(255, 236, 190, 0.18);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.rn-pt { position: absolute; top: 46px; width: 120px; text-align: center; }
+.rn-pt b { display: block; font-size: 15px; font-weight: 800; }
+.rn-pt > span:last-child { font-size: 12px; color: rgba(255, 246, 230, 0.6); }
+.rn-node {
+  display: block; width: 14px; height: 14px; margin: 0 auto 10px; border-radius: 50%;
+  background: #fff6e6; box-shadow: 0 0 0 6px rgba(255, 236, 190, 0.12), 0 0 18px #ee982e;
+}
+.rn-node.you { background: #c9b8ff; box-shadow: 0 0 0 6px rgba(124, 77, 255, 0.18), 0 0 18px #7c4dff; }
+.rn-foot { margin-top: auto; padding-top: 22px; }
+.rn-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+.rn-line span { font-size: 14px; color: rgba(255, 246, 230, 0.7); }
+.rn-line b { font-size: 32px; font-weight: 800; letter-spacing: -1px; white-space: nowrap; }
+.rn-cta { margin-top: 0; }
+.rn-fine { text-align: center; font-size: 12px; color: rgba(255, 246, 230, 0.5); margin: 10px 0 0; }
+@media (prefers-reduced-motion: reduce) { .rn-pulse { animation: none; } }
 
 .chip[hidden], .row[hidden] { display: none; }
 
@@ -1172,34 +1199,59 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 </nav>
 
 <div class="sheet-bg" id="sheet-bg"></div>
-<!-- Продление. Тариф один, поэтому вместо списка — карточка покупки: цена,
-     что входит, до какого числа продлится, и одна кнопка. Дата считается
-     от остатка дней: оплаченные сутки складываются с ним, а не заменяют. -->
-<div class="sheet" id="sheet">
-  <div class="grab"></div>
+<!-- Продление — отдельный экран, а не лист снизу. Главное на нём — время:
+     шкала из делений-дней, где уже оплаченные горят янтарём, а те, что
+     добавит оплата, — зелёным, и в центре дата, до которой продлится
+     подписка. Ниже — путь «Вы → сервер», ради которого всё и покупается.
+     Тёмный в обеих темах: это «сцена», как картинка на «Старте».
 
-  <div class="buy">
-    <svg class="buy-ring" viewBox="0 0 1024 1024" aria-hidden="true"><defs><linearGradient id="buy-g" x1="0.15" y1="0.1" x2="0.9" y2="0.95"><stop offset="0" stop-color="#ffecbe"/><stop offset="0.55" stop-color="#f5bb6c"/><stop offset="1" stop-color="#ee982e"/></linearGradient></defs><path d="M 731.4 436.5 A 232 232 0 1 1 587.5 292.6" fill="none" stroke="url(#buy-g)" stroke-width="70" stroke-linecap="round"/><circle cx="676" cy="348" r="43.4" fill="url(#buy-g)"/></svg>
-    <div class="buy-k">Gloria VPN · 1 месяц</div>
-    <div class="buy-price"><span class="sum">199 ₽</span><span class="per">/ 30 дней</span></div>
+     id остаётся `sheet`: открывают и закрывают его те же `sheet(true/false)`. -->
+<div class="renew" id="sheet" role="dialog" aria-label="Продление подписки">
+  <span class="rn-blob rn-b1"></span><span class="rn-blob rn-b2"></span><span class="rn-blob rn-b3"></span>
+  <div class="rn-in">
+    <div class="rn-top">
+      <button class="rn-x" data-act="close-sheet" aria-label="Закрыть">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+      <span class="rn-step">Продление</span>
+      <span style="width:40px"></span>
+    </div>
 
-    <div class="buy-dates">
-      <div><span class="k">Сейчас</span><span class="v" id="buy-now">—</span></div>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-      <div><span class="k">После оплаты</span><span class="v hot" id="buy-then">—</span></div>
+    <div class="rn-dial">
+      <svg viewBox="0 0 300 300" aria-hidden="true">
+        <defs><linearGradient id="rn-tk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6fe0a8"/><stop offset="1" stop-color="#ffecbe"/></linearGradient></defs>
+        <circle cx="150" cy="150" r="100" fill="rgba(6,5,7,.35)" stroke="rgba(255,236,190,.08)"/>
+        <g id="rn-ticks"></g>
+      </svg>
+      <div class="rn-mid">
+        <span class="rn-k">Действует до</span>
+        <span class="rn-d" id="rn-date">—</span>
+        <span class="rn-u">после оплаты</span>
+        <span class="rn-plus">+30 дней</span>
+      </div>
+    </div>
+    <div class="rn-legend">
+      <span id="rn-left"><i style="background:#f5bb6c"></i>осталось 0</span>
+      <span><i style="background:#6fe0a8"></i>добавится 30</span>
+    </div>
+
+    <div class="rn-route" aria-hidden="true">
+      <svg viewBox="0 0 386 70" preserveAspectRatio="none">
+        <defs><linearGradient id="rn-rt" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7c4dff"/><stop offset="1" stop-color="#ee982e"/></linearGradient></defs>
+        <path d="M 60 33 Q 193 -20 326 33" fill="none" stroke="url(#rn-rt)" stroke-width="2.5" stroke-dasharray="2 7" stroke-linecap="round"/>
+      </svg>
+      <span class="rn-pulse"></span>
+      <span class="rn-chip">зашифровано</span>
+      <span class="rn-pt" style="left:0"><span class="rn-node you"></span><b>Вы</b><span>ваше устройство</span></span>
+      <span class="rn-pt" style="right:0"><span class="rn-node"></span><b>Финляндия</b><span>сервер Gloria</span></span>
+    </div>
+
+    <div class="rn-foot">
+      <div class="rn-line"><span>30 дней · 2 устройства · безлимит</span><b>199 ₽</b></div>
+      <button class="btn primary rn-cta" data-buy="d30">Продлить на месяц</button>
+      <p class="rn-fine">Картой или по СБП · без автосписаний</p>
     </div>
   </div>
-
-  <ul class="buy-list">
-    <li>2 устройства одновременно</li>
-    <li>Трафик без ограничений</li>
-    <li>Все серверы, включая игровые</li>
-    <li>Без автосписаний — продлеваете сами</li>
-  </ul>
-
-  <button class="btn primary" data-buy="d30" style="margin-top:18px">Оплатить 199 ₽</button>
-  <p class="buy-pay">Картой или по СБП · доступ продлится сразу после оплаты</p>
-  <button class="btn ghost" data-act="close-sheet">Закрыть</button>
 </div>
 
 <div class="sheet" id="news">
@@ -1872,21 +1924,38 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     document.getElementById('sheet-bg').classList.toggle('on', open);
   }
 
-  /* «Сейчас → после оплаты» на карточке покупки. Считается от остатка
-     дней: оплаченные 30 суток добавляются к нему, а у истёкшей подписки —
-     к сегодняшнему дню. Точнее суток здесь не нужно. */
+  /* Экран продления: шкала из 60 делений и дата после оплаты.
+
+     Деление — день, пока остаток с добавкой помещается в 60; дальше шкала
+     сжимается, чтобы и у того, у кого впереди полгода, оплата была видна
+     как кусок круга, а не как одно деление. Остаток считается от
+     `daysLeft`; у истёкшей подписки 30 дней прибавляются к сегодняшнему. */
   function buyDates() {
-    var now = document.getElementById('buy-now');
-    var then = document.getElementById('buy-then');
-    if (!now || !then) return;
     var s = state || {};
     var left = s.status && s.status !== 'expired' ? Math.max(0, Number(s.daysLeft) || 0) : 0;
-    var fmt = function (days) {
-      var d = new Date(Date.now() + days * 86400000);
-      return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' });
-    };
-    now.textContent = left > 0 ? 'до ' + fmt(left) : 'не активна';
-    then.textContent = 'до ' + fmt(left + 30);
+    var then = new Date(Date.now() + (left + 30) * 86400000);
+    var date = document.getElementById('rn-date');
+    /* Свои сокращения: браузер пишет «нояб.» и «сент.», а в круг влезает
+       только три буквы. */
+    var MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    if (date) date.textContent = then.getDate() + ' ' + MONTHS[then.getMonth()];
+    var leg = document.getElementById('rn-left');
+    if (leg) leg.lastChild.textContent = left > 0 ? 'осталось ' + left : 'сейчас не активна';
+
+    var g = document.getElementById('rn-ticks');
+    if (!g) return;
+    var n = 60, per = Math.max(1, (left + 30) / n);
+    var lit = Math.round(left / per), add = Math.max(1, Math.round(30 / per));
+    var out = '';
+    for (var i = 0; i < n; i++) {
+      var a = -Math.PI / 2 + i * 2 * Math.PI / n;
+      var x1 = 150 + 118 * Math.cos(a), y1 = 150 + 118 * Math.sin(a);
+      var x2 = 150 + 138 * Math.cos(a), y2 = 150 + 138 * Math.sin(a);
+      var c = i < lit ? '#f5bb6c' : i < lit + add ? 'url(#rn-tk)' : 'rgba(255,236,190,.12)';
+      out += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) +
+        '" y2="' + y2.toFixed(1) + '" stroke="' + c + '" stroke-width="5" stroke-linecap="round"/>';
+    }
+    g.innerHTML = out;
   }
 
   document.addEventListener('click', function (event) {
