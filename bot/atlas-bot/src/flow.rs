@@ -856,13 +856,23 @@ mod tests {
         assert!(!reply.text.contains("<code>"), "{}", reply.text);
     }
 
+    /// Длинные сроки убраны из витрины: старая кнопка «12 месяцев» в
+    /// переписке не должна выставить счёт на тариф, которого больше нет.
+    #[test]
+    fn a_withdrawn_plan_opens_no_invoice() {
+        for id in ["d90", "d180", "d365"] {
+            let (_, effect) = on_action(&Action::Buy(id.to_owned()), &active());
+            assert_eq!(effect, Effect::None, "{id}");
+        }
+    }
+
     #[test]
     fn choosing_a_plan_asks_for_an_invoice() {
-        let (_, effect) = on_action(&Action::Buy("d365".to_owned()), &active());
+        let (_, effect) = on_action(&Action::Buy("d30".to_owned()), &active());
         assert_eq!(
             effect,
             Effect::OpenOrder {
-                plan: "d365".to_owned()
+                plan: "d30".to_owned()
             }
         );
     }
