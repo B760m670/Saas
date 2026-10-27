@@ -2015,21 +2015,30 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
       return { x: cx - X * R, y: cy - (Y * ct - Z * sn) * R, z: Y * sn + Z * ct };
     };
 
-    var atm = x.createRadialGradient(cx, cy, R * 0.985, cx, cy, R * 1.07);
-    atm.addColorStop(0, 'rgba(238,152,46,0.5)'); atm.addColorStop(0.35, 'rgba(124,77,255,0.24)');
+    /* Атмосфера — как у глобуса: широкое мягкое свечение, которое
+       начинается чуть внутри края и уходит в космос, а не узкая полоса. */
+    var atm = x.createRadialGradient(cx, cy, R * 0.97, cx, cy, R * 1.2);
+    atm.addColorStop(0, 'rgba(238,152,46,0.46)');
+    atm.addColorStop(0.18, 'rgba(238,152,46,0.24)');
+    atm.addColorStop(0.5, 'rgba(160,90,200,0.10)');
     atm.addColorStop(1, 'rgba(124,77,255,0)');
-    x.fillStyle = atm; x.beginPath(); x.arc(cx, cy, R * 1.07, 0, Math.PI * 2); x.fill();
-    var body = x.createLinearGradient(0, cy - R, 0, H);
-    body.addColorStop(0, '#1c1220'); body.addColorStop(1, '#060507');
+    x.fillStyle = atm; x.beginPath(); x.arc(cx, cy, R * 1.2, 0, Math.PI * 2); x.fill();
+    /* Тело планеты с объёмом: блик сверху слева, к краю темнее. */
+    var body = x.createRadialGradient(cx - R * 0.35, cy - R * 0.95, R * 0.05, cx, cy - R * 0.4, R * 1.05);
+    body.addColorStop(0, '#2c1c26'); body.addColorStop(0.55, '#170f18'); body.addColorStop(1, '#09070c');
     x.fillStyle = body; x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.fill();
-    x.strokeStyle = 'rgba(255,220,160,0.75)'; x.lineWidth = 1.5;
-    x.beginPath(); x.arc(cx, cy, R, Math.PI * 1.15, Math.PI * 1.85); x.stroke();
+    /* Внутреннее свечение у самого края — край «горит» изнутри. */
+    var rim = x.createRadialGradient(cx, cy, R * 0.94, cx, cy, R);
+    rim.addColorStop(0, 'rgba(238,152,46,0)'); rim.addColorStop(1, 'rgba(238,152,46,0.18)');
+    x.fillStyle = rim; x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.fill();
+    x.strokeStyle = 'rgba(255,236,190,0.12)'; x.lineWidth = 1;
+    x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.stroke();
 
     /* Срок по линии атмосферы. Дуга делится пропорционально: остаток
        янтарём, +30 зелёным; по зелёной бежит блик. */
     var span = 0.42, a0 = Math.PI * 1.5 - span, a1 = Math.PI * 1.5 + span;
-    var total = rn.paid + 30, mid = a0 + (a1 - a0) * rn.paid / total, ar = R * 1.012;
-    x.lineCap = 'round'; x.lineWidth = 5;
+    var total = rn.paid + 30, mid = a0 + (a1 - a0) * rn.paid / total, ar = R * 1.02;
+    x.lineCap = 'round'; x.lineWidth = 3;
     if (rn.paid > 0) {
       x.shadowColor = '#ee982e'; x.shadowBlur = 14; x.strokeStyle = '#f5bb6c';
       x.beginPath(); x.arc(cx, cy, ar, a0, mid); x.stroke();
@@ -2043,7 +2052,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
       x.shadowBlur = 0;
     }
     x.fillStyle = '#fff6e6';
-    x.beginPath(); x.arc(cx + Math.cos(a1) * ar, cy + Math.sin(a1) * ar, 5, 0, Math.PI * 2); x.fill();
+    x.beginPath(); x.arc(cx + Math.cos(a1) * ar, cy + Math.sin(a1) * ar, 4, 0, Math.PI * 2); x.fill();
 
     /* Материки. */
     x.save(); x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.clip();
