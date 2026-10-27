@@ -41,12 +41,45 @@ const MAX_HEADERS: usize = 16 * 1024;
 /// журнале. Сутки — то, что рекомендует сам Telegram.
 const INIT_DATA_MAX_AGE: i64 = 24 * 60 * 60;
 
-/// Схемы приложений, в которые умеем отдавать подписку.
+/// Приложения, в которые умеем отдавать подписку.
 ///
 /// Список закрытый: он же не даёт превратить перенаправление в открытое.
-/// Ведёт оно всегда на нашу схему и на ссылку из нашей базы — что бы ни
-/// пришло в запросе.
-const SCHEMES: [(&str, &str); 2] = [("happ", "happ://add/"), ("incy", "incy://add/")];
+/// Ведёт оно всегда на схему из этого списка и на ссылку из нашей базы — что
+/// бы ни пришло в запросе.
+const APPS: [&str; 3] = ["happ", "incy", "onexray"];
+
+/// Ссылка, которая добавляет подписку в приложение.
+///
+/// Happ и INCY берут адрес как есть, после `add/`. OneXray — параметром, и
+/// ему же сразу говорится, что это Remnawave и что конфигурацию надо брать
+/// целиком: иначе он разберёт подписку на голые серверы, и пропадут правила
+/// шаблона — русские сайты пойдут через VPN, а банки начнут ругаться.
+fn app_link(app: &str, url: &str) -> Option<String> {
+    match app {
+        "happ" => Some(format!("happ://add/{url}")),
+        "incy" => Some(format!("incy://add/{url}")),
+        "onexray" => Some(format!(
+            "onexray://onexray.com/sub/add?url={}&panel=remnawave&mode=providerManaged#Gloria%20VPN",
+            percent_encode(url)
+        )),
+        _ => None,
+    }
+}
+
+/// Процентная кодировка для значения параметра: всё, кроме безопасных
+/// символов, — в `%XX`. Адрес подписки целиком уходит одним параметром, и
+/// его `/`, `:` и `?` не должны смешаться с нашими.
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() * 3);
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
 
 /// Поднять сервер в отдельном потоке.
 ///
@@ -874,9 +907,9 @@ fn open_in_app(shared: &Shared, stream: &mut TcpStream, rest: &str) -> Result<()
         return send(stream, 404, r#"{"error":"нет такого пути"}"#);
     };
 
-    let Some((_, scheme)) = SCHEMES.iter().find(|(name, _)| *name == app) else {
+    if !APPS.contains(&app) {
         return send(stream, 404, r#"{"error":"неизвестное приложение"}"#);
-    };
+    }
 
     // Хвост попадает в запрос к базе и в заголовок ответа. Набор символов
     // тот же, что у идентификатора подписки в панели; всё остальное — не
@@ -904,7 +937,10 @@ fn open_in_app(shared: &Shared, stream: &mut TcpStream, rest: &str) -> Result<()
         return send(stream, 404, r#"{"error":"нет такой подписки"}"#);
     };
 
-    redirect(stream, &format!("{scheme}{url}"))
+    match app_link(app, &url) {
+        Some(link) => redirect(stream, &link),
+        None => send(stream, 404, r#"{"error":"неизвестное приложение"}"#),
+    }
 }
 
 /// Собрать состояние покупателя.
@@ -1230,6 +1266,21 @@ fn send(stream: &mut TcpStream, status: u16, body: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn app_links() {
+        let url = "https://panel.example.org/api/sub/Ab_c-1";
+        assert_eq!(
+            super::app_link("happ", url).unwrap(),
+            "happ://add/https://panel.example.org/api/sub/Ab_c-1"
+        );
+        assert_eq!(
+            super::app_link("onexray", url).unwrap(),
+            "onexray://onexray.com/sub/add?url=https%3A%2F%2Fpanel.example.org%2Fapi%2Fsub%2FAb_c-1\
+             &panel=remnawave&mode=providerManaged#Gloria%20VPN"
+        );
+        assert!(super::app_link("other", url).is_none());
+    }
+
     use super::day_month_year;
 
     /// Момент времени по дате, записанной по-человечески.

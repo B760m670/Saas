@@ -928,36 +928,16 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 
     <!-- OneXray остался в российском App Store, когда оттуда убрали INCY и
          Happ. Подписку Remnawave он берёт целиком, вместе с нашими правилами
-         маршрутизации. Схемы для добавления по ссылке у него нет, поэтому
-         ведёт он не на «Ваш ключ», а на свой шаг с копированием и
-         инструкцией. -->
+         маршрутизации. Ссылка `onexray://…/sub/add` сразу говорит ему, что
+         это Remnawave и что конфигурацию надо брать целиком. -->
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
         <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8M16 8l-8 8"/></svg>
         <span class="body"><span class="title">OneXray</span><span class="hint">Есть в российском App Store — если INCY и Happ там не найти</span></span>
       </div>
       <button class="btn" data-act="install-app" data-app="onexray" style="margin-top:12px">Установить приложение</button>
-      <button class="btn ghost" data-act="step" data-to="onexray">У меня уже есть приложение</button>
+      <button class="btn ghost" data-act="step" data-to="add" data-app="onexray">У меня уже есть приложение</button>
     </div>
-  </div>
-
-  <div class="step" data-step="onexray">
-    <h1>Ключ для OneXray</h1>
-    <p class="sub">Скопируйте ключ и добавьте его в приложении</p>
-
-    <div class="copy" data-act="copy-sub">
-      <code data-sub>—</code>
-      <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-    </div>
-
-    <ol class="howto">
-      <li>Нажмите на ключ выше — он скопируется.</li>
-      <li>В OneXray откройте <b>Серверы</b> → <b>Добавить</b> → <b>Подписка</b> и вставьте ключ.</li>
-      <li>Панель — <b>Remnawave</b>, режим — <b>полная конфигурация провайдера</b>. Так российские сайты и банки будут работать без VPN, как и должны.</li>
-      <li>Выберите сервер и нажмите «Подключить».</li>
-    </ol>
-
-    <button class="btn primary" data-act="home" style="margin-top:18px">Готово</button>
   </div>
 
   <div class="step" data-step="add">
@@ -968,6 +948,13 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
       <code data-sub>—</code>
       <svg class="ico" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
     </div>
+
+    <!-- Только для OneXray: он спрашивает подтверждение, и если ссылка не
+         сработала, человеку нужно знать, что выбрать при ручном добавлении. -->
+    <ol class="howto" id="add-onexray" hidden>
+      <li>В OneXray подтвердите добавление подписки.</li>
+      <li>Если приложение не открылось — нажмите на ключ выше, он скопируется. В OneXray: <b>Серверы</b> → <b>Добавить</b> → <b>Подписка</b>, панель <b>Remnawave</b>, режим <b>полная конфигурация провайдера</b>.</li>
+    </ol>
 
     <a class="btn primary" id="add-link" style="margin-top:18px">Добавить в приложение</a>
     <button class="btn ghost" data-act="home">Готово</button>
@@ -1804,6 +1791,8 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     var url = state && state.status && state.subscriptionUrl;
     var tail = url ? url.split('/').pop() : null;
     if (!a) return;
+    var hint = document.getElementById('add-onexray');
+    if (hint) hint.hidden = chosen !== 'onexray';
     if (chosen && tail) a.href = '/api/open/' + chosen + '/' + encodeURIComponent(tail);
     else a.removeAttribute('href');
     a.classList.toggle('off', !(chosen && tail));
