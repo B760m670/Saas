@@ -373,7 +373,7 @@ mod tests {
         let (decoded, rest) = Request::decode(&encoded).unwrap();
 
         assert_eq!(decoded, request);
-        assert!(rest.is_empty());
+        assert_eq!(rest.len(), 0);
         assert_eq!(decoded.addons.flow.as_deref(), Some("xtls-rprx-vision"));
     }
 
@@ -422,7 +422,7 @@ mod tests {
         let encoded = response.encode().unwrap();
         let (decoded, rest) = Response::decode(&encoded).unwrap();
         assert_eq!(decoded, response);
-        assert!(rest.is_empty());
+        assert_eq!(rest.len(), 0);
     }
 
     #[test]

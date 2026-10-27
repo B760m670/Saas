@@ -1,0 +1,36 @@
+# Адрес подписок, отдельный от панели.
+#
+# Ссылка на подписку уходит людям и пересылается дальше. Пока она стояла на
+# адресе панели, каждый, у кого она есть, знал, где админка. Здесь открыт
+# только путь `/api/sub/…` — на всё остальное 404, и админки через этот
+# адрес не видно.
+#
+# Remnawave строит ссылки из `SUB_PUBLIC_DOMAIN` в /opt/remnawave/.env:
+#   SUB_PUBLIC_DOMAIN=sub.content-treasure-via.online/api/sub
+# Старые ссылки с `panel.` продолжают работать: путь на панели не тронут.
+
+sub.content-treasure-via.online {
+	handle /api/sub/* {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		respond 404
+	}
+
+	# Тот же журнал, что у панели (access-log.caddy): токен вырезается.
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "/api/sub/[^/?]+" "/api/sub/СКРЫТО"
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 32
+				}
+			}
+		}
+	}
+}

@@ -1,0 +1,20 @@
+[package]
+name = "atlas-telegram"
+description = "Проверка данных, которые Telegram передаёт мини-приложению"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hmac = "0.12"
+percent-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { version = "0.10", default-features = false }
+subtle.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
