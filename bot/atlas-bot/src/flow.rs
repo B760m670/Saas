@@ -516,7 +516,7 @@ fn device_screen(device: Device, view: &View<'_>) -> Reply {
     let onexray = match device {
         Device::Iphone => {
             "\n\nНет их в App Store? Поставьте OneXray: Серверы → Добавить → \
-             Подписка, вставьте ссылку, панель Remnawave, режим «полная конфигурация провайдера»."
+             Подписка, вставьте ссылку и сохраните."
         }
         _ => "",
     };

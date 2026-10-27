@@ -51,15 +51,20 @@ const APPS: [&str; 3] = ["happ", "incy", "onexray"];
 /// Ссылка, которая добавляет подписку в приложение.
 ///
 /// Happ и INCY берут адрес как есть, после `add/`. OneXray — параметром, и
-/// ему же сразу говорится, что это Remnawave и что конфигурацию надо брать
-/// целиком: иначе он разберёт подписку на голые серверы, и пропадут правила
-/// шаблона — русские сайты пойдут через VPN, а банки начнут ругаться.
+/// ему же сразу говорится брать конфигурацию целиком: иначе он разберёт
+/// подписку на голые серверы, и пропадут правила шаблона — русские сайты
+/// пойдут через VPN, а банки начнут ругаться.
+///
+/// `panel=remnawave` здесь намеренно нет. Полный конфиг OneXray узнаёт по
+/// содержимому, а метка панели только подписывает каждый сервер словом
+/// «Remnawave» — людям это ни о чём не говорит, а название панели лишний
+/// раз светит, на чём стоит сервис.
 fn app_link(app: &str, url: &str) -> Option<String> {
     match app {
         "happ" => Some(format!("happ://add/{url}")),
         "incy" => Some(format!("incy://add/{url}")),
         "onexray" => Some(format!(
-            "onexray://onexray.com/sub/add?url={}&panel=remnawave&mode=providerManaged#Gloria%20VPN",
+            "onexray://onexray.com/sub/add?url={}&mode=providerManaged#Gloria%20VPN",
             percent_encode(url)
         )),
         _ => None,
@@ -1277,7 +1282,7 @@ mod tests {
             super::app_link("onexray", url).as_deref(),
             Some(
                 "onexray://onexray.com/sub/add?url=https%3A%2F%2Fpanel.example.org%2Fapi%2Fsub%2FAb_c-1\
-                 &panel=remnawave&mode=providerManaged#Gloria%20VPN"
+                 &mode=providerManaged#Gloria%20VPN"
             )
         );
         assert!(super::app_link("other", url).is_none());
