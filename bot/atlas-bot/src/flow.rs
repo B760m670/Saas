@@ -207,13 +207,21 @@ fn greeting(view: &View<'_>) -> Reply {
         .filter(|name| !name.is_empty())
         .map_or_else(String::new, |name| format!(", {}", escape_html(name)));
 
+    // У кого подписка уже есть, под приветствием — её состояние и ссылка.
+    // Новичку их добавит выдача пробы: в этот момент её ещё нет.
+    let state = if view.expires_at.is_some() {
+        format!("\n\n{}", status(view))
+    } else {
+        String::new()
+    };
+
     Reply {
         text: format!(
             "Приветствуем тебя{name}!\n\n\
              Gloria VPN — это VPN-сервис с быстрыми серверами, который работает у 100% \
              пользователей в России.\n\n\
              Настройка происходит в нашем личном кабинете — откройте его кнопкой ниже\n\n\
-             Подключение займет 2 минуты"
+             Подключение займет 2 минуты{state}"
         ),
         keyboard: Some(main_menu(view.app_url)),
     }
@@ -387,6 +395,15 @@ fn other_amount_screen(view: &View<'_>) -> Reply {
 }
 
 fn subscription_screen(view: &View<'_>) -> Reply {
+    Reply {
+        text: status(view),
+        keyboard: Some(main_menu(view.app_url)),
+    }
+}
+
+/// Состояние подписки и ссылка — то, что показывает «Моя подписка», и то,
+/// что идёт под приветствием на `/start`.
+fn status(view: &View<'_>) -> String {
     // У прежней пробы (5 ГБ) своя мера: пока она идёт, дни не называются —
     // человек упрётся в гигабайты раньше, чем в дату. Новая проба — двое
     // суток без потолка, у неё панель гигабайт не сообщает.
@@ -405,13 +422,13 @@ fn subscription_screen(view: &View<'_>) -> Reply {
     } else if view.is_active() && view.on_trial {
         let days = view.days_left();
         format!(
-            "Пробный доступ без ограничений: осталось {days} {}.",
+            "✅ Пробный доступ без ограничений: осталось {days} {}.",
             plural(days, "день", "дня", "дней")
         )
     } else if view.is_active() {
         let days = view.days_left();
         format!(
-            "Подписка активна: осталось {days} {}.",
+            "✅ Подписка активна: осталось {days} {}.",
             plural(days, "день", "дня", "дней")
         )
     } else if view.expires_at.is_some() {
@@ -420,21 +437,14 @@ fn subscription_screen(view: &View<'_>) -> Reply {
         "Подписки пока нет.".to_owned()
     };
 
-    // Ссылка нужна в переписке ровно до тех пор, пока её негде показать
-    // иначе. Есть кабинет — она живёт там, вместе с кнопкой «скопировать» и
-    // переходом прямо в приложение. Дублировать её в чат значит завести
-    // второе место для одного и того же; второе всегда отстаёт от первого.
-    let link = match (view.app_url, view.subscription_url) {
-        (None, Some(url)) => {
-            format!("\n\nВаша ссылка — одна на все устройства:\n<code>{url}</code>")
-        }
-        _ => String::new(),
-    };
+    // Ссылка — строкой под состоянием, в `<code>`: так она копируется
+    // нажатием. Та же ссылка есть в кабинете; здесь она для тех, кто
+    // вставляет её в приложение руками, не открывая кабинет.
+    let link = view.subscription_url.map_or_else(String::new, |url| {
+        format!("\n🔗 Ссылка: <code>{url}</code>")
+    });
 
-    Reply {
-        text: format!("{head}{link}"),
-        keyboard: Some(main_menu(view.app_url)),
-    }
+    format!("{head}{link}")
 }
 
 fn plans_screen(view: &View<'_>) -> Reply {
@@ -640,6 +650,29 @@ mod tests {
         assert_eq!(effect, Effect::GrantTrial);
         assert!(
             reply.text.starts_with("Приветствуем тебя!"),
+            "{}",
+            reply.text
+        );
+    }
+
+    /// Под приветствием у подписчика — состояние и ссылка, как в «Моей
+    /// подписке».
+    #[test]
+    fn the_greeting_carries_the_status_and_the_link() {
+        let view = View {
+            subscription_url: Some("https://panel.example.org/api/sub/abc"),
+            ..active()
+        };
+        let (reply, _) = on_message("/start", &view);
+        assert!(
+            reply.text.contains("\n\n✅ Подписка активна: осталось "),
+            "{}",
+            reply.text
+        );
+        assert!(
+            reply
+                .text
+                .ends_with("\n🔗 Ссылка: <code>https://panel.example.org/api/sub/abc</code>"),
             "{}",
             reply.text
         );

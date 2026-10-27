@@ -1202,7 +1202,11 @@ fn apply(
 
             let url = ensure_panel_user(config, deps.panel, store, telegram_id, expires_at)?;
             Ok(Some(
-                format!("Ваша ссылка — одна на все устройства:\n<code>{url}</code>").into(),
+                format!(
+                    "✅ Пробный доступ включён: {} дня без ограничений.\n🔗 Ссылка: <code>{url}</code>",
+                    catalog::TRIAL_DAYS
+                )
+                .into(),
             ))
         }
 
