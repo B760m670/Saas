@@ -449,6 +449,10 @@ a.btn.off { opacity: 0.45; }
 .row + .row { margin-top: 8px; }
 .row:active { background: var(--card-2); }
 .row .ico { flex: none; width: 22px; height: 22px; color: var(--mid); }
+/* Настоящие иконки клиентов — с App Store, как их видят на телефоне.
+   Скругление как у иконок iOS, тонкая кромка — чтобы светлая иконка не
+   растворялась в светлой теме. */
+.row .appicon { flex: none; width: 40px; height: 40px; border-radius: 10px; box-shadow: 0 0 0 1px var(--line); }
 .row .body { flex: 1; min-width: 0; }
 .row .title { display: block; font-size: 15px; font-weight: 600; }
 .row .hint { display: block; font-size: 12.5px; color: var(--muted); margin-top: 1px; }
@@ -919,7 +923,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
          ему, что конфигурацию надо брать целиком. -->
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 8l8 8M16 8l-8 8"/></svg>
+        <img class="appicon" src="brand/apps/onexray.png" alt="" width="40" height="40">
         <span class="body"><span class="title">OneXray <span class="badge ok" style="margin-left:6px;vertical-align:2px">Рекомендуем</span></span><span class="hint">Есть в российском App Store и для Android, Windows, macOS и Linux</span></span>
       </div>
       <button class="btn primary" data-act="install-app" data-app="onexray" style="margin-top:12px">Установить приложение</button>
@@ -928,7 +932,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 3v18M3 8l9-5 9 5v8l-9 5-9-5z"/></svg>
+        <img class="appicon" src="brand/apps/incy.png" alt="" width="40" height="40">
         <span class="body"><span class="title">INCY</span><span class="hint">Если уже установлен или OneXray не подошёл</span></span>
       </div>
 <p class="note region-note">На iPhone из России: в российском App Store его нет. Смените регион Apple ID на другую страну — <b>Настройки</b> → ваше имя → <b>Контент и покупки</b> → <b>Просмотреть</b> → <b>Страна или регион</b>. Подписки Apple при этом нужно отменить заранее.</p>
@@ -938,7 +942,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 
     <div class="card">
       <div class="row" style="background:transparent;padding:0;border:0">
-        <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2 4 6v6c0 4.4 3.4 8.4 8 10 4.6-1.6 8-5.6 8-10V6z"/></svg>
+        <img class="appicon" src="brand/apps/happ.png" alt="" width="40" height="40">
         <span class="body"><span class="title">Happ</span><span class="hint">Запасной вариант</span></span>
       </div>
 <p class="note region-note">На iPhone из России: в российском App Store его нет. Смените регион Apple ID на другую страну — <b>Настройки</b> → ваше имя → <b>Контент и покупки</b> → <b>Просмотреть</b> → <b>Страна или регион</b>. Подписки Apple при этом нужно отменить заранее.</p>

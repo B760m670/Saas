@@ -175,6 +175,10 @@ publish_legal() {
 install -d -m 755 "$SITE/brand"
 install -m 644 site/brand/start.png "$SITE/brand/start.png"
 
+# Иконки клиентов на шаге «Какое приложение?» в кабинете.
+install -d -m 755 "$SITE/brand/apps"
+install -m 644 site/brand/apps/*.png "$SITE/brand/apps/"
+
 install -d -m 755 "$SITE/legal"
 for f in site/legal/*.html; do
     publish_legal "$f" "$SITE/legal/$(basename "$f")"
