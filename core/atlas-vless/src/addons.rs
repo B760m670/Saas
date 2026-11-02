@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn empty_addons_encode_to_nothing() {
-        assert!(Addons::empty().encode().is_empty());
+        assert_eq!(Addons::empty().encode().len(), 0);
         assert_eq!(Addons::decode(&[]).unwrap(), Addons::empty());
     }
 

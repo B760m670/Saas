@@ -104,6 +104,6 @@ trojan://secret@b.example:443?security=tls&sni=b.example#Вторая
 
     #[test]
     fn empty_body_yields_nothing() {
-        assert!(Subscription::parse("").is_empty());
+        assert_eq!(Subscription::parse("").len(), 0);
     }
 }

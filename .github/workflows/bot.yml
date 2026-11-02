@@ -1,0 +1,134 @@
+# Проверка бота.
+#
+# Отдельно от `core.yml` намеренно: у бота своё рабочее пространство, и
+# кросс-сборок под iOS и Android ему не нужно — он работает только на
+# сервере. Зато он зависит от крейтов из `core/` по пути, поэтому правка
+# там обязана проверяться и здесь.
+
+name: bot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bot/**"
+      - "db/**"
+      - "core/atlas-billing/**"
+      - "core/atlas-telegram/**"
+      - ".github/workflows/bot.yml"
+  pull_request:
+    paths:
+      - "bot/**"
+      - "db/**"
+      - "core/atlas-billing/**"
+      - "core/atlas-telegram/**"
+      - ".github/workflows/bot.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: bot-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+defaults:
+  run:
+    working-directory: bot
+
+jobs:
+  check:
+    name: тесты, clippy, формат
+    runs-on: ubuntu-latest
+
+    # Хранилище проверяется против настоящего PostgreSQL: всё, что там стоит
+    # проверять, — это поведение ограничений, блокировок и транзакций, то есть
+    # ровно то, чего у заглушки нет. Без этой службы тесты хранилища молча
+    # пропускаются, и провал прошёл бы незамеченным.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: gloria_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Установить toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bot
+
+      - name: Формат
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Тесты
+        run: cargo test --all-features
+        env:
+          GLORIA_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/gloria_test
+
+      - name: Документация без предупреждений
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  schema:
+    name: схема базы
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v5
+
+      # Миграция применяется на чистой базе, затем враждебные запросы
+      # проверяют, что сторожа срабатывают. Ограничение, которое никто не
+      # пробовал нарушить, — это комментарий, а не ограничение.
+      # Перебором по каталогу, а не списком: список пришлось бы дописывать
+      # при каждой миграции, а забытая строка означает, что проверяется
+      # схема, которой на сервере уже нет.
+      - name: Применить схему
+        run: |
+          for m in db/migrations/*.sql; do
+            echo "== $m"
+            psql -v ON_ERROR_STOP=1 -f "$m"
+          done
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres
+
+      - name: Проверить сторожа
+        run: psql -v ON_ERROR_STOP=1 -f db/tests/invariants.sql
+        env:
+          PGHOST: localhost
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: postgres

@@ -509,7 +509,7 @@ mod tests {
         // Первый блок Vision отправляется вообще без содержимого — только
         // чтобы спрятать длину заголовка VLESS.
         let out = round_trip(&[(Vec::new(), Command::Continue, true)]);
-        assert!(out.is_empty());
+        assert_eq!(out.len(), 0);
     }
 
     #[test]

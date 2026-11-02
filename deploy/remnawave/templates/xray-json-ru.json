@@ -1,0 +1,128 @@
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "dns": {
+        "queryStrategy": "UseIP",
+        "servers": [
+            {
+                "address": "77.88.8.8",
+                "domains": [
+                    "geosite:category-ru"
+                ]
+            },
+            "1.1.1.1",
+            "1.0.0.1"
+        ]
+    },
+    "routing": {
+        "domainMatcher": "hybrid",
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "protocol": [
+                    "bittorrent"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:private",
+                    "domain:content-treasure-via.online"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "domain:vk.com",
+                    "domain:vk.ru",
+                    "domain:vk.me",
+                    "domain:vk-cdn.net",
+                    "domain:vk-apps.com",
+                    "domain:userapi.com",
+                    "domain:vkuser.net",
+                    "domain:vkuservideo.net",
+                    "domain:vkvideo.ru",
+                    "domain:max.ru",
+                    "domain:oneme.ru",
+                    "domain:mail.ru",
+                    "domain:mycdn.me",
+                    "domain:mradx.net",
+                    "domain:imgsmail.ru",
+                    "domain:ok.ru",
+                    "domain:dzen.ru",
+                    "domain:gosuslugi.ru",
+                    "domain:rustore.ru"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:category-ru"
+                ],
+                "outboundTag": "direct"
+            },
+            {
+                "type": "field",
+                "ip": [
+                    "geoip:private",
+                    "geoip:ru"
+                ],
+                "outboundTag": "direct"
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "tag": "socks",
+            "port": 10808,
+            "listen": "127.0.0.1",
+            "protocol": "socks",
+            "settings": {
+                "udp": true,
+                "auth": "noauth"
+            },
+            "sniffing": {
+                "enabled": true,
+                "routeOnly": false,
+                "destOverride": [
+                    "http",
+                    "tls",
+                    "quic"
+                ]
+            }
+        },
+        {
+            "tag": "http",
+            "port": 10809,
+            "listen": "127.0.0.1",
+            "protocol": "http",
+            "settings": {
+                "allowTransparent": false
+            },
+            "sniffing": {
+                "enabled": true,
+                "routeOnly": false,
+                "destOverride": [
+                    "http",
+                    "tls",
+                    "quic"
+                ]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "tag": "direct",
+            "protocol": "freedom"
+        },
+        {
+            "tag": "block",
+            "protocol": "blackhole"
+        }
+    ]
+}

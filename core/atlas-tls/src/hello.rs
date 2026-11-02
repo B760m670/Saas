@@ -237,7 +237,7 @@ fn parse_extensions(mut body: &[u8]) -> Result<Vec<Extension>> {
         out.push(Extension::raw(ext_type, data.to_vec()));
     }
     body = r.rest();
-    debug_assert!(body.is_empty());
+    debug_assert_eq!(body.len(), 0);
     Ok(out)
 }
 

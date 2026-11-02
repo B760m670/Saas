@@ -1,0 +1,6 @@
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:720px;overflow:hidden}
+body{font-family:Manrope,sans-serif;-webkit-font-smoothing:antialiased;position:relative}
+.word{font-weight:800;letter-spacing:-3px;line-height:.95}
+.tag{font-weight:600;letter-spacing:-.2px}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:10px 18px;border-radius:999px;font-weight:700;font-size:20px}
