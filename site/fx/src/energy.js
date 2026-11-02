@@ -7,12 +7,13 @@
 //
 // Сцена:
 //   • звёзды с лёгким мерцанием и параллаксом от наклона телефона;
-//   • планета — тёмная сфера с рассеянием по краю и атмосферой (френель),
-//     материки из тысяч светящихся точек по маске суши;
-//   • точки сети по очереди извергают столб энергии: ударная волна по
-//     поверхности, вспышка, затем столб с раскалённым ядром и текучим шумом
-//     внутри, искры несутся вверх; после пика энергия не гаснет, а бурлит
-//     ровным потоком. Мощность у всех столбов одна;
+//   • планета по снимкам NASA: день, терминатор, огни городов ночью,
+//     облака, атмосфера;
+//   • точки сети по очереди извергают столб плазмы: дрожащее белое ядро,
+//     клубящаяся корона и короткие разряды-нити. Цвет не назначен столбу,
+//     а следует из плотности энергии (синий → голубой → белый), одинаково
+//     для всех. Ударная волна — одна, при рождении; основание подсвечивает
+//     поверхность;
 //   • дуга срока над горизонтом: янтарь — оплаченное, зелёный — +30 дней.
 //
 // Слабое устройство: если кадр дольше ~28 мс, движок сам отключает блум и
@@ -20,9 +21,9 @@
 
 import {
   WebGLRenderer, Scene, PerspectiveCamera, Group, Color, Vector2, Vector3,
-  Quaternion, Matrix4, SphereGeometry, CylinderGeometry, RingGeometry,
+  Quaternion, Matrix4, SphereGeometry, RingGeometry,
   TorusGeometry, BufferGeometry, Float32BufferAttribute, ShaderMaterial,
-  Mesh, Points, AdditiveBlending, NormalBlending, BackSide, DoubleSide, MathUtils,
+  Mesh, Points, PlaneGeometry, AdditiveBlending, NormalBlending, BackSide, DoubleSide, MathUtils,
   TextureLoader, SRGBColorSpace, LinearSRGBColorSpace, LinearMipmapLinearFilter,
 } from 'three';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
@@ -55,61 +56,85 @@ float snoise(vec2 v){
 float fbm(vec2 p){float f=0.,a=.5;for(int i=0;i<4;i++){f+=a*snoise(p);p*=2.03;a*=.5;}return f;}
 `;
 
-const BEAM_VERT = /* glsl */`
-varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+// Столб — не цилиндр, а лента, всегда развёрнутая к камере вокруг своей
+// оси: так видимую форму целиком рисует фрагментный шейдер.
+const BOLT_VERT = /* glsl */`
+uniform float uH; uniform float uW;
+varying vec2 vUv;
 void main(){
   vUv=uv;
-  vec4 wp=modelMatrix*vec4(position,1.);
-  vN=normalize(mat3(modelMatrix)*normal);
-  vV=normalize(cameraPosition-wp.xyz);
-  gl_Position=projectionMatrix*viewMatrix*wp;
+  vec3 base=(modelMatrix*vec4(0.,0.,0.,1.)).xyz;
+  vec3 ax=normalize(mat3(modelMatrix)*vec3(0.,1.,0.));
+  vec3 v=normalize(cameraPosition-(base+ax*uH*.5));
+  vec3 side=normalize(cross(ax,v));
+  vec3 wp=base+ax*(position.y*uH)+side*(position.x*uW);
+  gl_Position=projectionMatrix*viewMatrix*vec4(wp,1.);
 }`;
 
-// Столб: ядро по френелю (середина цилиндра, обращённая к нам, — белая),
-// внутри течёт шум снизу вверх, к вершине гаснет. uPower — 0…1: рост,
-// пик, ровное бурление.
-const BEAM_FRAG = /* glsl */`
-uniform vec3 uColor; uniform float uTime; uniform float uPower; uniform float uSeed; uniform float uGrow;
-varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+// Плазма. Правдоподобие держится на трёх вещах:
+//  1. цвет не задан, а следует из плотности энергии — как у раскалённого
+//     газа: слабое свечение глубоко-синее, плотнее — голубое, ядро белое;
+//     одна физика на все столбы, а не по краске на каждый;
+//  2. форма не ровная: тонкое ядро дрожит, вокруг клубится корона из шума,
+//     который несёт вверх и закручивает (domain warping), к вершине она
+//     расползается и рвётся на клочья, а не гаснет градиентом;
+//  3. разряды: тонкие ломаные нити бьют вдоль ядра короткими вспышками в
+//     случайные моменты — неравномерное мерцание читается как живое.
+const BOLT_FRAG = /* glsl */`
+uniform float uTime; uniform float uPower; uniform float uSeed; uniform float uGrow; uniform float uH; uniform float uW;
+varying vec2 vUv;
 ${NOISE}
-void main(){
-  float y=vUv.y;
-  if(y>uGrow) discard;
-  float face=abs(dot(vN,vV));
-  float core=pow(face,5.);
-  float flow=fbm(vec2(vUv.x*6.2832*.8+uSeed, y*3.5-uTime*2.6));
-  float streak=smoothstep(.15,.9,fbm(vec2(vUv.x*12.+uSeed*3., y*1.2-uTime*4.)));
-  float body=smoothstep(.0,.35,face)*(.55+.45*flow)+streak*.6*face;
-  float fade=(1.-smoothstep(.35,1.,y/max(uGrow,.001)))*smoothstep(0.,.04,y);
-  vec3 col=uColor*body*1.25+vec3(1.)*core*1.35;
-  float a=(body*.9+core)*fade*uPower;
-  gl_FragColor=vec4(col*a,a);
-}`;
-
-// Ореол вокруг столба — широкий, мягкий, дрожит.
-const HALO_FRAG = /* glsl */`
-uniform vec3 uColor; uniform float uTime; uniform float uPower; uniform float uSeed; uniform float uGrow;
-varying vec2 vUv; varying vec3 vN; varying vec3 vV;
-${NOISE}
+float fbm2(vec2 p){return .65*snoise(p)+.35*snoise(p*2.1);}
+float hash(float n){return fract(sin(n)*43758.5453);}
+vec3 plasma(float e){
+  vec3 c=mix(vec3(.05,.06,.42),vec3(.16,.42,1.),smoothstep(0.,.55,e));
+  c=mix(c,vec3(.62,.86,1.),smoothstep(.55,1.3,e));
+  c=mix(c,vec3(1.),smoothstep(1.3,2.4,e));
+  return c*e;
+}
 void main(){
   float y=vUv.y; if(y>uGrow) discard;
-  float face=pow(abs(dot(vN,vV)),2.2);
-  float n=.7+.3*snoise(vec2(y*2.-uTime*1.5,uSeed));
-  float fade=(1.-smoothstep(.3,1.,y/max(uGrow,.001)));
-  float a=face*fade*n*.35*uPower;
-  gl_FragColor=vec4(uColor*a,a);
+  float h=y*uH, t=uTime;
+  float X=(vUv.x*2.-1.)*uW;
+  float lift=smoothstep(0.,.25,y);
+  float wob=snoise(vec2(h*.3-t*.8,uSeed))*.12*lift+snoise(vec2(h*1.6-t*2.7,uSeed+5.))*.035;
+  float x=X-wob;
+  float spread=mix(.55,1.7,y*y);
+  vec2 q=vec2(x*2.4/spread, h*.85-t*2.1);
+  vec2 warp=vec2(fbm(q+uSeed),fbm(q+vec2(5.2,1.3)+uSeed));
+  float turb=fbm(q*1.5+warp*1.6-vec2(0.,t*.7))*.5+.5;
+  float corona=exp(-abs(x)/(.26*spread))*(.35+1.3*turb*turb)
+              +exp(-abs(x)/(.75*spread))*turb*.45;
+  float core=exp(-pow(x/.055,2.))*(.8+.2*snoise(vec2(h*5.-t*18.,uSeed)))
+            +exp(-pow(x/.16,2.))*.5;
+  core*=1.-smoothstep(.35,.9,y);
+  float fil=0.;
+  for(int i=0;i<3;i++){
+    float s=uSeed+float(i)*13.7, k=t*6.+float(i)*.37, n=floor(k), life=fract(k);
+    if(hash(n*1.7+s)<.45) continue;
+    float off=fbm2(vec2(h*.8+s,n*.71))*.32*spread*lift+snoise(vec2(h*5.+s,n))*.04;
+    float len=.35+.6*hash(n+s*3.);
+    fil+=exp(-abs(x-off)/.01)*(1.-life)*(1.-smoothstep(len-.1,len,y));
+  }
+  float flick=.82+.18*snoise(vec2(t*9.,uSeed*2.));
+  float top=1.-smoothstep(.45,1.,y/max(uGrow,.001)+(turb-.5)*.6);
+  float e=(corona*.6+core*1.9+fil*1.8)*top*smoothstep(0.,.06,y)*uPower*flick;
+  gl_FragColor=vec4(plasma(e),1.);
 }`;
 
 // Ударная волна на поверхности: кольцо расходится от основания.
 const RING_FRAG = /* glsl */`
-uniform vec3 uColor; uniform float uWave; uniform float uPower;
+uniform float uWave; uniform float uPower; uniform float uTime;
 varying vec2 vUv;
+${NOISE}
 void main(){
   vec2 p=vUv*2.-1.; float r=length(p);
-  float ring=exp(-pow((r-uWave)*14.,2.))*(1.-uWave);
-  float pool=exp(-r*r*14.)*uPower;
-  float a=ring*1.4+pool*.9;
-  gl_FragColor=vec4(mix(uColor,vec3(1.),pool*.6)*a,a);
+  float ring=exp(-pow((r-uWave)*18.,2.))*pow(1.-uWave,2.)*1.2;
+  float n=.6+.4*snoise(p*4.+uTime*1.5);
+  float pool=exp(-r*r*45.)*uPower*n;
+  float e=ring*.8+pool*.45;
+  vec3 c=mix(vec3(.16,.42,1.),vec3(.8,.93,1.),smoothstep(.4,1.2,e));
+  gl_FragColor=vec4(c*e,1.);
 }`;
 const PLAIN_VERT = /* glsl */`varying vec2 vUv; void main(){vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
 
@@ -120,18 +145,19 @@ uniform float uTime; uniform float uPower; uniform float uH; uniform float uPx;
 varying float vA;
 void main(){
   float t=fract(aPhase+uTime*aSpeed);
-  float r=aRad*(1.+t*1.6);
-  vec3 p=vec3(cos(aAng+t*3.)*r, t*uH, sin(aAng+t*3.)*r);
-  vA=(1.-t)*smoothstep(0.,.05,t)*uPower;
+  float r=aRad*(.6+t*2.2);
+  float j=sin(uTime*13.+aPhase*40.)*.04;
+  vec3 p=vec3(cos(aAng+t*2.)*r+j, t*t*uH*.8+t*uH*.2, sin(aAng+t*2.)*r);
+  vA=(1.-t)*(1.-t)*smoothstep(0.,.05,t)*uPower*step(.3,fract(aPhase*7.31+uTime*aSpeed*3.));
   vec4 mv=modelViewMatrix*vec4(p,1.);
-  gl_PointSize=uPx*(1.6+2.4*(1.-t))/-mv.z;
+  gl_PointSize=uPx*(.9+1.4*(1.-t))/-mv.z;
   gl_Position=projectionMatrix*mv;
 }`;
 const SPARK_FRAG = /* glsl */`
-uniform vec3 uColor; varying float vA;
+varying float vA;
 void main(){
   float d=length(gl_PointCoord-.5); float a=smoothstep(.5,0.,d)*vA;
-  gl_FragColor=vec4(mix(uColor,vec3(1.),.55)*a,a);
+  gl_FragColor=vec4(mix(vec3(.35,.62,1.),vec3(1.),vA)*a*1.6,1.);
 }`;
 
 // 3D-шум для облаков: value noise по хешу, без швов на сфере.
@@ -190,7 +216,7 @@ void main(){
   // Закат на терминаторе.
   col+=vec3(1.,.42,.12)*exp(-pow((ndl-.02)*14.,2.))*.1*(1.-water*.6);
   // Подсветка от столбов энергии.
-  for(int i=0;i<12;i++){ float d=distance(vP*${R.toFixed(1)},uHot[i]); col+=uHotCol[i]*uHotPow[i]*exp(-d*d*1.1)*.55; }
+  for(int i=0;i<12;i++){ float d=distance(vP*${R.toFixed(1)},uHot[i]); col+=uHotCol[i]*uHotPow[i]*exp(-d*d*1.6)*.28; }
   // Атмосферная дымка по краю диска, голубая днём.
   float f=pow(1.-max(dot(N,V),0.),3.);
   col+=mix(vec3(.35,.3,.6),vec3(.35,.6,1.),dayAmt)*f*(.04+.45*dayAmt);
@@ -415,15 +441,16 @@ export function mountEnergy(canvas, opts) {
     anchor.position.copy(dir.clone().multiplyScalar(R * 1.002));
     anchor.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), dir);
     earth.add(anchor);
-    const color = hex(p.color);
-    const uni = () => ({ uColor: { value: color }, uTime: { value: 0 }, uPower: { value: 0 }, uSeed: { value: i * 7.13 }, uGrow: { value: 0 } });
-    const beamGeo = new CylinderGeometry(0.16, 0.28, BEAM_H, 24, 1, true); beamGeo.translate(0, BEAM_H / 2, 0);
-    const haloGeo = new CylinderGeometry(0.6, 1.0, BEAM_H, 24, 1, true); haloGeo.translate(0, BEAM_H / 2, 0);
-    const beam = new Mesh(beamGeo, new ShaderMaterial({ vertexShader: BEAM_VERT, fragmentShader: BEAM_FRAG, uniforms: uni(), transparent: true, depthWrite: false, blending: AdditiveBlending, side: DoubleSide }));
-    const halo = new Mesh(haloGeo, new ShaderMaterial({ vertexShader: BEAM_VERT, fragmentShader: HALO_FRAG, uniforms: uni(), transparent: true, depthWrite: false, blending: AdditiveBlending, side: DoubleSide }));
+    const BW = 1.6;
+    const boltGeo = new PlaneGeometry(2, 1, 1, 1); boltGeo.translate(0, 0.5, 0);
+    const beam = new Mesh(boltGeo, new ShaderMaterial({
+      vertexShader: BOLT_VERT, fragmentShader: BOLT_FRAG, transparent: true, depthWrite: false, blending: AdditiveBlending, side: DoubleSide,
+      uniforms: { uTime: { value: 0 }, uPower: { value: 0 }, uSeed: { value: i * 7.13 }, uGrow: { value: 0 }, uH: { value: BEAM_H }, uW: { value: BW } },
+    }));
+    beam.frustumCulled = false;
     const ring = new Mesh(new RingGeometry(0, 1.9, 48), new ShaderMaterial({
       vertexShader: PLAIN_VERT, fragmentShader: RING_FRAG, transparent: true, depthWrite: false, blending: AdditiveBlending, side: DoubleSide,
-      uniforms: { uColor: { value: color }, uWave: { value: 1 }, uPower: { value: 0 } },
+      uniforms: { uWave: { value: 1 }, uPower: { value: 0 }, uTime: { value: 0 } },
     }));
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.01;
     // UV кольца — по квадрату, не по радиусу: пересчитать в [0,1]×[0,1].
@@ -431,11 +458,11 @@ export function mountEnergy(canvas, opts) {
       for (let k = 0; k < pa.count; k++) uv.setXY(k, pa.getX(k) / 3.8 + 0.5, pa.getY(k) / 3.8 + 0.5); }
     const sparks = new Points(sparkGeometry(sparksPer), new ShaderMaterial({
       vertexShader: SPARK_VERT, fragmentShader: SPARK_FRAG, transparent: true, depthWrite: false, blending: AdditiveBlending,
-      uniforms: { uColor: { value: color }, uTime: { value: 0 }, uPower: { value: 0 }, uH: { value: BEAM_H * 0.9 }, uPx: { value: 30 * dpr } },
+      uniforms: { uTime: { value: 0 }, uPower: { value: 0 }, uH: { value: BEAM_H * 0.9 }, uPx: { value: 30 * dpr } },
     }));
-    anchor.add(beam, halo, ring, sparks);
+    anchor.add(beam, ring, sparks);
     anchor.visible = false;
-    return { p, i, dir, anchor, beam, halo, ring, sparks, color };
+    return { p, i, dir, anchor, beam, ring, sparks };
   });
 
   // Блум.
@@ -510,22 +537,18 @@ export function mountEnergy(canvas, opts) {
       if (!n.anchor.visible) { if (slot >= 0) hotPow[slot] = 0; continue; }
       const grow = Math.min(1, age / 0.5);
       const peak = age < 3 ? 1 : 0.7 + 0.3 * Math.exp(-(age - 3) * 0.8);
-      const burst = 1 + Math.max(0, 1 - age / 0.9) * 0.9;
-      const breathe = 0.92 + 0.08 * Math.sin(t * 5 + n.i);
-      const power = peak * breathe;
-      for (const m of [n.beam, n.halo]) {
-        m.material.uniforms.uTime.value = t;
-        m.material.uniforms.uPower.value = power;
-        m.material.uniforms.uGrow.value = grow;
-      }
-      n.beam.scale.set(burst, 1, burst); n.halo.scale.set(burst * (1 + 0.06 * Math.sin(t * 9 + n.i)), 1, burst);
-      // Волна: первая — при рождении, дальше раз в 2,4 с, слабее.
-      const wave = age < 1.4 ? age / 1.4 : ((age - 1.4) % 2.4) / 2.4;
-      n.ring.material.uniforms.uWave.value = wave;
+      const burst = 1 + Math.max(0, 1 - age / 0.9) * 0.4;
+      const power = peak;
+      const u = n.beam.material.uniforms;
+      u.uTime.value = t; u.uPower.value = power; u.uGrow.value = grow; u.uW.value = 1.6 * burst;
+      // Ударная волна — одна, при рождении столба; дальше только свечение
+      // на поверхности у основания.
+      n.ring.material.uniforms.uWave.value = Math.min(1, age / 1.2);
       n.ring.material.uniforms.uPower.value = power;
+      n.ring.material.uniforms.uTime.value = t;
       n.sparks.material.uniforms.uTime.value = t;
       n.sparks.material.uniforms.uPower.value = grow * (lite ? 0.5 : 1);
-      if (slot >= 0) { hot[slot].copy(n.anchor.position); hotCol[slot].set(n.color.r, n.color.g, n.color.b); hotPow[slot] = power * grow; }
+      if (slot >= 0) { hot[slot].copy(n.anchor.position); hotCol[slot].set(0.32, 0.58, 1.0); hotPow[slot] = power * grow; }
       if (n.p.you || n.p.server) {
         const s = v3.clone().project(camera);
         labels.push({ name: n.p.name, server: !!n.p.server, x: (s.x * 0.5 + 0.5) * w, y: (-s.y * 0.5 + 0.5) * h });

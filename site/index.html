@@ -627,7 +627,9 @@ html.android .region-note { display: none; }
 .renew.gl #rn-gl { opacity: 1; }
 #rn-labels { position: absolute; inset: 0; pointer-events: none; }
 .rn-tag { position: absolute; transform: translate(-50%, 0); white-space: nowrap; font-weight: 800; }
-.rn-tag.you { margin-top: 16px; font-size: 13px; color: #e6dcff; text-shadow: 0 0 10px rgba(191, 90, 242, 0.9); }
+.rn-tag.you { transform: translate(22px, -50%); padding: 6px 11px; border-radius: 12px; font-size: 13px; color: #fff6e6;
+  background: rgba(6, 5, 7, 0.7); border: 1px solid rgba(255, 236, 190, 0.18);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 .rn-tag.srv {
   transform: translate(calc(-100% - 22px), -50%); padding: 6px 11px; border-radius: 12px;
   background: rgba(6, 5, 7, 0.7); border: 1px solid rgba(255, 236, 190, 0.18);
@@ -1923,7 +1925,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      в простое — и сразу прогревается (шейдеры компилируются один раз). К
      нажатию «Продлить» сцена уже готова и появляется без задержки. Нет
      WebGL — экран остаётся тёмным и спокойным, без запасной анимации. */
-  var FX_SRC = 'fx/energy.js?v=d0b499420a';
+  var FX_SRC = 'fx/energy.js?v=10b0d62ae2';
   var GL = { state: 'idle', scene: null };
 
   function rnLabels(list) {
