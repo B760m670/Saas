@@ -618,10 +618,10 @@ html.android .region-note { display: none; }
   transition: transform 0.42s var(--ease), visibility 0s linear 0.42s;
 }
 .renew.on { transform: none; visibility: visible; transition: transform 0.42s var(--ease); }
-#rn-sky, #rn-gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-#rn-gl { opacity: 0; transition: opacity 0.6s; touch-action: none; }
+/* Сцена — WebGL из fx/energy.js. Появляется плавно, когда отрисован первый
+   кадр; до этого — просто тёмный фон, без подмены одной анимации другой. */
+#rn-gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; opacity: 0; transition: opacity 0.5s; touch-action: none; }
 .renew.gl #rn-gl { opacity: 1; }
-.renew.gl #rn-sky { display: none; }
 #rn-labels { position: absolute; inset: 0; pointer-events: none; }
 .rn-tag { position: absolute; transform: translate(-50%, 0); white-space: nowrap; font-weight: 800; }
 .rn-tag.you { margin-top: 16px; font-size: 13px; color: #e6dcff; text-shadow: 0 0 10px rgba(191, 90, 242, 0.9); }
@@ -1194,7 +1194,6 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 
      id остаётся `sheet`: открывают и закрывают его те же `sheet(true/false)`. -->
 <div class="renew" id="sheet" role="dialog" aria-label="Продление подписки">
-  <canvas id="rn-sky" aria-hidden="true"></canvas>
   <canvas id="rn-gl" aria-hidden="true"></canvas>
   <div id="rn-labels" aria-hidden="true"></div>
   <div class="rn-shade"></div>
@@ -1894,20 +1893,12 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 
   /* ----------------------- графика экрана продления ----------------------
 
-     «Горизонт»: вид с орбиты на край планеты. Одна сцена на Canvas, без
-     библиотек — мини-приложение должно открываться быстро и на слабом
-     телефоне.
-
-     Материки — точки по маске суши (Natural Earth 110m, 180×90, ~3 КБ).
-     Планета медленно вращается. Точки сети по очереди выпускают вверх, в
-     космос, столб энергии — каждая своим цветом, мощность у всех одна.
-     Столб идёт по радиусу планеты, поэтому на изгибе он наклоняется, как
-     настоящий.
+     Сцена «Энергия» — WebGL-движок сайта (site/fx, см. README там). Здесь
+     только список точек и управление: загрузить, показать, остановить.
 
      Подписаны только наши серверы (`server: true`) и «Вы». Остальные точки —
      огни сети без подписей: страны, где серверов пока нет, не выдаются за
      серверы. Новый сервер — строка с `server: true`. */
-  var RN_LAND = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAfAP8HAAAAAAAAAAAAAAAAAAAAAADo//z//wcAAAAAAAACAAAAAAAAAAAAhvvw//8PAPABAAAAwAMAAAAAAAAAwADkw////wEABAAAAABgAAAAAAAAAADAUT8A/v8PAAAAAAwA/j8AuAEAAAAAcBHtDcD/fwAAAAAwAPz/fwMAABCAAQD5w/wD8P8FAAAcAIL7//9//xOAAP/ff0668QD/HwAA+A8At///////v3/w/////x8++B8AAOD/1//7////////jP////+/+AE/gAcAn9f//////////w/w/////wEs4AEAAHz+////////////gL////8HeAAcAADg5///////////9ADgAf7/f4AnAAAAAH78////////H0QAAAiA//8f8AcAAIBB4////////38ADwAQAOD//5//AQAAHAT/////////A3AAAAAA/v//+T8AAGDz//////////8DAQAAAMD/////AwAAsP//////////LwAAAAAA6P///2IAAAD+//////////8CAAAAAAD///8/CAAA4P//////////JwAAAAAA8P///wYAAAD+/unz/////z8AAAAAAAD///8HAAAA/pgPPP//////MQAAAAAA8P//PwAAAMBD9v7n/////wcBAAAAAAD///8AAAAAPkD7f/7///8hEAAAAAAA4P//DwAAAIDhAv/n////f8YAAAAAAAD8//8AAAAA+AdE//////8jDwAAAAAAgP//AwAAAMD/APD/////PxgAAAAAAADw/x8AAAAA/n/v//////8HAAAAAAAAAPwDAgAAAOD////7////fwAAAAAAAACgHyAAAACA//9/f/7///8DAAAAAAAAAPQBAAAAAPj//+cv+P//PwAAAAAAAAAAHjAAAADA/////g/+//8EAAAAAAAAAOBhCAAAAP7//99/4D//AAAAAAAAAAAAPAMEAADA////+Qf84BcAAAAAAAAAAAA/AAAAAPz//58fgAf+QAAAAAAAAAAAAA8AAADg////ewA4gA8EAAAAAAAAAADAAAAAAPz//38BgAP4QQAAAAAAAAAAAAgPAADA////zwAwgAwQAAAAAAAAAAAA9Q8AAPj///8HAAVIAAAAAAAAAAAAAID/AQAA////fwBAAAAQAAAAAAAAAAAA+P8AAGDh//8DAAA0GAAAAAAAAAAAAID/HwAAAPj/HwAAgMIBAAAAAAAAAAAA/P8BAACA//8AAAAYXgAAAAAAAAAAAMD/fwAAAPz/BwAAAOOBAQAAAAAAAAAA/P8/AACA/z8AAABgbtQBAAAAAAAAAOD//w8AAPD/AwAAAAQIeAAAAAAAAAAA/P//AQAA/z8AAACAA4APAQAAAAAAAID//w8AAPD/AwAAAAARsEAAAAAAAAAA+P9/AAAA/j8AAAAAAAAAAAAAAAAAAAD//wcAAPD/QwAAAACAIwAAAAAAAAAA8P9/AAAA/z8EAAAAAD8GIAAAAAAAAAD8/wMAAPD/cQAAAAD4ZwAAAAAAAAAAgP8/AAAA/w8HAAAAgP8HAAAAAAAAAAD4/wMAAOD/MAAAAAD//wEBAAAAAAAAgP8PAAAA/g8DAAAA+P8fAAAAAAAAAAD4PwAAAOB/EAAAAID//wMAAAAAAAAAgP8DAAAA/AMAAAAA+P9/AAAAAAAAAAD8HwAAAMA/AAAAAID//wcAAAAAAAAAwP8BAAAA+AEAAAAA8P9/AAAAAAAAAAD8DwAAAIAPAAAAAAAP/gMAAAAAAAAAwB8AAAAAAAAAAAAAEIAfAAEAAAAAAAD+AwAAAAAAAAAAAAAA8AEgAAAAAAAA4AcAAAAAAAAAAAAAAAAAAAYAAAAAAABeAAAAAAAAAAAAAAAAwAAwAAAAAAAAwAMAAAAAAAAAAAAAAAAIgAEAAAAAAAAeAAAAAAAAAAAAAAAAAAAMAAAAAAAA4AEAAAAAAAAAAAAAAAAAAAAAAAAAAAAPAAAAAAAAAAABAAAAAAAAAAAAAAAAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAAB4AEDwn/8HAAAAAAAAAAAwAAAAAACA/P/h/////w8AAAAAAAAAwAcAAAD4////z///////PwAAAAAAHALwAACA//////////////8HAADw/y///wMAAP7/////////////HwAA+P///38AAID///////////////8AAPL/////BwAO////////////////DwAA8P////8HEPD//////////////z8AAOD/////////////////////////H/AfwP//////////////////////////////////////////////////////////////////////////////////////';
   var RN_POINTS = [
     { name: 'Финляндия', lat: 60.17, lon: 24.94, color: '255,214,10', server: true },
     { lat: 52.23, lon: 21.01, color: '255,59,48' },     /* Варшава */
@@ -1925,185 +1916,13 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      спрашиваем; почти все наши пользователи в России, поэтому — Москва. */
   var RN_YOU = { name: 'Вы', lat: 55.75, lon: 37.62, color: '191,90,242', you: true };
 
-  var rn = { open: false, raf: 0, paid: 0, dots: null, stars: null, last: 0 };
-  var REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var rn = { open: false, paid: 0 };
 
-  function rnVec(lat, lon) {
-    var a = lat * Math.PI / 180, b = lon * Math.PI / 180;
-    return [Math.cos(a) * Math.cos(b), Math.sin(a), Math.cos(a) * Math.sin(b)];
-  }
-
-  function rnLandDots() {
-    if (rn.dots) return rn.dots;
-    var raw = atob(RN_LAND), out = [];
-    var land = function (lat, lon) {
-      var r = Math.min(89, Math.floor((90 - lat) / 2)), c = Math.min(179, Math.floor((lon + 180) / 2));
-      var k = r * 180 + c;
-      return (raw.charCodeAt(k >> 3) >> (k & 7)) & 1;
-    };
-    /* Спираль Фибоначчи: точки ровно по сфере, без сгущения к полюсам. */
-    var n = 30000, ga = Math.PI * (3 - Math.sqrt(5));
-    for (var i = 0; i < n; i++) {
-      var y = 1 - (i + 0.5) * 2 / n, th = ga * i;
-      var lat = Math.asin(y) * 180 / Math.PI;
-      var lon = ((th * 180 / Math.PI) % 360 + 540) % 360 - 180;
-      if (lat > -60 && land(lat, lon)) out.push(rnVec(lat, lon));
-    }
-    return (rn.dots = out);
-  }
-
-  function rnCanvas(id) {
-    var c = document.getElementById(id);
-    if (!c) return null;
-    var dpr = Math.min(2, window.devicePixelRatio || 1);
-    var w = c.clientWidth, h = c.clientHeight;
-    if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
-      c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
-    }
-    var x = c.getContext('2d');
-    x.setTransform(dpr, 0, 0, dpr, 0, 0);
-    x.clearRect(0, 0, w, h);
-    return { x: x, w: w, h: h };
-  }
-
-  /* Столб энергии: по радиусу планеты вверх, с ярким ядром, мягким
-     ореолом и вспышкой у основания. `k` — фаза 0…1: рост, держится, гаснет. */
-  function rnBeam(x, base, top, color, k) {
-    var rise = Math.min(1, k / 0.25), fade = k < 0.6 ? 1 : Math.max(0, 1 - (k - 0.6) / 0.4);
-    var a = fade;
-    if (a <= 0) return;
-    var tx = base.x + (top.x - base.x) * rise, ty = base.y + (top.y - base.y) * rise;
-    var g = x.createLinearGradient(base.x, base.y, tx, ty);
-    g.addColorStop(0, 'rgba(' + color + ',' + (0.95 * a) + ')');
-    g.addColorStop(0.6, 'rgba(' + color + ',' + (0.45 * a) + ')');
-    g.addColorStop(1, 'rgba(' + color + ',0)');
-    x.lineCap = 'round';
-    x.strokeStyle = g; x.lineWidth = 14; x.globalAlpha = 0.28;
-    x.beginPath(); x.moveTo(base.x, base.y); x.lineTo(tx, ty); x.stroke();
-    x.globalAlpha = 1; x.lineWidth = 3.2;
-    x.beginPath(); x.moveTo(base.x, base.y); x.lineTo(tx, ty); x.stroke();
-    var flare = x.createRadialGradient(base.x, base.y, 0, base.x, base.y, 26);
-    flare.addColorStop(0, 'rgba(' + color + ',' + (0.85 * a) + ')');
-    flare.addColorStop(1, 'rgba(' + color + ',0)');
-    x.fillStyle = flare; x.beginPath(); x.ellipse(base.x, base.y, 26, 11, 0, 0, Math.PI * 2); x.fill();
-  }
-
-  function rnFrame(t) {
-    if (rn.open && !REDUCED) rn.raf = requestAnimationFrame(rnFrame);
-    /* 30 кадров в секунду хватает: движение медленное, батарея дороже. */
-    if (t - rn.last < 32 && !REDUCED) return;
-    rn.last = t;
-
-    var cv = rnCanvas('rn-sky');
-    if (!cv) return;
-    var x = cv.x, W = cv.w, H = cv.h;
-
-    /* Звёзды — один раз на размер экрана. */
-    if (!rn.stars || rn.stars.w !== W) {
-      rn.stars = { w: W, list: [] };
-      for (var si = 0; si < 150; si++) {
-        rn.stars.list.push([Math.random() * W, Math.random() * H * 0.62, Math.random() * 0.6 + 0.1, Math.random() * 6]);
-      }
-    }
-    for (si = 0; si < rn.stars.list.length; si++) {
-      var st = rn.stars.list[si], tw = REDUCED ? 1 : 0.7 + 0.3 * Math.sin(t * 0.002 + st[3]);
-      x.fillStyle = 'rgba(255,240,220,' + (st[2] * tw) + ')';
-      x.fillRect(st[0], st[1], 1.2, 1.2);
-    }
-
-    /* Планета: огромная сфера, видна только шапка у нижнего края. */
-    var R = Math.max(W * 1.25, 420), cx = W / 2, cy = H * 0.56 + R;
-    var rot = 1.01 + (REDUCED ? 0 : t * 0.00005), tilt = -0.14;
-    var cr = Math.cos(rot), sr = Math.sin(rot), ct = Math.cos(tilt), sn = Math.sin(tilt);
-    var proj = function (v, lift) {
-      var m = lift || 1, X = (v[0] * cr - v[2] * sr) * m, Z = (v[0] * sr + v[2] * cr) * m, Y = v[1] * m;
-      return { x: cx - X * R, y: cy - (Y * ct - Z * sn) * R, z: Y * sn + Z * ct };
-    };
-
-    var atm = x.createRadialGradient(cx, cy, R * 0.985, cx, cy, R * 1.07);
-    atm.addColorStop(0, 'rgba(238,152,46,0.5)'); atm.addColorStop(0.35, 'rgba(124,77,255,0.24)');
-    atm.addColorStop(1, 'rgba(124,77,255,0)');
-    x.fillStyle = atm; x.beginPath(); x.arc(cx, cy, R * 1.07, 0, Math.PI * 2); x.fill();
-    var body = x.createLinearGradient(0, cy - R, 0, H);
-    body.addColorStop(0, '#1c1220'); body.addColorStop(1, '#060507');
-    x.fillStyle = body; x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.fill();
-    x.strokeStyle = 'rgba(255,220,160,0.75)'; x.lineWidth = 1.5;
-    x.beginPath(); x.arc(cx, cy, R, Math.PI * 1.15, Math.PI * 1.85); x.stroke();
-
-    /* Срок по линии атмосферы. Дуга делится пропорционально: остаток
-       янтарём, +30 зелёным; по зелёной бежит блик. */
-    var span = 0.42, a0 = Math.PI * 1.5 - span, a1 = Math.PI * 1.5 + span;
-    var total = rn.paid + 30, mid = a0 + (a1 - a0) * rn.paid / total, ar = R * 1.012;
-    x.lineCap = 'round'; x.lineWidth = 5;
-    if (rn.paid > 0) {
-      x.shadowColor = '#ee982e'; x.shadowBlur = 14; x.strokeStyle = '#f5bb6c';
-      x.beginPath(); x.arc(cx, cy, ar, a0, mid); x.stroke();
-    }
-    x.shadowColor = '#6fe0a8'; x.shadowBlur = 14; x.strokeStyle = '#6fe0a8';
-    x.beginPath(); x.arc(cx, cy, ar, mid, a1); x.stroke(); x.shadowBlur = 0;
-    if (!REDUCED) {
-      var gl = mid + (a1 - mid) * ((t * 0.00035) % 1);
-      x.fillStyle = 'rgba(255,255,255,0.9)'; x.shadowColor = '#b8f5d5'; x.shadowBlur = 16;
-      x.beginPath(); x.arc(cx + Math.cos(gl) * ar, cy + Math.sin(gl) * ar, 3, 0, Math.PI * 2); x.fill();
-      x.shadowBlur = 0;
-    }
-    x.fillStyle = '#fff6e6';
-    x.beginPath(); x.arc(cx + Math.cos(a1) * ar, cy + Math.sin(a1) * ar, 5, 0, Math.PI * 2); x.fill();
-
-    /* Материки. */
-    x.save(); x.beginPath(); x.arc(cx, cy, R, 0, Math.PI * 2); x.clip();
-    var dots = rnLandDots();
-    for (var i = 0; i < dots.length; i++) {
-      var p = proj(dots[i]);
-      if (p.z <= 0 || p.y > H) continue;
-      x.fillStyle = 'rgba(255,224,170,' + (0.1 + p.z * 0.7) + ')';
-      x.fillRect(p.x - 0.7, p.y - 0.7, 1.4, 1.4);
-    }
-    x.restore();
-
-    /* Энергия. Все точки по очереди, «Вы» — в той же очереди. Каждая
-       вспыхивает раз в цикл; невидимые (за горизонтом) пропускают ход. */
-    var pts = RN_POINTS.concat([RN_YOU]), slot = 900, cycle = slot * pts.length, labels = [];
-    for (var j = 0; j < pts.length; j++) {
-      var q = pts[j], v = rnVec(q.lat, q.lon), base = proj(v);
-      if (base.z <= 0.04 || base.y > H * 0.94) continue;
-      var phase = REDUCED ? (q.you || q.server ? 0.4 : -1) : ((t + cycle - j * slot) % cycle) / (slot * 2.2);
-      if (phase >= 0 && phase <= 1) {
-        /* Мощность у всех одна: длина столба одинаковая, направление —
-           вверх, с наклоном по радиусу планеты, чтобы на изгибе он
-           расходился веером, как настоящий. */
-        var rad = proj(v, 1.1), dx = rad.x - base.x, dy = rad.y - base.y, dl = Math.hypot(dx, dy) || 1;
-        var ux = dx / dl * 0.45, uy = dy / dl * 0.45 - 0.55, ul = Math.hypot(ux, uy) || 1, len = H * 0.3;
-        rnBeam(x, base, { x: base.x + ux / ul * len, y: base.y + uy / ul * len }, q.color, phase);
-      }
-      x.fillStyle = 'rgba(' + q.color + ',0.95)'; x.shadowColor = 'rgba(' + q.color + ',1)'; x.shadowBlur = 10;
-      x.beginPath(); x.arc(base.x, base.y, q.you || q.server ? 4.5 : 2.6, 0, Math.PI * 2); x.fill();
-      x.shadowBlur = 0;
-      if (q.server || q.you) labels.push({ q: q, b: base });
-    }
-    x.textAlign = 'center';
-    for (j = 0; j < labels.length; j++) {
-      var L = labels[j];
-      if (L.q.you) {
-        x.font = '800 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        x.fillStyle = '#e6dcff'; x.fillText(L.q.name, L.b.x, L.b.y + 22);
-      } else {
-        x.font = '800 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        x.fillStyle = '#fff6e6'; x.fillText(L.q.name, L.b.x, L.b.y - 30);
-        x.font = '700 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-        x.fillStyle = '#6fe0a8'; x.fillText('зашифровано', L.b.x, L.b.y - 15);
-      }
-    }
-
-    /* Низ уходит в темноту под ценой и кнопкой. */
-    var fade = x.createLinearGradient(0, H * 0.7, 0, H);
-    fade.addColorStop(0, 'rgba(6,5,7,0)'); fade.addColorStop(1, 'rgba(6,5,7,1)');
-    x.fillStyle = fade; x.fillRect(0, H * 0.7, W, H * 0.3);
-  }
-
-  /* WebGL-сцена (site/fx/energy.js): шейдеры, блум, искры. Грузится
-     только при первом открытии продления — кабинет от неё не тяжелеет.
-     Пока грузится, а также без WebGL, работает Canvas 2D выше. */
+  /* Движок грузится заранее — через пару секунд после открытия кабинета,
+     в простое — и сразу прогревается (шейдеры компилируются один раз). К
+     нажатию «Продлить» сцена уже готова и появляется без задержки. Нет
+     WebGL — экран остаётся тёмным и спокойным, без запасной анимации. */
+  var FX_SRC = 'fx/energy.js?v=282a962570';
   var GL = { state: 'idle', scene: null };
 
   function rnLabels(list) {
@@ -2119,46 +1938,58 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     box.innerHTML = html;
   }
 
-  function rnGL() {
-    if (GL.scene) {
-      GL.scene.setPaid(rn.paid);
-      GL.scene.start();
-      return true;
-    }
-    if (!window.GloriaFX || !window.GloriaFX.supported()) return false;
+  function fxMount() {
+    if (GL.scene || GL.state === 'failed') return;
+    if (!window.GloriaFX || !window.GloriaFX.supported()) { GL.state = 'failed'; return; }
     try {
       GL.scene = window.GloriaFX.mountEnergy(document.getElementById('rn-gl'), {
         points: RN_POINTS, you: RN_YOU, paid: rn.paid, onLabels: rnLabels
       });
+      GL.scene.warm();
+      GL.state = 'ready';
     } catch (e) {
       GL.state = 'failed';
-      return false;
     }
-    document.getElementById('sheet').classList.add('gl');
-    GL.scene.start();
-    return true;
   }
 
-  function rnStart() {
-    rn.open = true; rn.last = 0;
-    cancelAnimationFrame(rn.raf);
-    if (rnGL()) return;
-    rn.raf = requestAnimationFrame(rnFrame);
+  function fxLoad() {
     if (GL.state !== 'idle') return;
     GL.state = 'loading';
     var sc = document.createElement('script');
-    sc.src = 'fx/energy.js';
+    sc.src = FX_SRC;
     sc.async = true;
     sc.onload = function () {
-      GL.state = 'ready';
-      if (rn.open && rnGL()) cancelAnimationFrame(rn.raf);
+      fxMount();
+      if (rn.open) rnShow();
     };
     sc.onerror = function () { GL.state = 'failed'; };
     document.head.appendChild(sc);
   }
+
+  /* Предзагрузка: в простое после старта, не раньше чем через 2 с — чтобы
+     не отнимать сеть и процессор у самого кабинета. */
+  setTimeout(function () {
+    if (window.requestIdleCallback) requestIdleCallback(fxLoad, { timeout: 3000 });
+    else fxLoad();
+  }, 2000);
+
+  function rnShow() {
+    if (!GL.scene) return;
+    GL.scene.setPaid(rn.paid);
+    GL.scene.start();
+    /* Показать после первого отрисованного кадра. */
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () { document.getElementById('sheet').classList.add('gl'); });
+    });
+  }
+
+  function rnStart() {
+    rn.open = true;
+    if (GL.scene) return rnShow();
+    fxLoad();
+  }
   function rnStop() {
     rn.open = false;
-    cancelAnimationFrame(rn.raf);
     if (GL.scene) GL.scene.stop();
   }
 

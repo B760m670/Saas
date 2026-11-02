@@ -81,7 +81,7 @@ void main(){
   float streak=smoothstep(.15,.9,fbm(vec2(vUv.x*12.+uSeed*3., y*1.2-uTime*4.)));
   float body=smoothstep(.0,.35,face)*(.55+.45*flow)+streak*.6*face;
   float fade=(1.-smoothstep(.35,1.,y/max(uGrow,.001)))*smoothstep(0.,.04,y);
-  vec3 col=uColor*body*1.6+vec3(1.)*core*1.8;
+  vec3 col=uColor*body*1.25+vec3(1.)*core*1.35;
   float a=(body*.9+core)*fade*uPower;
   gl_FragColor=vec4(col*a,a);
 }`;
@@ -155,7 +155,7 @@ void main(){
 }`;
 const LAND_FRAG = /* glsl */`
 varying float vA; varying vec3 vC;
-void main(){ float d=length(gl_PointCoord-.5); float a=smoothstep(.5,.1,d)*vA; gl_FragColor=vec4(vC*a,a); }`;
+void main(){ float d=length(gl_PointCoord-.5); float a=smoothstep(.5,.1,d)*vA*.55; gl_FragColor=vec4(vC*a,a); }`;
 
 // Тело планеты: тёмное, с рассеянием света по краю.
 const BODY_FRAG = /* glsl */`
@@ -175,7 +175,7 @@ void main(){
   float k=max(-dot(vN,vV),0.);
   float i=pow(k,2.2);
   vec3 c=mix(vec3(.5,.3,1.),vec3(1.,.6,.2),pow(k,1.5));
-  gl_FragColor=vec4(c*i*.9,i*.9);
+  gl_FragColor=vec4(c*i*.55,i*.55);
 }`;
 const SHELL_VERT = /* glsl */`
 varying vec3 vN; varying vec3 vV; varying vec2 vUv;
@@ -305,7 +305,7 @@ export function mountEnergy(canvas, opts) {
   const land = new Points(landPoints(60000), new ShaderMaterial({
     vertexShader: LAND_VERT, fragmentShader: LAND_FRAG, transparent: true, depthWrite: false,
     blending: AdditiveBlending,
-    uniforms: { uTime: { value: 0 }, uPx: { value: 21 * dpr }, uHot: { value: hot }, uHotCol: { value: hotCol }, uHotPow: { value: hotPow } },
+    uniforms: { uTime: { value: 0 }, uPx: { value: 19 * dpr }, uHot: { value: hot }, uHotCol: { value: hotCol }, uHotPow: { value: hotPow } },
   }));
   earth.add(land);
 
@@ -380,7 +380,7 @@ export function mountEnergy(canvas, opts) {
   // Блум.
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new Vector2(256, 256), 0.95, 0.6, 0.32);
+  const bloom = new UnrealBloomPass(new Vector2(256, 256), 0.7, 0.55, 0.42);
   composer.addPass(bloom);
   // Без OutputPass: цвета в шейдерах заданы как видимые на экране, и
   // повторный перевод в sRGB осветлял тёмное небо и планету до серого.
@@ -471,6 +471,9 @@ export function mountEnergy(canvas, opts) {
   }
 
   return {
+    /** Отрисовать один кадр, не запуская анимацию: шейдеры компилируются
+     *  заранее, и первое открытие экрана не дёргается. */
+    warm() { frame(performance.now()); },
     start() { if (running) return; running = true; t0 = performance.now(); last = t0; raf = requestAnimationFrame(frame); },
     stop() { running = false; cancelAnimationFrame(raf); },
     setPaid(d) { paid = Math.max(0, d || 0); },
