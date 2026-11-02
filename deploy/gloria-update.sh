@@ -179,6 +179,11 @@ install -m 644 site/brand/start.png "$SITE/brand/start.png"
 install -d -m 755 "$SITE/brand/apps"
 install -m 644 site/brand/apps/*.png "$SITE/brand/apps/"
 
+# Движок эффектов (WebGL). Кабинет грузит его сам при открытии продления;
+# нет файла — работает запасной вариант на Canvas 2D.
+install -d -m 755 "$SITE/fx"
+install -m 644 site/fx/energy.js "$SITE/fx/energy.js"
+
 install -d -m 755 "$SITE/legal"
 for f in site/legal/*.html; do
     publish_legal "$f" "$SITE/legal/$(basename "$f")"

@@ -618,7 +618,23 @@ html.android .region-note { display: none; }
   transition: transform 0.42s var(--ease), visibility 0s linear 0.42s;
 }
 .renew.on { transform: none; visibility: visible; transition: transform 0.42s var(--ease); }
-#rn-sky { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#rn-sky, #rn-gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#rn-gl { opacity: 0; transition: opacity 0.6s; touch-action: none; }
+.renew.gl #rn-gl { opacity: 1; }
+.renew.gl #rn-sky { display: none; }
+#rn-labels { position: absolute; inset: 0; pointer-events: none; }
+.rn-tag { position: absolute; transform: translate(-50%, 0); white-space: nowrap; font-weight: 800; }
+.rn-tag.you { margin-top: 16px; font-size: 13px; color: #e6dcff; text-shadow: 0 0 10px rgba(191, 90, 242, 0.9); }
+.rn-tag.srv {
+  transform: translate(calc(-100% - 22px), -50%); padding: 6px 11px; border-radius: 12px;
+  background: rgba(6, 5, 7, 0.7); border: 1px solid rgba(255, 236, 190, 0.18);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); line-height: 1.25;
+}
+.rn-tag.srv b { display: block; font-size: 13px; color: #fff6e6; }
+.rn-tag.srv em { display: block; font-style: normal; font-size: 10.5px; color: #6fe0a8; }
+/* Затемнение под ценой и кнопкой поверх сцены. */
+.rn-shade { position: absolute; left: 0; right: 0; bottom: 0; height: 34%; pointer-events: none;
+  background: linear-gradient(180deg, rgba(6,5,7,0), rgba(6,5,7,0.92) 60%); }
 .rn-in {
   position: relative; max-width: 460px; min-height: 100%; margin: 0 auto;
   display: flex; flex-direction: column;
@@ -1179,6 +1195,9 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      id остаётся `sheet`: открывают и закрывают его те же `sheet(true/false)`. -->
 <div class="renew" id="sheet" role="dialog" aria-label="Продление подписки">
   <canvas id="rn-sky" aria-hidden="true"></canvas>
+  <canvas id="rn-gl" aria-hidden="true"></canvas>
+  <div id="rn-labels" aria-hidden="true"></div>
+  <div class="rn-shade"></div>
   <div class="rn-in">
     <div class="rn-top">
       <button class="rn-x" data-act="close-sheet" aria-label="Закрыть">
@@ -1890,21 +1909,21 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      серверы. Новый сервер — строка с `server: true`. */
   var RN_LAND = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAfAP8HAAAAAAAAAAAAAAAAAAAAAADo//z//wcAAAAAAAACAAAAAAAAAAAAhvvw//8PAPABAAAAwAMAAAAAAAAAwADkw////wEABAAAAABgAAAAAAAAAADAUT8A/v8PAAAAAAwA/j8AuAEAAAAAcBHtDcD/fwAAAAAwAPz/fwMAABCAAQD5w/wD8P8FAAAcAIL7//9//xOAAP/ff0668QD/HwAA+A8At///////v3/w/////x8++B8AAOD/1//7////////jP////+/+AE/gAcAn9f//////////w/w/////wEs4AEAAHz+////////////gL////8HeAAcAADg5///////////9ADgAf7/f4AnAAAAAH78////////H0QAAAiA//8f8AcAAIBB4////////38ADwAQAOD//5//AQAAHAT/////////A3AAAAAA/v//+T8AAGDz//////////8DAQAAAMD/////AwAAsP//////////LwAAAAAA6P///2IAAAD+//////////8CAAAAAAD///8/CAAA4P//////////JwAAAAAA8P///wYAAAD+/unz/////z8AAAAAAAD///8HAAAA/pgPPP//////MQAAAAAA8P//PwAAAMBD9v7n/////wcBAAAAAAD///8AAAAAPkD7f/7///8hEAAAAAAA4P//DwAAAIDhAv/n////f8YAAAAAAAD8//8AAAAA+AdE//////8jDwAAAAAAgP//AwAAAMD/APD/////PxgAAAAAAADw/x8AAAAA/n/v//////8HAAAAAAAAAPwDAgAAAOD////7////fwAAAAAAAACgHyAAAACA//9/f/7///8DAAAAAAAAAPQBAAAAAPj//+cv+P//PwAAAAAAAAAAHjAAAADA/////g/+//8EAAAAAAAAAOBhCAAAAP7//99/4D//AAAAAAAAAAAAPAMEAADA////+Qf84BcAAAAAAAAAAAA/AAAAAPz//58fgAf+QAAAAAAAAAAAAA8AAADg////ewA4gA8EAAAAAAAAAADAAAAAAPz//38BgAP4QQAAAAAAAAAAAAgPAADA////zwAwgAwQAAAAAAAAAAAA9Q8AAPj///8HAAVIAAAAAAAAAAAAAID/AQAA////fwBAAAAQAAAAAAAAAAAA+P8AAGDh//8DAAA0GAAAAAAAAAAAAID/HwAAAPj/HwAAgMIBAAAAAAAAAAAA/P8BAACA//8AAAAYXgAAAAAAAAAAAMD/fwAAAPz/BwAAAOOBAQAAAAAAAAAA/P8/AACA/z8AAABgbtQBAAAAAAAAAOD//w8AAPD/AwAAAAQIeAAAAAAAAAAA/P//AQAA/z8AAACAA4APAQAAAAAAAID//w8AAPD/AwAAAAARsEAAAAAAAAAA+P9/AAAA/j8AAAAAAAAAAAAAAAAAAAD//wcAAPD/QwAAAACAIwAAAAAAAAAA8P9/AAAA/z8EAAAAAD8GIAAAAAAAAAD8/wMAAPD/cQAAAAD4ZwAAAAAAAAAAgP8/AAAA/w8HAAAAgP8HAAAAAAAAAAD4/wMAAOD/MAAAAAD//wEBAAAAAAAAgP8PAAAA/g8DAAAA+P8fAAAAAAAAAAD4PwAAAOB/EAAAAID//wMAAAAAAAAAgP8DAAAA/AMAAAAA+P9/AAAAAAAAAAD8HwAAAMA/AAAAAID//wcAAAAAAAAAwP8BAAAA+AEAAAAA8P9/AAAAAAAAAAD8DwAAAIAPAAAAAAAP/gMAAAAAAAAAwB8AAAAAAAAAAAAAEIAfAAEAAAAAAAD+AwAAAAAAAAAAAAAA8AEgAAAAAAAA4AcAAAAAAAAAAAAAAAAAAAYAAAAAAABeAAAAAAAAAAAAAAAAwAAwAAAAAAAAwAMAAAAAAAAAAAAAAAAIgAEAAAAAAAAeAAAAAAAAAAAAAAAAAAAMAAAAAAAA4AEAAAAAAAAAAAAAAAAAAAAAAAAAAAAPAAAAAAAAAAABAAAAAAAAAAAAAAAAcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOAAAAAAAAAAAAAAAAAAAAAAAAAAAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMAAAAAAAB4AEDwn/8HAAAAAAAAAAAwAAAAAACA/P/h/////w8AAAAAAAAAwAcAAAD4////z///////PwAAAAAAHALwAACA//////////////8HAADw/y///wMAAP7/////////////HwAA+P///38AAID///////////////8AAPL/////BwAO////////////////DwAA8P////8HEPD//////////////z8AAOD/////////////////////////H/AfwP//////////////////////////////////////////////////////////////////////////////////////';
   var RN_POINTS = [
-    { name: 'Финляндия', lat: 60.17, lon: 24.94, color: '255,214,140', server: true },
-    { lat: 52.23, lon: 21.01, color: '111,224,168' },   /* Варшава */
-    { lat: 52.52, lon: 13.40, color: '255,143,177' },   /* Берлин */
-    { lat: 48.86, lon: 2.35, color: '201,184,255' },    /* Париж */
-    { lat: 41.01, lon: 28.97, color: '255,184,107' },   /* Стамбул */
-    { lat: 25.20, lon: 55.27, color: '127,211,255' },   /* Дубай */
-    { lat: 43.24, lon: 76.89, color: '111,224,168' },   /* Алматы */
-    { lat: 35.68, lon: 139.69, color: '255,143,177' },  /* Токио */
-    { lat: 37.77, lon: -122.42, color: '127,211,255' }, /* Сан-Франциско */
-    { lat: 40.71, lon: -74.01, color: '201,184,255' },  /* Нью-Йорк */
-    { lat: 51.51, lon: -0.13, color: '255,214,140' }    /* Лондон */
+    { name: 'Финляндия', lat: 60.17, lon: 24.94, color: '255,214,10', server: true },
+    { lat: 52.23, lon: 21.01, color: '255,59,48' },     /* Варшава */
+    { lat: 52.52, lon: 13.40, color: '52,199,89' },     /* Берлин */
+    { lat: 48.86, lon: 2.35, color: '10,132,255' },     /* Париж */
+    { lat: 41.01, lon: 28.97, color: '255,149,0' },     /* Стамбул */
+    { lat: 25.20, lon: 55.27, color: '50,200,255' },    /* Дубай */
+    { lat: 43.24, lon: 76.89, color: '255,55,95' },     /* Алматы */
+    { lat: 35.68, lon: 139.69, color: '255,59,48' },    /* Токио */
+    { lat: 37.77, lon: -122.42, color: '0,199,190' },   /* Сан-Франциско */
+    { lat: 40.71, lon: -74.01, color: '255,214,10' },   /* Нью-Йорк */
+    { lat: 51.51, lon: -0.13, color: '52,199,89' }      /* Лондон */
   ];
   /* Откуда подключаются. Точного места человека мы не знаем и не
      спрашиваем; почти все наши пользователи в России, поэтому — Москва. */
-  var RN_YOU = { name: 'Вы', lat: 55.75, lon: 37.62, color: '186,160,255', you: true };
+  var RN_YOU = { name: 'Вы', lat: 55.75, lon: 37.62, color: '191,90,242', you: true };
 
   var rn = { open: false, raf: 0, paid: 0, dots: null, stars: null, last: 0 };
   var REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -2082,14 +2101,65 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
     x.fillStyle = fade; x.fillRect(0, H * 0.7, W, H * 0.3);
   }
 
+  /* WebGL-сцена (site/fx/energy.js): шейдеры, блум, искры. Грузится
+     только при первом открытии продления — кабинет от неё не тяжелеет.
+     Пока грузится, а также без WebGL, работает Canvas 2D выше. */
+  var GL = { state: 'idle', scene: null };
+
+  function rnLabels(list) {
+    var box = document.getElementById('rn-labels');
+    if (!box) return;
+    var html = '';
+    for (var i = 0; i < list.length; i++) {
+      var l = list[i];
+      html += l.server
+        ? '<span class="rn-tag srv" style="left:' + l.x.toFixed(0) + 'px;top:' + l.y.toFixed(0) + 'px"><b>' + l.name + '</b><em>зашифровано</em></span>'
+        : '<span class="rn-tag you" style="left:' + l.x.toFixed(0) + 'px;top:' + l.y.toFixed(0) + 'px">' + l.name + '</span>';
+    }
+    box.innerHTML = html;
+  }
+
+  function rnGL() {
+    if (GL.scene) {
+      GL.scene.setPaid(rn.paid);
+      GL.scene.start();
+      return true;
+    }
+    if (!window.GloriaFX || !window.GloriaFX.supported()) return false;
+    try {
+      GL.scene = window.GloriaFX.mountEnergy(document.getElementById('rn-gl'), {
+        points: RN_POINTS, you: RN_YOU, paid: rn.paid, onLabels: rnLabels
+      });
+    } catch (e) {
+      GL.state = 'failed';
+      return false;
+    }
+    document.getElementById('sheet').classList.add('gl');
+    GL.scene.start();
+    return true;
+  }
+
   function rnStart() {
     rn.open = true; rn.last = 0;
     cancelAnimationFrame(rn.raf);
+    if (rnGL()) return;
     rn.raf = requestAnimationFrame(rnFrame);
+    if (GL.state !== 'idle') return;
+    GL.state = 'loading';
+    var sc = document.createElement('script');
+    sc.src = 'fx/energy.js';
+    sc.async = true;
+    sc.onload = function () {
+      GL.state = 'ready';
+      if (rn.open && rnGL()) cancelAnimationFrame(rn.raf);
+    };
+    sc.onerror = function () { GL.state = 'failed'; };
+    document.head.appendChild(sc);
   }
   function rnStop() {
     rn.open = false;
     cancelAnimationFrame(rn.raf);
+    if (GL.scene) GL.scene.stop();
   }
 
   /* Даты — при каждом открытии: остаток мог измениться. */
