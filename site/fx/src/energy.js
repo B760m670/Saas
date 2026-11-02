@@ -9,11 +9,10 @@
 //   • звёзды с лёгким мерцанием и параллаксом от наклона телефона;
 //   • планета по снимкам NASA: день, терминатор, огни городов ночью,
 //     облака, атмосфера;
-//   • точки сети по очереди извергают столб плазмы: дрожащее белое ядро,
-//     клубящаяся корона и короткие разряды-нити. Цвет не назначен столбу,
-//     а следует из плотности энергии (синий → голубой → белый), одинаково
-//     для всех. Ударная волна — одна, при рождении; основание подсвечивает
-//     поверхность;
+//   • из точек сети по очереди поднимается луч силы — прямой и ровный,
+//     энергия течёт внутри вверх и не разбрызгивается; от основания по
+//     поверхности непрерывно расходятся волны и несут пыль энергии.
+//     Цвет следует из плотности (синий → голубой → белый), один для всех;
 //   • дуга срока над горизонтом: янтарь — оплаченное, зелёный — +30 дней.
 //
 // Слабое устройство: если кадр дольше ~28 мс, движок сам отключает блум и
@@ -71,93 +70,82 @@ void main(){
   gl_Position=projectionMatrix*viewMatrix*vec4(wp,1.);
 }`;
 
-// Плазма. Правдоподобие держится на трёх вещах:
-//  1. цвет не задан, а следует из плотности энергии — как у раскалённого
-//     газа: слабое свечение глубоко-синее, плотнее — голубое, ядро белое;
-//     одна физика на все столбы, а не по краске на каждый;
-//  2. форма не ровная: тонкое ядро дрожит, вокруг клубится корона из шума,
-//     который несёт вверх и закручивает (domain warping), к вершине она
-//     расползается и рвётся на клочья, а не гаснет градиентом;
-//  3. разряды: тонкие ломаные нити бьют вдоль ядра короткими вспышками в
-//     случайные моменты — неравномерное мерцание читается как живое.
+// Луч силы: строго прямой и ровный — энергия не разбрызгивается, а
+// течёт внутри вверх. Тонкое белое ядро, плотное свечение вокруг и
+// широкий мягкий ореол; по ядру снизу вверх бегут сгустки — видно, что
+// сила идёт из точки. Цвет следует из плотности: ореол синий, ближе к оси
+// голубой, ядро белое. К вершине луч не рвётся, а растворяется.
 const BOLT_FRAG = /* glsl */`
 uniform float uTime; uniform float uPower; uniform float uSeed; uniform float uGrow; uniform float uH; uniform float uW;
 varying vec2 vUv;
 ${NOISE}
-float fbm2(vec2 p){return .65*snoise(p)+.35*snoise(p*2.1);}
-float hash(float n){return fract(sin(n)*43758.5453);}
 vec3 plasma(float e){
-  vec3 c=mix(vec3(.05,.06,.42),vec3(.16,.42,1.),smoothstep(0.,.55,e));
-  c=mix(c,vec3(.62,.86,1.),smoothstep(.55,1.3,e));
-  c=mix(c,vec3(1.),smoothstep(1.3,2.4,e));
+  vec3 c=mix(vec3(.06,.10,.55),vec3(.18,.46,1.),smoothstep(0.,.5,e));
+  c=mix(c,vec3(.66,.88,1.),smoothstep(.5,1.2,e));
+  c=mix(c,vec3(1.),smoothstep(1.2,2.2,e));
   return c*e;
 }
 void main(){
   float y=vUv.y; if(y>uGrow) discard;
   float h=y*uH, t=uTime;
-  float X=(vUv.x*2.-1.)*uW;
-  float lift=smoothstep(0.,.25,y);
-  float wob=snoise(vec2(h*.3-t*.8,uSeed))*.12*lift+snoise(vec2(h*1.6-t*2.7,uSeed+5.))*.035;
-  float x=X-wob;
-  float spread=mix(.55,1.7,y*y);
-  vec2 q=vec2(x*2.4/spread, h*.85-t*2.1);
-  vec2 warp=vec2(fbm(q+uSeed),fbm(q+vec2(5.2,1.3)+uSeed));
-  float turb=fbm(q*1.5+warp*1.6-vec2(0.,t*.7))*.5+.5;
-  float corona=exp(-abs(x)/(.26*spread))*(.35+1.3*turb*turb)
-              +exp(-abs(x)/(.75*spread))*turb*.45;
-  float core=exp(-pow(x/.055,2.))*(.8+.2*snoise(vec2(h*5.-t*18.,uSeed)))
-            +exp(-pow(x/.16,2.))*.5;
-  core*=1.-smoothstep(.35,.9,y);
-  float fil=0.;
-  for(int i=0;i<3;i++){
-    float s=uSeed+float(i)*13.7, k=t*6.+float(i)*.37, n=floor(k), life=fract(k);
-    if(hash(n*1.7+s)<.45) continue;
-    float off=fbm2(vec2(h*.8+s,n*.71))*.32*spread*lift+snoise(vec2(h*5.+s,n))*.04;
-    float len=.35+.6*hash(n+s*3.);
-    fil+=exp(-abs(x-off)/.01)*(1.-life)*(1.-smoothstep(len-.1,len,y));
-  }
-  float flick=.82+.18*snoise(vec2(t*9.,uSeed*2.));
-  float top=1.-smoothstep(.45,1.,y/max(uGrow,.001)+(turb-.5)*.6);
-  float e=(corona*.6+core*1.9+fil*1.8)*top*smoothstep(0.,.06,y)*uPower*flick;
+  float x=abs((vUv.x*2.-1.)*uW);
+  float flow=snoise(vec2(uSeed, h*.55-t*3.2))*.5+.5;
+  float pulse=.85+.15*sin(h*2.2-t*9.+uSeed);
+  float core=exp(-pow(x/.045,2.))*(1.6+.5*flow);
+  float inner=exp(-pow(x/.13,2.))*(.6+.3*flow)*pulse;
+  float halo=exp(-x/.4)*.16;
+  float base=exp(-y*14.)*exp(-pow(x/.22,2.))*.45;
+  float fade=(1.-smoothstep(.55,1.,y/max(uGrow,.001)))*smoothstep(0.,.015,y);
+  float breathe=.94+.06*sin(t*1.7+uSeed);
+  float e=(core+inner+halo+base)*fade*uPower*breathe;
   gl_FragColor=vec4(plasma(e),1.);
 }`;
 
 // Ударная волна на поверхности: кольцо расходится от основания.
+// Волны у основания: от точки по поверхности непрерывно расходятся
+// кольца — давление силы. Первая, при рождении луча, — сильнее и шире.
+// Края колец чуть неровные (шум по углу), чтобы не выглядеть циркулем.
 const RING_FRAG = /* glsl */`
-uniform float uWave; uniform float uPower; uniform float uTime;
+uniform float uAge; uniform float uPower; uniform float uTime;
 varying vec2 vUv;
 ${NOISE}
 void main(){
-  vec2 p=vUv*2.-1.; float r=length(p);
-  float ring=exp(-pow((r-uWave)*18.,2.))*pow(1.-uWave,2.)*1.2;
-  float n=.6+.4*snoise(p*4.+uTime*1.5);
-  float pool=exp(-r*r*45.)*uPower*n;
-  float e=ring*.8+pool*.45;
+  vec2 p=vUv*2.-1.; float r=length(p); float ang=atan(p.y,p.x);
+  float rr=r+snoise(vec2(cos(ang)*2.,sin(ang)*2.)+uTime*.4)*.025;
+  float w=0.;
+  for(int k=0;k<3;k++){
+    float ph=fract(uAge/2.1+float(k)/3.);
+    w+=exp(-pow((rr-ph)*mix(34.,16.,ph),2.))*pow(1.-ph,1.6)*.7;
+  }
+  float b=clamp(uAge/1.3,0.,1.);
+  w+=exp(-pow((rr-b)*mix(26.,9.,b),2.))*pow(1.-b,1.3)*1.6;
+  float pool=exp(-r*r*90.)*.45;
+  float e=(w+pool)*uPower*(1.-smoothstep(.85,1.,r));
   vec3 c=mix(vec3(.16,.42,1.),vec3(.8,.93,1.),smoothstep(.4,1.2,e));
   gl_FragColor=vec4(c*e,1.);
 }`;
 const PLAIN_VERT = /* glsl */`varying vec2 vUv; void main(){vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`;
 
 // Искры: каждая летит вверх по столбу по своей фазе.
+// Пыль энергии: волны несут её по поверхности от точки наружу.
 const SPARK_VERT = /* glsl */`
 attribute float aPhase; attribute float aSpeed; attribute float aAng; attribute float aRad;
 uniform float uTime; uniform float uPower; uniform float uH; uniform float uPx;
 varying float vA;
 void main(){
-  float t=fract(aPhase+uTime*aSpeed);
-  float r=aRad*(.6+t*2.2);
-  float j=sin(uTime*13.+aPhase*40.)*.04;
-  vec3 p=vec3(cos(aAng+t*2.)*r+j, t*t*uH*.8+t*uH*.2, sin(aAng+t*2.)*r);
-  vA=(1.-t)*(1.-t)*smoothstep(0.,.05,t)*uPower*step(.3,fract(aPhase*7.31+uTime*aSpeed*3.));
+  float t=fract(aPhase+uTime*aSpeed*.45);
+  float r=.15+t*3.;
+  vec3 p=vec3(cos(aAng)*r, .03+aRad*.25*(1.-t), sin(aAng)*r);
+  vA=(1.-t)*smoothstep(0.,.08,t)*uPower;
   vec4 mv=modelViewMatrix*vec4(p,1.);
-  gl_PointSize=uPx*(.9+1.4*(1.-t))/-mv.z;
+  gl_PointSize=uPx*.9/-mv.z;
   gl_Position=projectionMatrix*mv;
 }`;
 const SPARK_FRAG = /* glsl */`
 varying float vA;
 void main(){
   float d=length(gl_PointCoord-.5); float a=smoothstep(.5,0.,d)*vA;
-  gl_FragColor=vec4(mix(vec3(.35,.62,1.),vec3(1.),vA)*a*1.6,1.);
+  gl_FragColor=vec4(vec3(.55,.78,1.)*a,1.);
 }`;
 
 // 3D-шум для облаков: value noise по хешу, без швов на сфере.
@@ -441,21 +429,21 @@ export function mountEnergy(canvas, opts) {
     anchor.position.copy(dir.clone().multiplyScalar(R * 1.002));
     anchor.quaternion.setFromUnitVectors(new Vector3(0, 1, 0), dir);
     earth.add(anchor);
-    const BW = 1.6;
+    const BW = 1.3;
     const boltGeo = new PlaneGeometry(2, 1, 1, 1); boltGeo.translate(0, 0.5, 0);
     const beam = new Mesh(boltGeo, new ShaderMaterial({
       vertexShader: BOLT_VERT, fragmentShader: BOLT_FRAG, transparent: true, depthWrite: false, blending: AdditiveBlending, side: DoubleSide,
       uniforms: { uTime: { value: 0 }, uPower: { value: 0 }, uSeed: { value: i * 7.13 }, uGrow: { value: 0 }, uH: { value: BEAM_H }, uW: { value: BW } },
     }));
     beam.frustumCulled = false;
-    const ring = new Mesh(new RingGeometry(0, 1.9, 48), new ShaderMaterial({
+    const ring = new Mesh(new RingGeometry(0, 3.2, 64), new ShaderMaterial({
       vertexShader: PLAIN_VERT, fragmentShader: RING_FRAG, transparent: true, depthWrite: false, blending: AdditiveBlending, side: DoubleSide,
-      uniforms: { uWave: { value: 1 }, uPower: { value: 0 }, uTime: { value: 0 } },
+      uniforms: { uAge: { value: 0 }, uPower: { value: 0 }, uTime: { value: 0 } },
     }));
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.01;
     // UV кольца — по квадрату, не по радиусу: пересчитать в [0,1]×[0,1].
     { const g = ring.geometry, pa = g.attributes.position, uv = g.attributes.uv;
-      for (let k = 0; k < pa.count; k++) uv.setXY(k, pa.getX(k) / 3.8 + 0.5, pa.getY(k) / 3.8 + 0.5); }
+      for (let k = 0; k < pa.count; k++) uv.setXY(k, pa.getX(k) / 6.4 + 0.5, pa.getY(k) / 6.4 + 0.5); }
     const sparks = new Points(sparkGeometry(sparksPer), new ShaderMaterial({
       vertexShader: SPARK_VERT, fragmentShader: SPARK_FRAG, transparent: true, depthWrite: false, blending: AdditiveBlending,
       uniforms: { uTime: { value: 0 }, uPower: { value: 0 }, uH: { value: BEAM_H * 0.9 }, uPx: { value: 30 * dpr } },
@@ -537,13 +525,12 @@ export function mountEnergy(canvas, opts) {
       if (!n.anchor.visible) { if (slot >= 0) hotPow[slot] = 0; continue; }
       const grow = Math.min(1, age / 0.5);
       const peak = age < 3 ? 1 : 0.7 + 0.3 * Math.exp(-(age - 3) * 0.8);
-      const burst = 1 + Math.max(0, 1 - age / 0.9) * 0.4;
+      const burst = 1 + Math.max(0, 1 - age / 0.7) * 0.6;
       const power = peak;
       const u = n.beam.material.uniforms;
-      u.uTime.value = t; u.uPower.value = power; u.uGrow.value = grow; u.uW.value = 1.6 * burst;
-      // Ударная волна — одна, при рождении столба; дальше только свечение
-      // на поверхности у основания.
-      n.ring.material.uniforms.uWave.value = Math.min(1, age / 1.2);
+      u.uTime.value = t; u.uPower.value = power; u.uGrow.value = grow; u.uW.value = 1.3 * burst;
+      // Волны у основания: первая — при рождении луча, дальше непрерывно.
+      n.ring.material.uniforms.uAge.value = age;
       n.ring.material.uniforms.uPower.value = power;
       n.ring.material.uniforms.uTime.value = t;
       n.sparks.material.uniforms.uTime.value = t;
