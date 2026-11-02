@@ -179,10 +179,13 @@ install -m 644 site/brand/start.png "$SITE/brand/start.png"
 install -d -m 755 "$SITE/brand/apps"
 install -m 644 site/brand/apps/*.png "$SITE/brand/apps/"
 
-# Движок эффектов (WebGL). Кабинет грузит его сам при открытии продления;
-# нет файла — работает запасной вариант на Canvas 2D.
+# Движок эффектов (WebGL) и текстуры Земли (NASA Blue/Black Marble).
+# Кабинет грузит его заранее, в простое; нет файла или WebGL — экран
+# продления остаётся тёмным, с датой и кнопкой оплаты.
 install -d -m 755 "$SITE/fx"
 install -m 644 site/fx/energy.js "$SITE/fx/energy.js"
+install -d -m 755 "$SITE/fx/tex"
+install -m 644 site/fx/tex/*.jpg "$SITE/fx/tex/"
 
 install -d -m 755 "$SITE/legal"
 for f in site/legal/*.html; do

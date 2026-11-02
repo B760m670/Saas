@@ -385,17 +385,52 @@ button { font: inherit; color: inherit; }
   transition-duration: 0.1s;
 }
 
-/* Главная кнопка остаётся плотной. Стеклянными должны быть поверхности, а
-   не то, что от них отличается: сделай прозрачным всё — и не выделится
-   ничего, а на экране обязан быть ровно один очевидный следующий шаг. */
+/* Главная кнопка — «сгусток энергии», а не жёлтая плашка. Тёмное ядро с
+   тёплым светом снизу, по кромке бежит переливающееся кольцо (янтарь →
+   розовый → фиолетовый → голубой), вокруг — мягкое свечение того же
+   спектра, раз в несколько секунд по поверхности проходит блик. Та же
+   палитра, что у столбов энергии в сцене продления: кнопка выглядит частью
+   мира, а не наклейкой поверх него.
+
+   Тёмная в обеих темах: на кремовом фоне это всё так же единственный
+   очевидный следующий шаг. */
+@property --ring { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 .btn.primary {
-  border-color: transparent;
-  background: linear-gradient(140deg, var(--core), var(--mid));
-  color: #2a1403;
-  font-weight: 700;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  box-shadow: 0 6px 22px rgba(238, 152, 46, 0.22);
+  position: relative; isolation: isolate; overflow: visible;
+  border: 0;
+  color: #fff6e6; font-weight: 700; letter-spacing: 0.2px;
+  text-shadow: 0 0 14px rgba(255, 190, 110, 0.55);
+  background:
+    linear-gradient(110deg, transparent 38%, rgba(255, 240, 220, 0.16) 50%, transparent 62%) -150% 0 / 250% 100% no-repeat,
+    radial-gradient(120% 150% at 50% 130%, rgba(238, 152, 46, 0.42), transparent 62%),
+    radial-gradient(80% 120% at 0% 0%, rgba(124, 77, 255, 0.22), transparent 60%),
+    linear-gradient(180deg, #221519, #0f0a0e);
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  box-shadow: inset 0 1px 0 rgba(255, 236, 190, 0.18), inset 0 -10px 24px rgba(238, 152, 46, 0.10);
+  animation: btn-sheen 5.5s var(--ease) infinite;
+}
+/* Кольцо по кромке: градиент, у которого маской вырезана середина. */
+.btn.primary::before, .btn.primary::after {
+  content: ""; position: absolute; border-radius: inherit; pointer-events: none;
+  background: conic-gradient(from var(--ring), #ffecbe, #ee982e, #ff4f8b, #7c4dff, #3fd0ff, #6fe0a8, #ffecbe);
+  animation: btn-ring 6s linear infinite;
+}
+.btn.primary::before {
+  inset: 0; padding: 1.5px;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+/* Свечение вокруг — тот же спектр, размытый. */
+.btn.primary::after {
+  inset: -3px; z-index: -1; filter: blur(14px); opacity: 0.5;
+  transition: opacity 0.26s var(--ease);
+}
+.btn.primary:active::after { opacity: 0.95; transition-duration: 0.08s; }
+.btn.primary:active { filter: brightness(1.18); }
+@keyframes btn-ring { to { --ring: 360deg; } }
+@keyframes btn-sheen { 0%, 62% { background-position: -150% 0, 0 0, 0 0, 0 0; } 100% { background-position: 250% 0, 0 0, 0 0, 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .btn.primary, .btn.primary::before, .btn.primary::after { animation: none; }
 }
 .btn.ghost { background: var(--card); }
 
@@ -714,8 +749,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
 .hero-title { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 10px; }
 .tile.hero .until { color: var(--hero-muted); font-size: 14px; margin-top: 10px; }
 .tile.hero .chip { color: #cdbfa8; border-color: rgba(255, 236, 190, 0.14); background: rgba(255, 236, 190, 0.04); }
-.tile.hero .btn { width: auto; min-width: 160px; margin-top: 18px; border: 0; color: #2a1403; font-weight: 700;
-                  background: linear-gradient(140deg, #ffecbe, #ee982e); box-shadow: 0 8px 26px rgba(238, 152, 46, 0.28); }
+.tile.hero .btn { width: auto; min-width: 160px; margin-top: 18px; }
 
 .tile.fresh { grid-column: 1 / -1; padding-right: 84px; background: var(--fresh); color: var(--fresh-text); border: 0; }
 .tile.fresh .k, .tile.fresh .p { color: inherit; opacity: 0.72; }
@@ -891,7 +925,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
                тому, у кого пять гигабайт, — обман. -->
           <span class="chip" id="st-traffic">Безлимитный трафик</span>
         </div>
-        <button class="btn" id="renew" data-act="plans">Продлить</button>
+        <button class="btn primary" id="renew" data-act="plans">Продлить</button>
       </div>
     </div>
 
@@ -1629,7 +1663,6 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
        истекла — продлить. Две одинаково яркие кнопки рядом не подсказывают
        ничего, а спорят за внимание. */
     var expired = s.status === 'expired';
-    document.getElementById('renew').classList.toggle('primary', expired);
     document.getElementById('setup-btn').classList.toggle('primary', !expired);
 
   }
@@ -1922,7 +1955,7 @@ button.tile:active { transform: scale(0.98); transition-duration: 0.1s; }
      в простое — и сразу прогревается (шейдеры компилируются один раз). К
      нажатию «Продлить» сцена уже готова и появляется без задержки. Нет
      WebGL — экран остаётся тёмным и спокойным, без запасной анимации. */
-  var FX_SRC = 'fx/energy.js?v=282a962570';
+  var FX_SRC = 'fx/energy.js?v=d0b499420a';
   var GL = { state: 'idle', scene: null };
 
   function rnLabels(list) {
